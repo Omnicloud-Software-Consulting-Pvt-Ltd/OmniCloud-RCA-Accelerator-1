@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { SalesforceClient, SalesforceError, SESSION_COOKIE, decodeSession } from "@/lib/salesforce/client";
+import { SalesforceError, SESSION_COOKIE, decodeSession, clientFromSession } from "@/lib/salesforce/client";
 
 function getSession(req: NextRequest) {
   const cookie = req.cookies.get(SESSION_COOKIE);
@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "SOQL query is required" }, { status: 400 });
   }
 
-  const client = new SalesforceClient(session.instanceUrl, session.accessToken);
+  const client = clientFromSession(session);
 
   try {
     const result = tooling

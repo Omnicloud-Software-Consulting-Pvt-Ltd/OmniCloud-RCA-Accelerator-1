@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import Image from "next/image";
 import { loadSession, clearSession } from "@/lib/auth/session";
+import { loadIdentity, isSetupComplete, clearIdentity, clearSetup } from "@/lib/auth/identity";
 import type { SessionData } from "@/lib/auth/types";
 // ─────────────────────────────────────────────────────────────────────────────
 // ICON SYSTEM
@@ -1032,8 +1033,10 @@ export default function MetadataPage() {
 
   useEffect(() => {
     setMounted(true);
+    if (!loadIdentity()) { router.replace("/login"); return; }
+    if (!isSetupComplete()) { router.replace("/setup"); return; }
     const s = loadSession();
-    if (!s) { router.replace("/login"); return; }
+    if (!s) { router.replace("/setup"); return; }
     setSession(s);
   }, [router]);
 
@@ -1067,7 +1070,7 @@ export default function MetadataPage() {
       <GridBg isDark={isDark} />
 
       <div className="relative z-10 flex flex-col h-full">
-        <NavBar session={session} isDark={isDark} onSignOut={() => { clearSession(); router.replace("/login"); }} />
+        <NavBar session={session} isDark={isDark} onSignOut={() => { clearSession(); clearIdentity(); clearSetup(); router.replace("/login"); }} />
 
         {/* Body */}
         <div className="flex flex-1 overflow-hidden">

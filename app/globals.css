@@ -211,9 +211,9 @@
 
   /* Text hierarchy */
   --text-primary:   rgba(255, 255, 255, 0.95);
-  --text-secondary: rgba(160, 184, 216, 0.80);
-  --text-muted:     rgba(90, 122, 154, 0.65);
-  --text-disabled:  rgba(42, 64, 96, 0.45);
+  --text-secondary: rgba(170, 196, 226, 0.88);
+  --text-muted:     rgba(150, 180, 215, 0.82);
+  --text-disabled:  rgba(110, 140, 180, 0.55);
 
   /* Brand colors (resolved) */
   --color-brand: #1E90FF;

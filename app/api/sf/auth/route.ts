@@ -3,15 +3,16 @@ import {
   SalesforceClient,
   SalesforceError,
   SESSION_COOKIE,
-  SESSION_MAX_AGE,
   encodeSession,
+  sessionCookieOptions,
 } from "@/lib/salesforce/client";
+import { resolveConnectedApp } from "@/lib/config";
 
 export async function POST(req: NextRequest) {
-  let instanceUrl: string, accessToken: string;
+  let instanceUrl: string, accessToken: string, refreshToken: string | undefined;
 
   try {
-    ({ instanceUrl, accessToken } = await req.json());
+    ({ instanceUrl, accessToken, refreshToken } = await req.json());
   } catch {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
@@ -60,14 +61,21 @@ export async function POST(req: NextRequest) {
 
     const res = NextResponse.json(body, { status: 200 });
 
-    // Store token in HTTP-only cookie — never exposed to browser JS
-    res.cookies.set(SESSION_COOKIE, encodeSession({ instanceUrl: normalizedUrl, accessToken: accessToken.trim() }), {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
-      path: "/",
-      maxAge: SESSION_MAX_AGE,
-    });
+    // Store token in HTTP-only cookie — never exposed to browser JS.
+    // Includes the refresh token + environment so the session can refresh transparently.
+    res.cookies.set(
+      SESSION_COOKIE,
+      encodeSession({
+        instanceUrl: normalizedUrl,
+        accessToken: accessToken.trim(),
+        refreshToken: refreshToken?.trim() || undefined,
+        environment,
+        // Capture the Connected App creds so token refresh is self-contained.
+        clientId: resolveConnectedApp(req)?.clientId,
+        clientSecret: resolveConnectedApp(req)?.clientSecret,
+      }),
+      sessionCookieOptions(),
+    );
 
     return res;
   } catch (err) {

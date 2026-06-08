@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import Image from "next/image";
 import { loadSession, clearSession } from "@/lib/auth/session";
+import { loadIdentity, isSetupComplete, clearIdentity, clearSetup } from "@/lib/auth/identity";
 import type { SessionData } from "@/lib/auth/types";
 
 // ── ORBIT PARTICLE ────────────────────────────────────────────────────────────
@@ -668,9 +669,17 @@ export default function DashboardPage() {
 
   useEffect(() => {
     setMounted(true);
+    if (!loadIdentity()) {
+      router.replace("/login");
+      return;
+    }
+    if (!isSetupComplete()) {
+      router.replace("/setup");
+      return;
+    }
     const s = loadSession();
     if (!s) {
-      router.replace("/login");
+      router.replace("/setup");
       return;
     }
     setSession(s);
@@ -678,6 +687,8 @@ export default function DashboardPage() {
 
   const handleSignOut = () => {
     clearSession();
+    clearIdentity();
+    clearSetup();
     router.replace("/login");
   };
 

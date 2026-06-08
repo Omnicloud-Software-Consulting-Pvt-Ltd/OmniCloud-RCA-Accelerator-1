@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import type { TargetAndTransition, Transition } from "framer-motion";
 import Image from "next/image";
@@ -9,7 +10,20 @@ interface OmnionMascotProps {
   className?: string;
   size?: number;
   mood?: MascotMood;
+  /** Override accent-particle color (e.g. dark-navy on light theme). */
+  particleColor?: string;
 }
+
+/* Clean, transparent Omnion poses that crossfade in the same spot. */
+const MASCOT_IMAGES = [
+  "/omnion.png",
+  "/omnion-v3-t.png",
+  "/omnion-v5.png",
+  "/omnion-v6.png",
+];
+
+/* How long each image is shown before crossfading to the next. */
+const ROTATE_INTERVAL_MS = 5000;
 
 const moodConfig: Record<
   MascotMood,
@@ -65,13 +79,34 @@ const glowColors: Record<MascotMood, string> = {
   error: "rgba(232,68,68,0.5)",
 };
 
+/* Floating accent particles around the mascot (fixed values — deterministic). */
+const ACCENT_PARTICLES = [
+  { size: 7, top: "38%", side: "left",  pos: "8%",  dy: -10, dur: 3.2, delay: 0.4, glow: 8, color: "#00D4FF", op: 1.0 },
+  { size: 6, top: "28%", side: "right", pos: "8%",  dy: -12, dur: 4.1, delay: 1.1, glow: 8, color: "#3AABFF", op: 0.95 },
+  { size: 5, top: "58%", side: "right", pos: "5%",  dy: -8,  dur: 3.6, delay: 1.8, glow: 6, color: "#1E90FF", op: 0.85 },
+  { size: 5, top: "62%", side: "left",  pos: "6%",  dy: -10, dur: 5.0, delay: 2.3, glow: 6, color: "#00D4FF", op: 0.85 },
+  { size: 4, top: "18%", side: "left",  pos: "20%", dy: -9,  dur: 4.6, delay: 0.9, glow: 6, color: "#60B8FF", op: 0.80 },
+  { size: 4, top: "48%", side: "right", pos: "16%", dy: -11, dur: 5.4, delay: 2.7, glow: 6, color: "#00D4FF", op: 0.80 },
+  { size: 5, top: "72%", side: "left",  pos: "18%", dy: -9,  dur: 4.2, delay: 1.5, glow: 6, color: "#3AABFF", op: 0.82 },
+] as const;
+
 export function OmnionMascot({
   className = "",
   size = 320,
   mood = "float",
+  particleColor,
 }: OmnionMascotProps) {
   const { animate, transition } = moodConfig[mood];
   const glowColor = glowColors[mood];
+
+  /* Cycle through the mascot poses every ROTATE_INTERVAL_MS. */
+  const [activeIndex, setActiveIndex] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => {
+      setActiveIndex((i) => (i + 1) % MASCOT_IMAGES.length);
+    }, ROTATE_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, []);
 
   return (
     <motion.div
@@ -94,70 +129,51 @@ export function OmnionMascot({
         transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
       />
 
-      {/* Actual Omnion mascot image — unmodified */}
-      <Image
-        src="/omnion.png"
-        alt="Omnion — Omnicloud AI assistant"
-        width={size}
-        height={size * 1.22}
-        style={{ objectFit: "contain", width: "100%", height: "100%" }}
-        priority
-        draggable={false}
-      />
+      {/* Omnion mascot images — all stacked, crossfading between poses.
+          Rendering them all keeps every image preloaded so swaps never flicker. */}
+      <div className="absolute inset-0">
+        {MASCOT_IMAGES.map((src, i) => (
+          <motion.div
+            key={src}
+            className="absolute inset-0"
+            initial={false}
+            animate={{ opacity: i === activeIndex ? 1 : 0 }}
+            transition={{ duration: 0.9, ease: "easeInOut" }}
+          >
+            <Image
+              src={src}
+              alt="Omnion — Omnicloud AI assistant"
+              width={size}
+              height={size * 1.22}
+              style={{ objectFit: "contain", width: "100%", height: "100%" }}
+              priority={i === 0}
+              draggable={false}
+            />
+          </motion.div>
+        ))}
+      </div>
 
       {/* Accent particles */}
-      <motion.div
-        className="absolute rounded-full"
-        style={{
-          width: 7,
-          height: 7,
-          background: "#00D4FF",
-          top: "38%",
-          left: "8%",
-          boxShadow: "0 0 8px #00D4FF",
-        }}
-        animate={{ y: [0, -10, 0], opacity: [0.7, 1, 0.7] }}
-        transition={{ duration: 3.2, repeat: Infinity, delay: 0.4 }}
-      />
-      <motion.div
-        className="absolute rounded-full"
-        style={{
-          width: 6,
-          height: 6,
-          background: "#3AABFF",
-          top: "28%",
-          right: "8%",
-          boxShadow: "0 0 8px #3AABFF",
-        }}
-        animate={{ y: [0, -12, 0], opacity: [0.65, 0.95, 0.65] }}
-        transition={{ duration: 4.1, repeat: Infinity, delay: 1.1 }}
-      />
-      <motion.div
-        className="absolute rounded-full"
-        style={{
-          width: 5,
-          height: 5,
-          background: "#1E90FF",
-          top: "58%",
-          right: "5%",
-          boxShadow: "0 0 6px #1E90FF",
-        }}
-        animate={{ y: [0, -8, 0], opacity: [0.55, 0.85, 0.55] }}
-        transition={{ duration: 3.6, repeat: Infinity, delay: 1.8 }}
-      />
-      <motion.div
-        className="absolute rounded-full"
-        style={{
-          width: 5,
-          height: 5,
-          background: "#00D4FF",
-          top: "62%",
-          left: "6%",
-          boxShadow: "0 0 6px #00D4FF",
-        }}
-        animate={{ y: [0, -10, 0], opacity: [0.55, 0.85, 0.55] }}
-        transition={{ duration: 5.0, repeat: Infinity, delay: 2.3 }}
-      />
+      {ACCENT_PARTICLES.map((p, i) => {
+        const c = particleColor ?? p.color;
+        return (
+          <motion.div
+            key={i}
+            className="absolute rounded-full"
+            style={{
+              width: p.size,
+              height: p.size,
+              background: c,
+              top: p.top,
+              left: p.side === "left" ? p.pos : undefined,
+              right: p.side === "right" ? p.pos : undefined,
+              boxShadow: `0 0 ${p.glow}px ${c}`,
+            }}
+            animate={{ y: [0, p.dy, 0], opacity: [Math.max(0, p.op - 0.3), p.op, Math.max(0, p.op - 0.3)] }}
+            transition={{ duration: p.dur, repeat: Infinity, delay: p.delay }}
+          />
+        );
+      })}
     </motion.div>
   );
 }

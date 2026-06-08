@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { SalesforceClient, SalesforceError, SESSION_COOKIE, decodeSession } from "@/lib/salesforce/client";
+import { SalesforceError, SESSION_COOKIE, decodeSession, clientFromSession } from "@/lib/salesforce/client";
 
 function getSession(req: NextRequest) {
   const cookie = req.cookies.get(SESSION_COOKIE);
@@ -21,7 +21,7 @@ export async function GET(req: NextRequest, { params }: Params) {
 
   if (!id) return NextResponse.json({ error: "Record id is required" }, { status: 400 });
 
-  const client = new SalesforceClient(session.instanceUrl, session.accessToken);
+  const client = clientFromSession(session);
   try {
     const record = await client.getRecord(
       sobject,
@@ -54,7 +54,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: "fields object is required" }, { status: 400 });
   }
 
-  const client = new SalesforceClient(session.instanceUrl, session.accessToken);
+  const client = clientFromSession(session);
   try {
     const result = await client.createRecord(sobject, fields);
     return NextResponse.json(result, { status: 201 });
@@ -88,7 +88,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 
   if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 });
 
-  const client = new SalesforceClient(session.instanceUrl, session.accessToken);
+  const client = clientFromSession(session);
   try {
     await client.updateRecord(sobject, id, fields);
     return NextResponse.json({ success: true });
@@ -109,7 +109,7 @@ export async function DELETE(req: NextRequest, { params }: Params) {
   const id = new URL(req.url).searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 });
 
-  const client = new SalesforceClient(session.instanceUrl, session.accessToken);
+  const client = clientFromSession(session);
   try {
     await client.deleteRecord(sobject, id);
     return NextResponse.json({ success: true });
