@@ -73,16 +73,60 @@ export class SalesforceError extends Error {
   }
 }
 
+/* ── OAuth refresh config (enables transparent token refresh) ── */
+export interface RefreshConfig {
+  refreshToken: string;
+  clientId: string;
+  clientSecret: string;
+  loginBase: string;
+  /** Called with the new access token after a successful refresh. */
+  onRefreshed?: (newAccessToken: string) => void;
+}
+
 /* ── SalesforceClient ── */
 export class SalesforceClient {
   readonly instanceUrl: string;
-  private readonly accessToken: string;
+  private accessToken: string;
   readonly apiVersion: string;
+  private readonly refresh?: RefreshConfig;
 
-  constructor(instanceUrl: string, accessToken: string, apiVersion = SF_API_VERSION) {
+  constructor(
+    instanceUrl: string,
+    accessToken: string,
+    apiVersion = SF_API_VERSION,
+    refresh?: RefreshConfig,
+  ) {
     this.instanceUrl = instanceUrl.replace(/\/$/, "");
     this.accessToken = accessToken;
     this.apiVersion = apiVersion;
+    this.refresh = refresh;
+  }
+
+  /* Exchange the refresh token for a fresh access token. Returns true on success. */
+  private async tryRefresh(): Promise<boolean> {
+    if (!this.refresh) return false;
+    const { refreshToken, clientId, clientSecret, loginBase, onRefreshed } = this.refresh;
+    try {
+      const res = await fetch(`${loginBase}/services/oauth2/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: refreshToken,
+          client_id: clientId,
+          client_secret: clientSecret,
+        }).toString(),
+        cache: "no-store",
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (!data.access_token) return false;
+      this.accessToken = data.access_token;
+      onRefreshed?.(data.access_token);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   get dataApiBase() {
@@ -97,6 +141,7 @@ export class SalesforceClient {
   async request<T = unknown>(
     path: string,
     options: RequestInit = {},
+    _retried = false,
   ): Promise<T> {
     const url = path.startsWith("http") ? path : `${this.dataApiBase}${path}`;
 
@@ -115,6 +160,11 @@ export class SalesforceClient {
     const body = await res.json().catch(() => null);
 
     if (!res.ok) {
+      // Access token expired → refresh once and retry transparently.
+      if (res.status === 401 && !_retried && this.refresh) {
+        const refreshed = await this.tryRefresh();
+        if (refreshed) return this.request<T>(path, options, true);
+      }
       const message = Array.isArray(body)
         ? (body[0]?.message ?? res.statusText)
         : (body?.message ?? body?.error_description ?? res.statusText);
@@ -270,11 +320,20 @@ export class SalesforceClient {
 
 /* ── Server-side session helpers (only import in API routes, not client components) ── */
 export const SESSION_COOKIE = "sf_session";
-export const SESSION_MAX_AGE = 8 * 60 * 60; // 8 hours
+// 30 days — the access token inside may expire sooner, but the refresh token
+// (when present) keeps the session alive transparently up to this window.
+export const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
 
 export interface SFServerSession {
   instanceUrl: string;
   accessToken: string;
+  /** Present for OAuth sessions; enables transparent token refresh. */
+  refreshToken?: string;
+  /** Needed to pick the right login host when refreshing. */
+  environment?: "sandbox" | "production";
+  /** Connected App creds captured at auth time, so refresh is self-contained. */
+  clientId?: string;
+  clientSecret?: string;
 }
 
 export function encodeSession(session: SFServerSession): string {
@@ -287,4 +346,47 @@ export function decodeSession(encoded: string): SFServerSession | null {
   } catch {
     return null;
   }
+}
+
+/** httpOnly cookie options for the SF session. */
+export function sessionCookieOptions() {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict" as const,
+    path: "/",
+    maxAge: SESSION_MAX_AGE,
+  };
+}
+
+/**
+ * Build a SalesforceClient from a stored session, wiring up transparent OAuth
+ * refresh when a refresh token + Connected App credentials are available.
+ * Pass `onRefreshed` to capture the new access token and persist it to the cookie.
+ */
+export function clientFromSession(
+  session: SFServerSession,
+  opts: { apiVersion?: string; onRefreshed?: (token: string) => void } = {},
+): SalesforceClient {
+  const clientId = session.clientId ?? process.env.SALESFORCE_CLIENT_ID;
+  const clientSecret = session.clientSecret ?? process.env.SALESFORCE_CLIENT_SECRET;
+  const refresh: RefreshConfig | undefined =
+    session.refreshToken && clientId && clientSecret
+      ? {
+          refreshToken: session.refreshToken,
+          clientId,
+          clientSecret,
+          loginBase:
+            session.environment === "production"
+              ? "https://login.salesforce.com"
+              : "https://test.salesforce.com",
+          onRefreshed: opts.onRefreshed,
+        }
+      : undefined;
+  return new SalesforceClient(
+    session.instanceUrl,
+    session.accessToken,
+    opts.apiVersion ?? SF_API_VERSION,
+    refresh,
+  );
 }

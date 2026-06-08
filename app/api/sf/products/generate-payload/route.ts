@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { SESSION_COOKIE, decodeSession } from "@/lib/salesforce/client";
+import { resolveAnthropicKey } from "@/lib/config";
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Full semantic Revenue Cloud payload-generation system prompt
@@ -367,11 +368,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Prompt is required" }, { status: 400 });
   }
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return NextResponse.json({ error: "ANTHROPIC_API_KEY not configured on server" }, { status: 500 });
+  const apiKey = resolveAnthropicKey(req);
+  if (!apiKey) {
+    return NextResponse.json(
+      { error: "Anthropic API key not configured. Complete Setup to add your key.", code: "NO_AI_KEY" },
+      { status: 503 },
+    );
   }
 
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const anthropic = new Anthropic({ apiKey });
 
   try {
     const message = await anthropic.messages.create({

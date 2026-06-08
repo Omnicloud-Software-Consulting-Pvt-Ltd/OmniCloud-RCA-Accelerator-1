@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  SalesforceClient,
   SESSION_COOKIE,
   decodeSession,
+  clientFromSession,
 } from "@/lib/salesforce/client";
 
 function getSession(req: NextRequest) {
@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const client = new SalesforceClient(session.instanceUrl, session.accessToken);
+    const client = clientFromSession(session);
     const userInfo = await client.getUserInfo();
     return NextResponse.json({
       authenticated: true,

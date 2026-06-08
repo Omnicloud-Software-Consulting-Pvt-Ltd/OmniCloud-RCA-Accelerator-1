@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  SalesforceClient,
   SESSION_COOKIE,
   decodeSession,
+  clientFromSession,
 } from "@/lib/salesforce/client";
 
 interface ChildProduct {
@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
   const session = cookie?.value ? decodeSession(cookie.value) : null;
   if (!session) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 
-  const client = new SalesforceClient(session.instanceUrl, session.accessToken, "v62.0");
+  const client = clientFromSession(session, { apiVersion: "v62.0" });
 
   try {
     /* ── Query bundle products — filter by Type = 'Bundle' (not ProductClass) ── */

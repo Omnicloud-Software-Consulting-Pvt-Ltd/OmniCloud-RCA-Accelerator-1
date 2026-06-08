@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import Image from "next/image";
 import { loadSession, clearSession } from "@/lib/auth/session";
+import { loadIdentity, isSetupComplete, clearIdentity, clearSetup } from "@/lib/auth/identity";
 import type { SessionData } from "@/lib/auth/types";
 import RCAAttributeStudio from "@/components/data/RCAAttributeStudio";
 import BundleOrchestrationWorkspace from "@/components/data/BundleOrchestrationWorkspace";
@@ -2641,8 +2642,10 @@ export default function DataPage() {
 
   useEffect(() => {
     setMounted(true);
+    if (!loadIdentity()) { router.replace("/login"); return; }
+    if (!isSetupComplete()) { router.replace("/setup"); return; }
     const s = loadSession();
-    if (!s) { router.replace("/login"); return; }
+    if (!s) { router.replace("/setup"); return; }
     setSession(s);
   }, [router]);
 
@@ -2771,7 +2774,7 @@ export default function DataPage() {
         <NavBar
           session={session}
           isDark={isDark}
-          onSignOut={() => { clearSession(); router.replace("/login"); }}
+          onSignOut={() => { clearSession(); clearIdentity(); clearSetup(); router.replace("/login"); }}
         />
 
         <div className="flex flex-1 overflow-hidden">

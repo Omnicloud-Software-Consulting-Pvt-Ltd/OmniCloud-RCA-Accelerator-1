@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { SalesforceClient, SESSION_COOKIE, decodeSession } from "@/lib/salesforce/client";
+import { SalesforceClient, SESSION_COOKIE, decodeSession, clientFromSession } from "@/lib/salesforce/client";
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Types
@@ -348,7 +348,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const sfClient = new SalesforceClient(session.instanceUrl, session.accessToken, "v62.0");
+  const sfClient = clientFromSession(session, { apiVersion: "v62.0" });
   const encoder  = new TextEncoder();
 
   const stream = new ReadableStream({

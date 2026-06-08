@@ -3,6 +3,7 @@ import {
   SalesforceClient,
   SESSION_COOKIE,
   decodeSession,
+  clientFromSession,
   type DescribeResult,
   type DescribeField,
 } from "@/lib/salesforce/client";
@@ -1787,7 +1788,7 @@ export async function POST(req: NextRequest) {
   if (!parsedData?.productName)
     return NextResponse.json({ error: "parsedData is required" }, { status: 400 });
 
-  const client = new SalesforceClient(session.instanceUrl, session.accessToken);
+  const client = clientFromSession(session);
 
   try {
     const { logs, ctx, health } = await executeBatch(batchIndex, parsedData, context, client);

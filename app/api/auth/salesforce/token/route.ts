@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHmac } from "crypto";
+import { resolveConnectedApp } from "@/lib/config";
 
 function appBaseUrl(req: NextRequest): string {
   if (process.env.NEXTAUTH_URL) return process.env.NEXTAUTH_URL.replace(/\/$/, "");
@@ -40,14 +41,14 @@ export async function POST(req: NextRequest) {
   // Environment is encoded in state: "{environment}|{nonce}|{hmac}"
   const environment = state.startsWith("production|") ? "production" : "sandbox";
 
-  const clientId = process.env.SALESFORCE_CLIENT_ID;
-  const clientSecret = process.env.SALESFORCE_CLIENT_SECRET;
-  if (!clientId || !clientSecret) {
+  const creds = resolveConnectedApp(req);
+  if (!creds) {
     return NextResponse.json(
-      { error: "Salesforce OAuth is not configured. Set SALESFORCE_CLIENT_ID and SALESFORCE_CLIENT_SECRET." },
+      { error: "Salesforce Connected App isn't configured. Add your Client ID & Secret in Setup." },
       { status: 503 }
     );
   }
+  const { clientId, clientSecret } = creds;
 
   const loginBase =
     environment === "sandbox" ? "https://test.salesforce.com" : "https://login.salesforce.com";

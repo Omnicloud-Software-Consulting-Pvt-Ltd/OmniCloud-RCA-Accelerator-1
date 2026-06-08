@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHmac, randomBytes } from "crypto";
+import { resolveClientId } from "@/lib/config";
 
 function appBaseUrl(req: NextRequest): string {
   if (process.env.NEXTAUTH_URL) return process.env.NEXTAUTH_URL.replace(/\/$/, "");
@@ -9,9 +10,10 @@ function appBaseUrl(req: NextRequest): string {
 }
 
 export async function GET(req: NextRequest) {
-  if (!process.env.SALESFORCE_CLIENT_ID) {
+  const clientId = resolveClientId(req);
+  if (!clientId) {
     return NextResponse.json(
-      { error: "SALESFORCE_CLIENT_ID is not set. Add it to your .env.local file." },
+      { error: "Salesforce Connected App isn't configured. Add your Client ID & Secret in Setup, or use an access token." },
       { status: 503 }
     );
   }
@@ -37,7 +39,7 @@ export async function GET(req: NextRequest) {
 
   const params = new URLSearchParams({
     response_type: "code",
-    client_id: process.env.SALESFORCE_CLIENT_ID,
+    client_id: clientId,
     redirect_uri: redirectUri,
     state,
     scope: "api refresh_token openid profile email",

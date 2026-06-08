@@ -16,17 +16,13 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Omnicloud AI Platform",
+  title: "OmniVerse — From Complexity. Into Clarity.",
   description:
-    "Enterprise-grade AI platform for Salesforce Revenue Cloud. Powered by Omnion AI.",
-  keywords: ["Omnicloud", "AI", "Salesforce", "Revenue Cloud", "Enterprise", "CPQ"],
+    "OmniVerse — an Agentic Accelerator Platform by OmniCloud for Salesforce Revenue Cloud.",
+  keywords: ["OmniVerse", "OmniCloud", "AI", "Agentic", "Salesforce", "Revenue Cloud", "Accelerator", "CPQ"],
   authors: [{ name: "OmniCloud Software Consulting" }],
-  icons: {
-    icon: [{ url: "/favicon.ico", sizes: "any" }],
-    shortcut: "/favicon.ico",
-    apple: "/favicon.ico",
-  },
-  applicationName: "Omnicloud AI Platform",
+  // Favicon is auto-detected from app/icon.png (the transparent Omnicloud mark).
+  applicationName: "OmniVerse",
   creator: "OmniCloud Software Consulting",
 };
 

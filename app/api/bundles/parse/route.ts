@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { SESSION_COOKIE, decodeSession } from "@/lib/salesforce/client";
-
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+import { resolveAnthropicKey } from "@/lib/config";
 
 const SYSTEM_PROMPT = `You are an expert Salesforce Revenue Cloud Advanced (RCA) bundle architect.
 
@@ -143,6 +142,15 @@ export async function POST(req: NextRequest) {
   } catch {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
+
+  const apiKey = resolveAnthropicKey(req);
+  if (!apiKey) {
+    return NextResponse.json(
+      { error: "Anthropic API key not configured. Complete Setup to add your key.", code: "NO_AI_KEY" },
+      { status: 503 },
+    );
+  }
+  const client = new Anthropic({ apiKey });
 
   try {
     const msg = await client.messages.create({

@@ -4,6 +4,7 @@ import {
   SalesforceError,
   SESSION_COOKIE,
   decodeSession,
+  clientFromSession,
   type QueryResult,
 } from "@/lib/salesforce/client";
 
@@ -157,7 +158,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Use v62.0 for EPC objects
-  const client = new SalesforceClient(session.instanceUrl, session.accessToken, "v62.0");
+  const client = clientFromSession(session, { apiVersion: "v62.0" });
 
   const steps: Record<string, unknown> = {};
   const errors: Array<{ step: string; error: string }> = [];
