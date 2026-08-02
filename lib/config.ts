@@ -6,6 +6,10 @@ import type { NextRequest } from "next/server";
  * rides along automatically to API routes that call Claude.
  */
 
+// Same Claude model id used by the existing AI routes (bundles/parse, sf/attributes/parse,
+// sf/products/generate-payload) — hoisted here so new AI routes don't re-hardcode it.
+export const CLAUDE_MODEL = "claude-sonnet-4-6";
+
 export const CONFIG_COOKIE = "omnicloud_config";
 export const CONFIG_MAX_AGE = 30 * 24 * 60 * 60; // 30 days
 
