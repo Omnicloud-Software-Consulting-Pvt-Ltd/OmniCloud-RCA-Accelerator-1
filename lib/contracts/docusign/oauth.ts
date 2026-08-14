@@ -8,6 +8,10 @@ export interface ActiveDocuSignSession {
   accountId: string;
   baseUri: string;
   environment: DocuSignEnvironment;
+  /** The DocuSign user whose OAuth grant this session runs as — from connectionStore's saved /oauth/userinfo capture, never re-derived or guessed. This IS the sender DocuSign will attribute every envelope this session sends to. */
+  senderName: string | null;
+  senderEmail: string | null;
+  senderUserId: string | null;
 }
 
 /**
@@ -23,15 +27,17 @@ export async function getActiveDocuSignSession(orgId: string): Promise<ActiveDoc
     return null;
   }
 
+  const senderIdentity = { senderName: record.connectedUserName, senderEmail: record.connectedUserEmail, senderUserId: record.connectedUserId };
+
   const expiresAt = record.tokenExpiresAt ? new Date(record.tokenExpiresAt).getTime() : 0;
   if (Date.now() < expiresAt - SKEW_MS) {
-    return { accessToken: record.accessToken, accountId: record.docusignAccountId, baseUri: record.baseUri, environment: record.environment };
+    return { accessToken: record.accessToken, accountId: record.docusignAccountId, baseUri: record.baseUri, environment: record.environment, ...senderIdentity };
   }
 
   try {
     const refreshed = await refreshAccessToken(record.environment, record.clientId, record.clientSecret, record.refreshToken);
     await updateAccessToken(orgId, { accessToken: refreshed.accessToken, refreshToken: refreshed.refreshToken, expiresInSeconds: refreshed.expiresIn });
-    return { accessToken: refreshed.accessToken, accountId: record.docusignAccountId, baseUri: record.baseUri, environment: record.environment };
+    return { accessToken: refreshed.accessToken, accountId: record.docusignAccountId, baseUri: record.baseUri, environment: record.environment, ...senderIdentity };
   } catch (err) {
     const invalidGrant = err instanceof DocuSignError && !!(err.body as { invalidGrant?: boolean } | null)?.invalidGrant;
     if (invalidGrant) {

@@ -1,6 +1,6 @@
 import type { SalesforceClient, DescribeResult, DescribeField } from "@/lib/salesforce/client";
 import { describeObjectCached } from "@/lib/salesforce/describe";
-import { resolveField, findReferenceFieldByTargetObject, findAllReferenceFieldsToTarget, toFieldRef } from "@/lib/salesforce/describe";
+import { resolveField, findReferenceFieldByTargetObject, findAllReferenceFieldsToTarget, findRequiredCreateableFields, toFieldRef } from "@/lib/salesforce/describe";
 import { createTTLCache } from "@/lib/salesforce/cache";
 import type {
   QuoteLineItemFieldSchema,
@@ -102,10 +102,29 @@ export async function resolveQuoteLineItemFieldSchema(client: SalesforceClient):
     // Revenue Cloud pricing run is fresh or stale, e.g. after a manual
     // Discount edit but before repricing runs.
     const pricingStatusField = resolveField(describe, "PricingStatus", /^pricing status$/i);
-    const sellingModelOptionField = findReferenceFieldByTargetObject(describe, "ProductSellingModelOption", { requireCreateable: true })
-      ?? resolveField(describe, "SellingModelId", /^selling model$/i, { requireCreateable: true });
+    // §Selling Model field split (Refresh Prices / blank Selling Model
+    // investigation): Revenue Cloud's STANDARD QuoteLineItem shape is
+    // `SellingModelId` referencing the PARENT `ProductSellingModel` object —
+    // not `ProductSellingModelOption` (the child/option object this app
+    // resolves candidates FROM). The two were previously resolved as a
+    // single ambiguous field via a "ProductSellingModelOption target, else a
+    // field literally named/labeled SellingModelId" fallback chain — on an
+    // org whose real field targets ProductSellingModel (the common case),
+    // that fallback found the field correctly by API name, but the app then
+    // wrote the OPTION's Id into it (see relationshipCreate.ts's
+    // buildQLIPayload) — a value belonging to the wrong object entirely.
+    // Resolved as two independent fields now; a real org can have either,
+    // both, or neither, and each gets its own correct value at write time.
+    const sellingModelField = findReferenceFieldByTargetObject(describe, "ProductSellingModel", { requireCreateable: true })
+      ?? resolveField(describe, "SellingModelId", /^(product )?selling model$/i, { requireCreateable: true });
+    const sellingModelOptionField = findReferenceFieldByTargetObject(describe, "ProductSellingModelOption", { requireCreateable: true });
     const billingFrequencyField = resolveField(describe, "BillingFrequency", /^billing frequency$/i);
-    const subscriptionTermField = resolveField(describe, "SubscriptionTerm", /^subscription term$/i);
+    // §Revenue Cloud page layouts commonly re-label this field "Pricing
+    // Term" rather than the standard "Subscription Term" — the exact API
+    // name match above is unaffected by label, but widen the label fallback
+    // too so a genuinely differently-API-named field with either label is
+    // still found.
+    const subscriptionTermField = resolveField(describe, "SubscriptionTerm", /^(subscription|pricing) term$/i);
 
     // Self-reference fallback mechanism for bundle hierarchy (§5.5 mechanism B) — also a write target.
     const selfRefs = findAllReferenceFieldsToTarget(describe, "QuoteLineItem", { requireCreateable: true });
@@ -113,6 +132,26 @@ export async function resolveQuoteLineItemFieldSchema(client: SalesforceClient):
     const parentItemField = selfRefs.find(f => /parent/i.test(f.label) && f !== rootItemField) ?? null;
 
     const pricingModelDiagnosis = diagnosePricingModel(describe);
+
+    // §Audit gap fix: QuoteLineRelationship already audits for required+
+    // createable fields this app's curated list doesn't explicitly map
+    // (see resolveQuoteLineRelationshipSchema below) — QuoteLineItem itself
+    // never got the same treatment, despite being the one object Salesforce's
+    // native Refresh Prices / bundle-configuration validation reads directly.
+    // An org-specific required field outside this curated list would
+    // otherwise be silently omitted from every create payload.
+    const mapped = new Set(
+      [
+        quoteField, productField, pricebookEntryField, quantityField, unitPriceField, listPriceField,
+        discountField, totalPriceField, netUnitPriceField, netTotalPriceField, pricingStatusField,
+        sellingModelField, sellingModelOptionField, billingFrequencyField, subscriptionTermField, rootItemField, parentItemField,
+      ]
+        .filter((f): f is NonNullable<typeof f> => !!f)
+        .map(f => f.name),
+    );
+    const requiredFieldsNotMapped = findRequiredCreateableFields(describe)
+      .filter(f => !mapped.has(f.name))
+      .map(f => toFieldRef(f)!);
 
     return {
       quoteField: toFieldRef(quoteField),
@@ -126,6 +165,7 @@ export async function resolveQuoteLineItemFieldSchema(client: SalesforceClient):
       netUnitPriceField: toFieldRef(netUnitPriceField),
       netTotalPriceField: toFieldRef(netTotalPriceField),
       pricingStatusField: toFieldRef(pricingStatusField),
+      sellingModelField: toFieldRef(sellingModelField),
       sellingModelOptionField: toFieldRef(sellingModelOptionField),
       billingFrequencyField: toFieldRef(billingFrequencyField),
       subscriptionTermField: toFieldRef(subscriptionTermField),
@@ -133,6 +173,7 @@ export async function resolveQuoteLineItemFieldSchema(client: SalesforceClient):
       parentItemField: toFieldRef(parentItemField),
       pricingModel: pricingModelDiagnosis.model,
       pricingModelDiagnosis,
+      requiredFieldsNotMapped,
     };
   });
 }

@@ -10,11 +10,15 @@ interface ChildProduct {
   name: string;
   isBundle: boolean;
   price: number;
+  isRequired: boolean;
 }
 
-interface BundleListItem {
+export interface BundleListItem {
   id: string;
   name: string;
+  productCode: string | null;
+  description: string | null;
+  family: string | null;
   bundleType: string;
   isActive: boolean;
   productCount: number;
@@ -22,6 +26,10 @@ interface BundleListItem {
   totalPrice: number;
   children: ChildProduct[];
   sellingModel?: string;
+  catalog: string | null;
+  category: string | null;
+  createdDate: string;
+  lastModifiedDate: string;
   commercializationStatus: string;
 }
 
@@ -41,11 +49,15 @@ export async function GET(req: NextRequest) {
     const bundleResult = await client.query<{
       Id: string;
       Name: string;
+      ProductCode: string | null;
+      Family: string | null;
       IsActive: boolean;
       Type: string;
       Description: string;
+      CreatedDate: string;
+      LastModifiedDate: string;
     }>(
-      "SELECT Id, Name, IsActive, Type, Description FROM Product2 WHERE Type = 'Bundle' ORDER BY Name LIMIT 100",
+      "SELECT Id, Name, ProductCode, Family, IsActive, Type, Description, CreatedDate, LastModifiedDate FROM Product2 WHERE Type = 'Bundle' ORDER BY LastModifiedDate DESC LIMIT 100",
     );
 
     const bundles = bundleResult.records;
@@ -56,17 +68,18 @@ export async function GET(req: NextRequest) {
     const bundleIds = bundles.map(b => `'${soqlEscape(b.Id)}'`).join(",");
 
     /* ── Query components — use Type on ChildProduct ── */
-    let componentMap: Record<string, { Id: string; Name: string; Type: string }[]> = {};
+    let componentMap: Record<string, { Id: string; Name: string; Type: string; IsComponentRequired: boolean | null }[]> = {};
     try {
       const componentResult = await client.query<{
         Id: string;
         ParentProductId: string;
         ChildProductId: string;
+        IsComponentRequired: boolean | null;
         "ChildProduct.Id": string;
         "ChildProduct.Name": string;
         "ChildProduct.Type": string;
       }>(
-        `SELECT Id, ParentProductId, ChildProduct.Id, ChildProduct.Name, ChildProduct.Type FROM ProductRelatedComponent WHERE ParentProductId IN (${bundleIds}) ORDER BY Sequence LIMIT 500`,
+        `SELECT Id, ParentProductId, IsComponentRequired, ChildProduct.Id, ChildProduct.Name, ChildProduct.Type FROM ProductRelatedComponent WHERE ParentProductId IN (${bundleIds}) ORDER BY Sequence LIMIT 500`,
       );
 
       for (const comp of componentResult.records) {
@@ -76,6 +89,7 @@ export async function GET(req: NextRequest) {
           Id:   comp["ChildProduct.Id"]   ?? (comp as unknown as Record<string, Record<string, string>>).ChildProduct?.Id   ?? "",
           Name: comp["ChildProduct.Name"] ?? (comp as unknown as Record<string, Record<string, string>>).ChildProduct?.Name ?? "Unknown",
           Type: comp["ChildProduct.Type"] ?? (comp as unknown as Record<string, Record<string, string>>).ChildProduct?.Type ?? "",
+          IsComponentRequired: comp.IsComponentRequired,
         });
       }
     } catch {
@@ -117,6 +131,28 @@ export async function GET(req: NextRequest) {
       /* Selling models may not be accessible */
     }
 
+    /* ── Query catalog/category (for History filters/columns) ── */
+    const catalogMap: Record<string, string> = {};
+    const categoryMap: Record<string, string> = {};
+    try {
+      const catResult = await client.query<{
+        ProductId: string;
+        "ProductCategory.Name": string;
+        "ProductCategory.Catalog.Name": string;
+      }>(
+        `SELECT ProductId, ProductCategory.Name, ProductCategory.Catalog.Name FROM ProductCategoryProduct WHERE ProductId IN (${bundleIds}) LIMIT 200`,
+      );
+      for (const row of catResult.records) {
+        const r = row as unknown as Record<string, unknown> & { ProductCategory?: { Name?: string; Catalog?: { Name?: string } } };
+        const categoryName = r.ProductCategory?.Name ?? row["ProductCategory.Name"];
+        const catalogName = r.ProductCategory?.Catalog?.Name ?? row["ProductCategory.Catalog.Name"];
+        if (categoryName) categoryMap[row.ProductId] = categoryName;
+        if (catalogName) catalogMap[row.ProductId] = catalogName;
+      }
+    } catch {
+      /* ProductCategoryProduct may not be accessible */
+    }
+
     /* ── Build response ── */
     const result: BundleListItem[] = bundles.map(b => {
       const children = (componentMap[b.Id] ?? []).map(c => ({
@@ -124,6 +160,7 @@ export async function GET(req: NextRequest) {
         name:     c.Name,
         isBundle: c.Type === "Bundle",   // Type field — not ProductClass
         price:    priceMap[c.Id] ?? 0,
+        isRequired: c.IsComponentRequired !== false,
       }));
 
       const childTotal       = children.reduce((sum, c) => sum + c.price, 0);
@@ -141,6 +178,9 @@ export async function GET(req: NextRequest) {
       return {
         id:                   b.Id,
         name:                 b.Name,
+        productCode:          b.ProductCode ?? null,
+        description:          b.Description ?? null,
+        family:               b.Family ?? null,
         bundleType:           b.Type ?? "Bundle",
         isActive:             b.IsActive,
         productCount:         children.filter(c => !c.isBundle).length,
@@ -148,6 +188,10 @@ export async function GET(req: NextRequest) {
         totalPrice:           bundlePrice,
         children,
         sellingModel:         sellingModelMap[b.Id],
+        catalog:              catalogMap[b.Id] ?? null,
+        category:             categoryMap[b.Id] ?? null,
+        createdDate:          b.CreatedDate,
+        lastModifiedDate:     b.LastModifiedDate,
         commercializationStatus,
       };
     });

@@ -3,12 +3,11 @@
 import { Ic, tokens } from "@/components/data/quotes/shared";
 import type { SignatureStage } from "@/lib/contracts/types";
 
-// Deliberately only the 3 stages the app can actually back today — Viewed/
-// Customer Signed/Company Signed/Completed require a real DocuSign
-// connection (webhook-driven progression) and are not implemented yet. The
-// underlying SignatureStage type still has all 7 (lib/contracts/types.ts)
-// so this only needs its array extended, not a redesign, once that lands.
-const STAGES: SignatureStage[] = ["Draft", "Ready to Send", "Sent"];
+// All 7 stages are now reachable: DocuSign Connect webhook + the manual
+// "Refresh DocuSign Status" fallback both advance this forward-only ladder
+// (lib/contracts/docusign/statusSync.ts) past "Sent" once DocuSign actually
+// reports Viewed/Signed/Completed.
+const STAGES: SignatureStage[] = ["Draft", "Ready to Send", "Sent", "Viewed", "Customer Signed", "Company Signed", "Completed"];
 
 /** Simple 3-stage signature status stepper — every stage at-or-below the current one renders as "reached". */
 export default function SignatureStatusStepper({ isDark, current }: { isDark: boolean; current: SignatureStage }) {

@@ -1,5 +1,7 @@
 import { NextRequest } from "next/server";
 import { SalesforceClient, SESSION_COOKIE, decodeSession, clientFromSession } from "@/lib/salesforce/client";
+import { addBundleComponent } from "@/lib/bundles/server/relationships";
+import { checkBundleDuplicate } from "@/lib/bundles/server/duplicateCheck";
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Types
@@ -20,10 +22,14 @@ interface ParsedProduct {
   sellingModel?: string;
   category?: string;
   attributes?: AttributeDefinition[];
+  /** ProductRelatedComponent.IsComponentRequired — defaults to true (the existing, unchanged behavior) when absent, so AI-parsed bundles are never affected. Only the Bundle Importer sets this explicitly today. */
+  isRequired?: boolean;
 }
 
 interface ParsedBundle {
   bundleName: string;
+  /** Optional — when the caller (AI parse or Bundle Import) has a real Bundle Code, it's also checked for duplicates (§13) and used instead of an auto-generated one. */
+  bundleCode?: string;
   description?: string;
   category?: string;
   catalog?: string;
@@ -238,34 +244,21 @@ async function createRelationship(
   seq: number, batchNum: number,
   relationshipTypeId: string | null,
   send: (data: object) => void,
+  isRequired: boolean = true,
 ): Promise<boolean> {
   try {
-    const existing = await client.query<{ Id: string }>(
-      `SELECT Id FROM ProductRelatedComponent WHERE ParentProductId = '${soqlEscape(parentId)}' AND ChildProductId = '${soqlEscape(childId)}' LIMIT 1`,
-    ).catch(() => ({ records: [] as { Id: string }[] }));
-
-    if (existing.records.length > 0) {
+    const result = await addBundleComponent(client, parentId, childId, { sequence: seq, relationshipTypeId, isComponentRequired: isRequired });
+    if ("error" in result) {
+      send({ type: "log", batch: batchNum, level: "error", message: `Relationship failed: ${parentName} → ${childName}: ${result.error}` });
+      return false;
+    }
+    if (result.action === "reused") {
       send({ type: "log", batch: batchNum, level: "warning", message: `⚠ Relationship exists: ${parentName} → ${childName}` });
       return true;
     }
-
-    const fields: Record<string, unknown> = {
-      ParentProductId: parentId,
-      ChildProductId:  childId,
-      Sequence:         seq,
-      IsDefaultComponent: true,
-      IsComponentRequired: true,
-    };
-    if (relationshipTypeId) fields.ProductRelationshipTypeId = relationshipTypeId;
-
-    const result = await client.createRecord("ProductRelatedComponent", fields);
-    if (result.success) {
-      send({ type: "record_created", batch: batchNum, sobject: "ProductRelatedComponent", id: result.id, name: `${parentName} → ${childName}` });
-      send({ type: "log", batch: batchNum, level: "success", message: `✓ ${parentName} → ${childName} (${result.id})` });
-      return true;
-    }
-    send({ type: "log", batch: batchNum, level: "error", message: `Relationship failed: ${parentName} → ${childName}: ${JSON.stringify(result.errors)}` });
-    return false;
+    send({ type: "record_created", batch: batchNum, sobject: "ProductRelatedComponent", id: result.id, name: `${parentName} → ${childName}` });
+    send({ type: "log", batch: batchNum, level: "success", message: `✓ ${parentName} → ${childName} (${result.id})` });
+    return true;
   } catch (err) {
     send({ type: "log", batch: batchNum, level: "error", message: `Relationship error: ${parentName} → ${childName}: ${(err as Error).message}` });
     return false;
@@ -354,6 +347,26 @@ export async function POST(req: NextRequest) {
   const stream = new ReadableStream({
     async start(controller) {
       const send = (data: object) => sseEvent(controller, encoder, data);
+
+      /* ── Duplicate Prevention — the final, race-condition-safe gate (§21).
+       * A frontend pre-check (POST /api/bundles/check-duplicate) already ran
+       * before the user got here; this is the authority. Checked BEFORE any
+       * batch runs, and only against the ROOT bundle name/code the user
+       * actually asked to create — nested bundles and leaf/dependency
+       * products keep their existing legitimate reuse-by-name behavior
+       * (§16), which is not a duplicate error. Never bypassable. */
+      try {
+        const duplicate = await checkBundleDuplicate(sfClient, { name: bundle.bundleName, code: bundle.bundleCode });
+        if (duplicate.isDuplicate) {
+          send({ type: "duplicate", ...duplicate });
+          controller.close();
+          return;
+        }
+      } catch (err) {
+        send({ type: "error", message: `Could not verify this bundle doesn't already exist: ${(err as Error).message}` });
+        controller.close();
+        return;
+      }
 
       /* ── Pre-flight: flatten hierarchy ── */
       const { bundles: allBundleEntries, leaves: allLeaves } = flattenHierarchy(bundle);
@@ -506,7 +519,7 @@ export async function POST(req: NextRequest) {
           for (const product of b.products ?? []) {
             const childId = hs.leafProductIds[product.name];
             if (!childId) { send({ type: "log", batch: 3, level: "warning", message: `No Id for product ${product.name}` }); continue; }
-            if (await createRelationship(sfClient, parentId, childId, b.bundleName, product.name, seq++, 3, relationshipTypeId, send)) relCount++;
+            if (await createRelationship(sfClient, parentId, childId, b.bundleName, product.name, seq++, 3, relationshipTypeId, send, product.isRequired ?? true)) relCount++;
           }
 
           for (const child of b.nestedBundles ?? []) {

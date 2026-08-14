@@ -90,6 +90,7 @@ export async function GET(req: NextRequest) {
       baseUri: account.base_uri,
       connectedUserName: userInfo.name,
       connectedUserEmail: userInfo.email,
+      connectedUserId: userInfo.sub,
     });
     redirectTarget.searchParams.set("docusignConnected", "1");
   } catch (err) {

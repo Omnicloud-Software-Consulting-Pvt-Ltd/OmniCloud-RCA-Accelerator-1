@@ -427,6 +427,11 @@ async function expandNode(ctx: ExpandContext, parentProductId: string, depth: nu
       sellingModel?.chosen?.type === "TermDefined"
         ? await resolveSubscriptionTerm(ctx.client, row.ChildProductId, sellingModel.chosen.sellingModelId, ctx.lineItemObject)
         : null;
+    // §TEMP DIAGNOSTIC (remove once Antivirus-class Billing Frequency
+    // failures are confirmed resolved): per-component resolution — proves
+    // whether a bundle CHILD's own Billing Frequency was actually resolved
+    // during expansion, independent of the parent's.
+    console.log(`[BILLING FREQUENCY BUNDLE] childProductId=${row.ChildProductId} ("${product.name}") sellingModelType=${sellingModel?.chosen?.type ?? "null"} requiresBillingFrequency=${needsBillingFrequency} -> billingFrequency.value=${billingFrequency?.value ?? "null"} source=${billingFrequency?.source ?? "null"}.`);
 
     let children: BundleComponent[] = [];
     let childGroups: BundleComponentGroupInfo[] = [];

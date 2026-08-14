@@ -2,6 +2,13 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { loadSession } from "@/lib/auth/session";
+import { toCreatedSalesforceRecord } from "@/lib/salesforce/recordUrl";
+import { useSalesforceSuccess } from "@/components/notifications/SalesforceSuccessContext";
+import type { DuplicateCheckResult } from "@/lib/duplicateDetection";
+import DuplicateRecordModal from "@/components/duplicates/DuplicateRecordModal";
+import PromptGuide from "@/components/ai/PromptGuide";
+import { promptGuideConfig } from "@/lib/ai/promptGuideConfig";
 
 /* ── SVG Icon helper ── */
 function Ic({ n, s = 16 }: { n: string; s?: number }) {
@@ -64,6 +71,8 @@ interface AttributeDefinition {
 
 interface ParsedBundle {
   bundleName: string;
+  /** Optional — checked for duplicates in addition to bundleName when the AI parse extracts a real Bundle Code. */
+  bundleCode?: string;
   description?: string;
   category?: string;
   catalog?: string;
@@ -480,6 +489,8 @@ function AiBundlePanel({
           )}
         </motion.button>
       </div>
+
+      <PromptGuide isDark={isDark} config={promptGuideConfig.bundle} onUseExample={p => { setPrompt(p); setParseError(""); }} />
 
       {/* Example quick-fill */}
       <div>
@@ -1274,10 +1285,19 @@ const INITIAL_STATE: BundleOrchestrationState = {
   commMap:           {},
 };
 
-export default function BundleOrchestrationWorkspace({ isDark }: { isDark: boolean }) {
+export default function BundleOrchestrationWorkspace({ isDark, onViewBundle, onEditBundle }: {
+  isDark: boolean;
+  /** Wired from app/data/page.tsx to open the existing Bundle Detail view — used by the Duplicate Prevention modal's "View Existing" action. */
+  onViewBundle?: (bundleId: string) => void;
+  /** Wired from app/data/page.tsx to open the existing Bundle Edit workspace — the modal's "Edit Existing Bundle" action (§10), since the user may actually want to modify the existing bundle instead of creating a new one. */
+  onEditBundle?: (bundleId: string) => void;
+}) {
+  const notifySalesforceSuccess = useSalesforceSuccess();
   const [state, setState] = useState<BundleOrchestrationState>(INITIAL_STATE);
   const logIdRef          = useRef(0);
   const lastBundleRef     = useRef<string | null>(null);
+  const [duplicateCheck, setDuplicateCheck] = useState<DuplicateCheckResult | null>(null);
+  const [checkingDuplicate, setCheckingDuplicate] = useState(false);
   const tk = tokens(isDark);
 
   /* Helpers to update centralized state slices */
@@ -1326,6 +1346,29 @@ export default function BundleOrchestrationWorkspace({ isDark }: { isDark: boole
   /* Execute handler */
   const handleExecute = useCallback(async () => {
     if (!state.parsedBundle || state.executing) return;
+
+    // Duplicate Prevention pre-check (§6-7, §20) — before any batch runs.
+    // Advisory only: /api/bundles/execute re-runs this exact check
+    // server-side as the final, race-condition-safe authority (§21).
+    setCheckingDuplicate(true);
+    try {
+      const res = await fetch("/api/bundles/check-duplicate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: [{ key: "bundle", name: state.parsedBundle.bundleName, code: state.parsedBundle.bundleCode }] }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        const result = data.results.bundle as DuplicateCheckResult;
+        if (result.isDuplicate || result.similarRecords.length > 0) {
+          setDuplicateCheck(result);
+          setCheckingDuplicate(false);
+          return;
+        }
+      }
+    } catch { /* pre-check failed — fall through to the backend's own authoritative check */ }
+    setCheckingDuplicate(false);
+
     setState(prev => ({
       ...prev,
       executing: true,
@@ -1401,8 +1444,31 @@ export default function BundleOrchestrationWorkspace({ isDark }: { isDark: boole
             } else if (ev.type === "complete") {
               setState(prev => ({ ...prev, completedBundleId: ev.bundleId }));
               addLog({ batch: 9, level: "success", message: `Bundle deployed! ID: ${ev.bundleId}` });
+
+              const instanceUrl = loadSession()?.instanceUrl;
+              if (instanceUrl && ev.bundleId) {
+                const bundleIds = (ev.bundleIds ?? {}) as Record<string, string>;
+                const rootName = Object.entries(bundleIds).find(([, id]) => id === ev.bundleId)?.[0] ?? state.parsedBundle?.bundleName ?? "Bundle";
+                const records = Object.entries(bundleIds).map(([name, id]) => toCreatedSalesforceRecord(instanceUrl, "Product2", id, name));
+                if (records.length === 0) records.push(toCreatedSalesforceRecord(instanceUrl, "Product2", ev.bundleId, rootName));
+                const nestedCount = records.length - 1;
+                notifySalesforceSuccess({
+                  title: "Bundle Created Successfully",
+                  message: nestedCount > 0
+                    ? `${rootName} and ${nestedCount} nested bundle(s) were successfully created in Salesforce.`
+                    : `${rootName} has been successfully created in Salesforce.`,
+                  records,
+                  detailsLabel: "View Created Bundles",
+                });
+              }
             } else if (ev.type === "error") {
               addLog({ batch: 0, level: "error", message: `Error: ${ev.message}` });
+            } else if (ev.type === "duplicate") {
+              // The backend's own final duplicate check (§21) caught what
+              // the frontend pre-check missed — most likely a concurrent
+              // request. Surface the same modal, never a false "created".
+              setDuplicateCheck(ev as DuplicateCheckResult);
+              addLog({ batch: 0, level: "error", message: `Bundle already exists: "${"recordName" in ev ? ev.recordName : state.parsedBundle?.bundleName}"` });
             }
           } catch { /* malformed SSE */ }
         }
@@ -1412,7 +1478,7 @@ export default function BundleOrchestrationWorkspace({ isDark }: { isDark: boole
     } finally {
       setState(prev => ({ ...prev, executing: false }));
     }
-  }, [state.parsedBundle, state.executing, state.depRules, addLog]);
+  }, [state.parsedBundle, state.executing, state.depRules, addLog, notifySalesforceSuccess]);
 
   const handleClear = useCallback(() => {
     setState(prev => ({
@@ -1508,7 +1574,7 @@ export default function BundleOrchestrationWorkspace({ isDark }: { isDark: boole
                     bundle={parsedBundle}
                     onUpdate={b => setSlice("parsedBundle", b)}
                     onExecute={handleExecute}
-                    executing={executing}
+                    executing={executing || checkingDuplicate}
                   />
                 </Section>
               </motion.div>
@@ -1629,6 +1695,24 @@ export default function BundleOrchestrationWorkspace({ isDark }: { isDark: boole
 
         </div>
       </div>
+
+      {duplicateCheck && state.parsedBundle && (
+        <DuplicateRecordModal
+          isDark={isDark}
+          kind="bundle"
+          requestedName={state.parsedBundle.bundleName}
+          result={duplicateCheck}
+          useExistingLabel="View Existing Bundle"
+          onClose={() => {
+            const wasAdvisoryOnly = !duplicateCheck.isDuplicate;
+            setDuplicateCheck(null);
+            if (wasAdvisoryOnly) void handleExecute();
+          }}
+          onChooseAnotherName={() => setDuplicateCheck(null)}
+          onUseExisting={duplicateCheck.isDuplicate ? () => { const id = duplicateCheck.recordId; setDuplicateCheck(null); onViewBundle?.(id); } : undefined}
+          onEditExisting={duplicateCheck.isDuplicate ? () => { const id = duplicateCheck.recordId; setDuplicateCheck(null); onEditBundle?.(id); } : undefined}
+        />
+      )}
     </div>
   );
 }

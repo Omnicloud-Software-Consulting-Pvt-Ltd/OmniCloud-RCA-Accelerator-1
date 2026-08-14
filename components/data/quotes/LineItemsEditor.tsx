@@ -32,7 +32,7 @@ export default function LineItemsEditor({ isDark, pricebookId, initialRoots, onC
   isDark: boolean;
   pricebookId: string;
   initialRoots?: QuoteLineItemDraft[];
-  onChange: (roots: QuoteLineItemDraft[], valid: boolean) => void;
+  onChange: (roots: QuoteLineItemDraft[], valid: boolean, isConfiguring: boolean) => void;
   /** Line items already persisted on this Quote (only passed when adding more products to an EXISTING quote) — used purely to mark the catalog as "Added", never mutated here. */
   existingLineItems?: ExistingQuoteLineItem[];
   /** Bumps/decrements an already-persisted line item's quantity via the real Salesforce update/delete endpoints — only provided by QuoteWorkspace's "Add More Products" step. */
@@ -73,10 +73,20 @@ export default function LineItemsEditor({ isDark, pricebookId, initialRoots, onC
   const validation = useMemo(() => validateDraftForest(roots, resolveInfo), [roots, resolveInfo]);
   const total = useMemo(() => sumDraftTreeTotal(roots), [roots]);
 
+  // §Race-condition fix (Antivirus-class failure): a placeholder root is
+  // inserted SYNCHRONOUSLY on "+ Add", before the (sometimes 10s+, e.g. a
+  // non-bundle product triggering the full candidate-relationship probe)
+  // /products/configure call resolves. Until now, nothing told the parent
+  // flow that a configuration was still in flight — its "Next"/"Create"
+  // button only checked structural validity, so a user could advance (or
+  // submit) while a product's Selling Model/Billing Frequency resolution
+  // hadn't completed yet, sending the placeholder's still-null
+  // billingFrequency straight to line-item creation. `isConfiguring` lets
+  // every caller block progression until every in-flight "+ Add" settles.
   useEffect(() => {
-    onChange(roots, validation.valid);
+    onChange(roots, validation.valid, pendingProductIds.size > 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roots, validation.valid]);
+  }, [roots, validation.valid, pendingProductIds]);
 
   async function handleAdd(product: CatalogProduct) {
     setAddError(null);
@@ -135,7 +145,9 @@ export default function LineItemsEditor({ isDark, pricebookId, initialRoots, onC
         : [];
       const resolvedPatch: Partial<QuoteLineItemDraft> = {
         isBundleParent: !!configuration.bundle?.isBundle,
-        sellingModelOptionId: configuration.sellingModel.chosen?.id ?? null,
+        // §Never send a synthetic option id to Salesforce — see toDirectOption in lib/quotes/catalog/sellingModel.ts.
+        sellingModelOptionId: (configuration.sellingModel.chosen && !configuration.sellingModel.chosen.isSynthetic) ? configuration.sellingModel.chosen.id : null,
+        sellingModelId: configuration.sellingModel.chosen?.sellingModelId ?? null,
         sellingModelName: configuration.sellingModel.chosen?.name ?? null,
         sellingModelType: configuration.sellingModel.chosen?.type ?? null,
         billingFrequency: configuration.billingFrequency?.value ?? null,
@@ -144,6 +156,11 @@ export default function LineItemsEditor({ isDark, pricebookId, initialRoots, onC
         billingTreatmentOutcome: configuration.billingTreatment?.outcome ?? null,
         children,
       };
+      // §TEMP DIAGNOSTIC (remove once Antivirus-class Billing Frequency
+      // failures are confirmed resolved): proves whether the value survives
+      // construction of resolvedPatch, right before it's written onto the draft.
+      // eslint-disable-next-line no-console
+      console.log(`[BILLING FREQUENCY DRAFT] product=${product.id} ("${product.name}") sellingModelType=${resolvedPatch.sellingModelType ?? "null"} -> resolvedPatch.billingFrequency=${resolvedPatch.billingFrequency ?? "null"} source=${resolvedPatch.billingFrequencySource ?? "null"}.`);
       // Update the SAME placeholder node in place — never push a second row.
       setRoots(r => updateDraftNode(r, placeholder.draftId, resolvedPatch));
       setPendingProductIds(prev => { const next = new Set(prev); next.delete(product.id); return next; });

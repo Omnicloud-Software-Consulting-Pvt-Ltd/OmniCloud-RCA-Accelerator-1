@@ -763,13 +763,15 @@ export function ActionCard({ action, isDark, index, onLaunch }: {
 // ─────────────────────────────────────────────────────────────────────────────
 // OBJECT WORKSPACE (browse mode)
 // ─────────────────────────────────────────────────────────────────────────────
-export function ObjectWorkspace({ obj, isDark, onLaunch, recentActivity, recentActivityLabel, extraSection }: {
+export function ObjectWorkspace({ obj, isDark, onLaunch, recentActivity, recentActivityLabel, extraSection, subtitle }: {
   obj: DashboardObject; isDark: boolean; onLaunch: (wf: string) => void;
   /** Overrides the generic demo activity feed with real per-object data (e.g. live Quote history) — defaults to the shared static feed so every other tile is unaffected. */
   recentActivity?: RecentOp[];
   recentActivityLabel?: string;
   /** Optional extra content rendered between the Actions grid and Recent Activity (e.g. an analytics breakdown panel). */
   extraSection?: ReactNode;
+  /** Optional one-line description rendered under the title/badge — omitted (as today) unless a tile passes one. */
+  subtitle?: string;
 }) {
   const rgb = hexToRgb(obj.color);
   const activity = recentActivity ?? DEFAULT_RECENT_OPS;
@@ -815,6 +817,12 @@ export function ObjectWorkspace({ obj, isDark, onLaunch, recentActivity, recentA
               </div>
             </div>
           </div>
+
+          {subtitle && (
+            <p className="text-[11.5px] mb-4 max-w-2xl" style={{ color: isDark ? "rgba(140,170,205,0.72)" : "rgba(0,30,80,0.68)" }}>
+              {subtitle}
+            </p>
+          )}
 
           {/* Stats row */}
           <div className="flex gap-3 flex-wrap">

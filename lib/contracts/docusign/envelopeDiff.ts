@@ -9,14 +9,26 @@ export interface EnvelopeDiffEntry {
   path: string;
   apiValue: unknown;
   manualValue: unknown;
-  /** Automatic classification — a starting point for triage, not a verdict. Every diff is still reported regardless of classification. */
-  classification: "potentially-delivery-relevant" | "expected-or-irrelevant";
+  /**
+   * Automatic classification — a starting point for triage, not a verdict.
+   * EVERY diff is still reported regardless of classification; nothing is
+   * hidden by being classified low-priority.
+   *   - "strong-delivery-candidate": a field that, by itself, plausibly
+   *     fully explains total non-delivery (email overrides/suppression,
+   *     signing mode, brand).
+   *   - "possibly-delivery-relevant": known to affect notification/
+   *     authentication/routing behavior, but not a one-field explanation on
+   *     its own.
+   *   - "expected-or-irrelevant": everything else (names, generated ids,
+   *     free-text content, structural noise).
+   */
+  classification: "strong-delivery-candidate" | "possibly-delivery-relevant" | "expected-or-irrelevant";
 }
 
-/** Keys that are inherently unique per envelope/recipient/request — always skipped, whether present, absent, or differing, on either side. */
+/** Keys that are inherently unique per envelope/recipient/request/tab — always skipped, whether present, absent, or differing, on either side. Includes generated IDs, timestamps, and IP addresses per the "ignore generated/unique-per-request values" rule. */
 const ALWAYS_IGNORED_KEYS = new Set([
-  "envelopeId", "documentId", "recipientIdGuid", "customFieldId", "templateId", "accountId",
-  "uri", "envelopeUri", "documentBase64", "logTime",
+  "envelopeId", "documentId", "recipientId", "recipientIdGuid", "customFieldId", "templateId", "accountId",
+  "tabId", "uri", "envelopeUri", "documentBase64", "logTime", "ipAddress", "senderIpAddress", "recipientIpAddress",
   "createdDateTime", "sentDateTime", "completedDateTime", "statusChangedDateTime", "deliveredDateTime",
   "signedDateTime", "declinedDateTime", "voidedDateTime", "deletedDateTime", "lastModifiedDateTime",
   "initialSentDateTime", "deliveredDateTimeUTC",
@@ -27,21 +39,35 @@ const CONTENT_ONLY_KEYS = new Set([
   "name", "emailSubject", "emailBlurb", "subject", "message", "email", "userName", "senderName", "note",
 ]);
 
-/** Keys known to plausibly affect notification/delivery behavior — surfaced first, not the only thing reported. */
-const DELIVERY_RELEVANT_KEYS = new Set([
-  "deliverymethod", "emailnotification", "notification", "reminders", "reminderenabled", "reminderdelay",
-  "reminderfrequency", "expirations", "expireenabled", "expireafter", "expirewarn", "brandid", "brandlock",
-  "messagelock", "recipientslock", "usedisclosure", "allowreassign", "allowmarkup", "enablewetsign",
+/**
+ * A field difference here would, on its own, plausibly fully explain total
+ * non-delivery — email-behavior overrides, suppression, embedded-vs-remote
+ * signing, and branding. Checked FIRST — a key never appears in both this
+ * set and POSSIBLY_DELIVERY_RELEVANT_KEYS.
+ */
+const STRONG_DELIVERY_CANDIDATE_KEYS = new Set([
+  "emailsettings", "suppressemailnotifications", "deliverymethod", "clientuserid",
+  "brandid", "brandlock", "issignatureproviderenvelope", "signinglocation", "isbulkrecipient",
+]);
+
+/** Known to plausibly affect notification/authentication/routing behavior, but not a one-field explanation for total non-delivery by itself. */
+const POSSIBLY_DELIVERY_RELEVANT_KEYS = new Set([
+  "emailnotification", "notification", "reminders", "reminderenabled", "reminderdelay",
+  "reminderfrequency", "expirations", "expireenabled", "expireafter", "expirewarn", "messagelock",
+  "recipientslock", "usedisclosure", "allowreassign", "allowmarkup", "enablewetsign",
   "enforcesignervisibility", "signercansignonmobile", "authoritativecopy", "is21cfrpart11",
-  "issignatureproviderenvelope", "emailsettings", "useaccountdefaults", "recipientauthenticationstatus",
+  "useaccountdefaults", "recipientauthenticationstatus",
   "identityverification", "authenticationmethod", "requireidlookup", "embeddedrecipientstarturl",
   "recipienttype", "recipientsuppliestabs", "signineachlocation", "requiresignonpaper", "cansignoffline",
-  "isbulkrecipient", "recipientsignatureproviders", "rolename", "defaultrecipient", "excludeddocuments",
-  "clientuserid", "accesscode", "suppressemailnotifications", "sendercansignmanually",
+  "recipientsignatureproviders", "rolename", "defaultrecipient", "excludeddocuments",
+  "accesscode", "sendercansignmanually", "routingorder",
 ]);
 
 function classify(leafKey: string): EnvelopeDiffEntry["classification"] {
-  return DELIVERY_RELEVANT_KEYS.has(leafKey.toLowerCase()) ? "potentially-delivery-relevant" : "expected-or-irrelevant";
+  const k = leafKey.toLowerCase();
+  if (STRONG_DELIVERY_CANDIDATE_KEYS.has(k)) return "strong-delivery-candidate";
+  if (POSSIBLY_DELIVERY_RELEVANT_KEYS.has(k)) return "possibly-delivery-relevant";
+  return "expected-or-irrelevant";
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -83,10 +109,13 @@ export function diffEnvelopeJson(apiValue: unknown, manualValue: unknown, pathPr
   return out;
 }
 
-/** Sorts delivery-relevant diffs first so the strongest candidates surface without hiding anything else. */
+const RANK: Record<EnvelopeDiffEntry["classification"], number> = {
+  "strong-delivery-candidate": 0,
+  "possibly-delivery-relevant": 1,
+  "expected-or-irrelevant": 2,
+};
+
+/** Sorts strongest-candidate diffs first, then possibly-relevant, then everything else — nothing is dropped, only ordered. */
 export function sortDiffs(diffs: EnvelopeDiffEntry[]): EnvelopeDiffEntry[] {
-  return [...diffs].sort((a, b) => {
-    if (a.classification === b.classification) return a.path.localeCompare(b.path);
-    return a.classification === "potentially-delivery-relevant" ? -1 : 1;
-  });
+  return [...diffs].sort((a, b) => RANK[a.classification] - RANK[b.classification] || a.path.localeCompare(b.path));
 }

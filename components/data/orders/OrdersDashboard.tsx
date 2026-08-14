@@ -8,7 +8,7 @@ import { formatRelativeTime } from "@/lib/dashboard/relativeTime";
 import { pickBestEffortStatus, activityColorFor } from "@/lib/dashboard/statusStats";
 import type { OrderStatsResponse } from "@/app/api/orders/stats/route";
 
-type ModuleTarget = { mode: "history" | "create" };
+type ModuleTarget = { mode: "history" | "create" | "import" };
 
 const ACCENT = "#00D4FF";
 const ACCENT_BLUE = "#3AABFF";
@@ -65,7 +65,7 @@ export default function OrdersDashboard({ isDark, onNavigate }: { isDark: boolea
       { id: "order-fulfillment", title: "Order Fulfillment", desc: "Track and activate orders for fulfillment", icon: "package", accent: ACCENT_BLUE, workflow: "order-fulfillment" },
       { id: "order-analytics", title: "Order Analytics", desc: "View Order trends and metrics", icon: "bar-chart", accent: ACCENT_BLUE, workflow: "order-analytics" },
       { id: "ai-order-assistant", title: "AI Order Assistant", desc: "Generate Order using AI", icon: "sparkles", accent: ACCENT_SOFT, badge: "AI", workflow: "ai-order-assistant" },
-      { id: "import-orders", title: "Import Orders", desc: "Bulk import Order data", icon: "upload", accent: ACCENT_BLUE, badge: "Soon" },
+      { id: "import-orders", title: "Import Orders", desc: "Import orders from CSV or Excel and create them in Salesforce.", icon: "upload", accent: ACCENT_BLUE, badge: "Import", workflow: "import-orders" },
     ];
 
     return {
@@ -103,6 +103,8 @@ export default function OrdersDashboard({ isDark, onNavigate }: { isDark: boolea
       onNavigate({ mode: "history" });
     } else if (workflow === "order-analytics") {
       setShowAnalytics(v => !v);
+    } else if (workflow === "import-orders") {
+      onNavigate({ mode: "import" });
     }
   };
 

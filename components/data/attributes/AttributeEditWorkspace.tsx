@@ -1,0 +1,406 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { Ic, tokens, inputStyle, PageShell, Spinner, ErrorPanel, GhostButton } from "@/components/data/quotes/shared";
+import { quoteApiGet, toErrorPanelData, type ErrorPanelDataLike } from "@/lib/quotes/client/apiClient";
+import { loadSession } from "@/lib/auth/session";
+import { toCreatedSalesforceRecord } from "@/lib/salesforce/recordUrl";
+import { useSalesforceSuccess } from "@/components/notifications/SalesforceSuccessContext";
+import type { AttributeDetail, AttributePicklistValueRow } from "@/lib/attributes/types";
+
+interface EditFields {
+  name: string;
+  description: string;
+  isActive: boolean;
+  dataType: string;
+}
+
+interface EditableValue extends AttributePicklistValueRow {
+  status: "existing" | "pendingAdd" | "pendingRemove";
+  /** Working display text — diffed against the original row's displayValue to detect a rename. */
+  editedDisplayValue: string;
+}
+
+function toFields(a: AttributeDetail): EditFields {
+  return { name: a.name, description: a.description ?? "", isActive: a.isActive, dataType: a.dataType ?? "" };
+}
+
+interface Changes {
+  modified: string[];
+  added: string[];
+  removed: string[];
+  renamed: { from: string; to: string }[];
+}
+
+function computeChanges(original: AttributeDetail, fields: EditFields, values: EditableValue[]): Changes {
+  const modified: string[] = [];
+  if (fields.name !== original.name) modified.push("Attribute Name");
+  if (fields.description !== (original.description ?? "")) modified.push("Description");
+  if (fields.isActive !== original.isActive) modified.push("Status");
+  if (fields.dataType !== (original.dataType ?? "")) modified.push("Data Type");
+
+  const added = values.filter(v => v.status === "pendingAdd").map(v => v.editedDisplayValue);
+  const removed = values.filter(v => v.status === "pendingRemove").map(v => v.displayValue);
+  const renamed = values
+    .filter(v => v.status === "existing" && v.editedDisplayValue !== v.displayValue)
+    .map(v => ({ from: v.displayValue, to: v.editedDisplayValue }));
+
+  return { modified, added, removed, renamed };
+}
+
+function hasAnyChanges(c: Changes): boolean {
+  return c.modified.length > 0 || c.added.length > 0 || c.removed.length > 0 || c.renamed.length > 0;
+}
+
+/**
+ * Edit Attribute — the task's "critical requirement." Loads the attribute's
+ * CURRENT Salesforce configuration (never a blank Create form), lets the
+ * user edit Name/Description/Status/Data Type (only if this org's schema
+ * allows changing it — see AttributeDetail.dataTypeEditable) and manage
+ * picklist values (add / rename / remove-with-confirmation), shows a
+ * Modified/Added/Removed change summary, and guards navigation away with
+ * unsaved changes. Save sends only what changed to PATCH
+ * /api/sf/attributes/[id], which always updates the existing
+ * AttributeDefinition — never creates a duplicate.
+ */
+export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, onSaved }: {
+  isDark: boolean; attributeId: string; onCancel: () => void; onSaved: () => void;
+}) {
+  const t = tokens(isDark);
+  const notifySalesforceSuccess = useSalesforceSuccess();
+
+  const [original, setOriginal] = useState<AttributeDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<ErrorPanelDataLike | null>(null);
+
+  const [fields, setFields] = useState<EditFields | null>(null);
+  const [values, setValues] = useState<EditableValue[]>([]);
+  const [newValueText, setNewValueText] = useState("");
+
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [showChangesPanel, setShowChangesPanel] = useState(false);
+  const [confirmLeave, setConfirmLeave] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState<EditableValue | null>(null);
+
+  useEffect(() => {
+    quoteApiGet<{ success: true; attribute: AttributeDetail }>("Load attribute", `/api/sf/attributes/${attributeId}`)
+      .then(res => {
+        setOriginal(res.attribute);
+        setFields(toFields(res.attribute));
+        setValues(res.attribute.picklistValues.map(v => ({ ...v, status: "existing" as const, editedDisplayValue: v.displayValue })));
+      })
+      .catch(err => setLoadError(toErrorPanelData(err, "Could not load this attribute")))
+      .finally(() => setLoading(false));
+  }, [attributeId]);
+
+  const changes = useMemo(
+    () => (original && fields ? computeChanges(original, fields, values) : { modified: [], added: [], removed: [], renamed: [] }),
+    [original, fields, values],
+  );
+  const dirty = hasAnyChanges(changes);
+
+  const setField = <K extends keyof EditFields>(key: K, value: EditFields[K]) => {
+    setFields(prev => prev ? { ...prev, [key]: value } : prev);
+  };
+
+  const handleAddValue = () => {
+    const text = newValueText.trim();
+    if (!text) return;
+    const maxSeq = values.reduce((m, v) => Math.max(m, v.sequence), 0);
+    setValues(prev => [...prev, {
+      id: `pending-${Date.now()}-${text}`, value: text, displayValue: text, sequence: maxSeq + 1, isActive: true,
+      status: "pendingAdd", editedDisplayValue: text,
+    }]);
+    setNewValueText("");
+  };
+
+  const handleConfirmRemove = () => {
+    if (!confirmRemove) return;
+    setValues(prev => {
+      if (confirmRemove.status === "pendingAdd") return prev.filter(v => v.id !== confirmRemove.id);
+      return prev.map(v => v.id === confirmRemove.id ? { ...v, status: "pendingRemove" as const } : v);
+    });
+    setConfirmRemove(null);
+  };
+
+  const handleUndoRemove = (id: string) => {
+    setValues(prev => prev.map(v => v.id === id ? { ...v, status: "existing" as const } : v));
+  };
+
+  const handleRenameValue = (id: string, text: string) => {
+    setValues(prev => prev.map(v => v.id === id ? { ...v, editedDisplayValue: text } : v));
+  };
+
+  const handleSave = async () => {
+    if (!original || !fields || !dirty) return;
+    setSaving(true);
+    setSaveError(null);
+
+    const patch: Record<string, unknown> = {};
+    if (fields.name !== original.name) patch.name = fields.name;
+    if (fields.description !== (original.description ?? "")) patch.description = fields.description;
+    if (fields.isActive !== original.isActive) patch.isActive = fields.isActive;
+    if (fields.dataType !== (original.dataType ?? "") && original.dataTypeEditable) patch.dataType = fields.dataType;
+
+    const addValues = values.filter(v => v.status === "pendingAdd").map(v => v.editedDisplayValue);
+    const removeValueIds = values.filter(v => v.status === "pendingRemove" && !v.id.startsWith("pending-")).map(v => v.id);
+    const updateValues = values
+      .filter(v => v.status === "existing" && v.editedDisplayValue !== v.displayValue)
+      .map(v => ({ id: v.id, displayValue: v.editedDisplayValue }));
+
+    try {
+      const res = await fetch(`/api/sf/attributes/${attributeId}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ patch: Object.keys(patch).length ? patch : undefined, addValues, removeValueIds, updateValues }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setSaveError(data.error ?? "Failed to save attribute changes.");
+        return;
+      }
+      const instanceUrl = loadSession()?.instanceUrl;
+      if (instanceUrl) {
+        const record = toCreatedSalesforceRecord(instanceUrl, "AttributeDefinition", attributeId, fields.name);
+        notifySalesforceSuccess({
+          title: "Attribute Updated Successfully",
+          message: `${record.recordName} has been successfully updated in Salesforce.`,
+          records: [record],
+        });
+      }
+      onSaved();
+    } catch {
+      setSaveError("Network error — could not reach Salesforce.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const requestLeave = () => { if (dirty) setConfirmLeave(true); else onCancel(); };
+
+  if (loading) {
+    return (
+      <div className="flex-1 flex items-center justify-center h-full">
+        <div className="flex items-center gap-2 text-[12.5px]" style={{ color: t.dim }}><Spinner isDark={isDark} /> Loading attribute…</div>
+      </div>
+    );
+  }
+
+  if (loadError || !original || !fields) {
+    return (
+      <div style={{ padding: 24 }}>
+        <ErrorPanel isDark={isDark} error={loadError ?? { title: "Could not load this attribute", message: "Unknown error" }} />
+        <div style={{ marginTop: 12 }}><GhostButton label="Back to Attribute History" icon="arrow-left" isDark={isDark} onClick={onCancel} /></div>
+      </div>
+    );
+  }
+
+  const header = (
+    <div style={{ padding: "20px 24px 0", flexShrink: 0 }}>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <div className="flex items-center gap-2">
+            <Ic n="edit" s={16} />
+            <h2 style={{ fontSize: 18, fontWeight: 800, color: t.heading, letterSpacing: "-0.02em" }}>Edit Attribute</h2>
+            {dirty && <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 999, color: "#F59E0B", border: "1px solid #F59E0B55" }}>UNSAVED CHANGES</span>}
+          </div>
+          <p style={{ fontSize: 12, color: t.dim, marginTop: 4 }}>{original.name} — editing the existing Salesforce attribute, not creating a new one.</p>
+        </div>
+        <GhostButton label="Cancel" icon="x" isDark={isDark} onClick={requestLeave} />
+      </div>
+    </div>
+  );
+
+  return (
+    <PageShell header={header}>
+      <div style={{ padding: 24, display: "flex", flexDirection: "column", gap: 24, maxWidth: 900 }}>
+
+        {saveError && <ErrorPanel isDark={isDark} error={{ title: "Could not save attribute changes", message: saveError }} />}
+
+        {/* Basic Information */}
+        <section>
+          <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: t.dim, marginBottom: 12 }}>Basic Information</p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
+            <EditField label="Attribute Name" value={fields.name} onChange={v => setField("name", v)} t={t} />
+            <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase", color: t.dim }}>Data Type</span>
+              {original.dataTypeEditable && original.validDataTypes.length > 0 ? (
+                <select value={fields.dataType} onChange={e => setField("dataType", e.target.value)} style={inputStyle(t)}>
+                  {original.validDataTypes.map(dt => <option key={dt} value={dt}>{dt}</option>)}
+                </select>
+              ) : (
+                <>
+                  <input value={fields.dataType} disabled style={{ ...inputStyle(t), opacity: 0.6, cursor: "not-allowed" }} />
+                  <span style={{ fontSize: 10.5, color: t.dim }}>This org does not allow changing an existing attribute&apos;s data type.</span>
+                </>
+              )}
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase", color: t.dim }}>Status</span>
+              <div className="flex gap-2">
+                {["Active", "Inactive"].map(v => (
+                  <button key={v} onClick={() => setField("isActive", v === "Active")}
+                    style={{
+                      flex: 1, padding: "8px 0", borderRadius: 8, fontSize: 11.5, fontWeight: 600, cursor: "pointer",
+                      background: (fields.isActive ? "Active" : "Inactive") === v ? `${t.accent}1E` : "transparent",
+                      border: `1px solid ${(fields.isActive ? "Active" : "Inactive") === v ? t.accent + "60" : t.border}`,
+                      color: (fields.isActive ? "Active" : "Inactive") === v ? t.accent : t.dim,
+                    }}>{v}</button>
+                ))}
+              </div>
+            </label>
+            <InfoStatic label="API Name" value={original.apiName ?? "—"} t={t} />
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <label style={{ display: "block", fontSize: 10, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase", color: t.dim, marginBottom: 6 }}>Description</label>
+            <textarea value={fields.description} onChange={e => setField("description", e.target.value)} rows={2} style={{ ...inputStyle(t), resize: "vertical" }} />
+          </div>
+        </section>
+
+        {/* Picklist values */}
+        {original.isPicklist && (
+          <section>
+            <div className="flex items-center justify-between mb-3">
+              <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: t.dim }}>
+                Picklist Values ({values.filter(v => v.status !== "pendingRemove").length})
+              </p>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <input
+                value={newValueText}
+                onChange={e => setNewValueText(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); handleAddValue(); } }}
+                placeholder="New picklist value…"
+                style={{ ...inputStyle(t), flex: 1 }}
+              />
+              <button onClick={handleAddValue} disabled={!newValueText.trim()}
+                style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 16px", borderRadius: 9, fontSize: 12, fontWeight: 700, cursor: newValueText.trim() ? "pointer" : "not-allowed", color: t.accent, border: `1px solid ${t.accent}55`, background: "transparent", opacity: newValueText.trim() ? 1 : 0.5 }}>
+                <Ic n="plus" s={13} /> Add Value
+              </button>
+            </div>
+
+            {confirmRemove && (
+              <div style={{ marginBottom: 12, padding: 14, borderRadius: 10, border: "1px solid #FF406655", background: "rgba(255,64,102,0.06)" }}>
+                <p style={{ fontSize: 13, fontWeight: 600, color: t.heading, marginBottom: 10 }}>Remove &quot;{confirmRemove.displayValue}&quot; from this attribute?</p>
+                <div className="flex gap-2">
+                  <GhostButton label="Cancel" isDark={isDark} onClick={() => setConfirmRemove(null)} />
+                  <button onClick={handleConfirmRemove} style={{ padding: "8px 16px", borderRadius: 9, border: "none", background: "#FF4066", color: "white", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                    Remove Value
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div style={{ borderRadius: 12, border: `1px solid ${t.border}`, overflow: "hidden" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "0.5fr 2fr 0.9fr", padding: "9px 14px", background: t.surfaceAlt, fontSize: 10, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase", color: t.dim }}>
+                <span>Seq</span><span>Display Value</span><span>Actions</span>
+              </div>
+              {values.length === 0 && <div style={{ padding: 16, fontSize: 12, color: t.dim }}>No picklist values yet.</div>}
+              {values.map((v, i) => {
+                const removed = v.status === "pendingRemove";
+                return (
+                  <div key={v.id} style={{ display: "grid", gridTemplateColumns: "0.5fr 2fr 0.9fr", padding: "9px 14px", borderTop: i > 0 ? `1px solid ${t.border}` : undefined, fontSize: 12, color: t.body, alignItems: "center", opacity: removed ? 0.55 : 1 }}>
+                    <span style={{ fontFamily: "ui-monospace, monospace", color: t.dim }}>{v.sequence}</span>
+                    {removed ? (
+                      <span style={{ fontWeight: 600, color: t.heading, textDecoration: "line-through" }}>{v.displayValue}</span>
+                    ) : (
+                      <input
+                        value={v.editedDisplayValue}
+                        onChange={e => handleRenameValue(v.id, e.target.value)}
+                        style={{ ...inputStyle(t), padding: "6px 10px", fontWeight: v.status === "pendingAdd" ? 700 : 500 }}
+                      />
+                    )}
+                    <span className="flex items-center gap-2">
+                      {v.status === "pendingAdd" && <span style={{ fontSize: 9, color: "#22C55E" }}>NEW</span>}
+                      {removed ? (
+                        <button onClick={() => handleUndoRemove(v.id)} style={{ fontSize: 11, fontWeight: 600, color: t.accent, background: "transparent", border: "none", cursor: "pointer" }}>Undo</button>
+                      ) : (
+                        <button onClick={() => setConfirmRemove(v)} title="Remove Value" style={{ color: "#FF4066", background: "transparent", border: "none", cursor: "pointer" }}><Ic n="x" s={13} /></button>
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {/* Change detection */}
+        {dirty && (
+          <section>
+            <button onClick={() => setShowChangesPanel(v => !v)}
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, color: t.accent, background: "transparent", border: "none", cursor: "pointer", marginBottom: 10 }}>
+              <Ic n={showChangesPanel ? "chevron-down" : "chevron-right"} s={12} /> Attribute Changes
+            </button>
+            {showChangesPanel && (
+              <div style={{ borderRadius: 10, border: `1px solid ${t.border}`, background: t.surface, padding: 14, fontSize: 12.5, display: "flex", flexDirection: "column", gap: 8 }}>
+                {changes.modified.length > 0 && (
+                  <div><span style={{ color: t.dim, fontWeight: 700 }}>Modified:</span> {changes.modified.map(m => <span key={m} style={{ marginLeft: 6, color: "#F59E0B" }}>• {m}</span>)}</div>
+                )}
+                {changes.renamed.length > 0 && (
+                  <div><span style={{ color: t.dim, fontWeight: 700 }}>Renamed:</span> {changes.renamed.map(r => <span key={`${r.from}-${r.to}`} style={{ marginLeft: 6, color: t.accentBlue }}>{r.from} → {r.to}</span>)}</div>
+                )}
+                {changes.added.length > 0 && (
+                  <div><span style={{ color: t.dim, fontWeight: 700 }}>Added:</span> {changes.added.map(a => <span key={a} style={{ marginLeft: 6, color: "#22C55E" }}>+ {a}</span>)}</div>
+                )}
+                {changes.removed.length > 0 && (
+                  <div><span style={{ color: t.dim, fontWeight: 700 }}>Removed:</span> {changes.removed.map(r => <span key={r} style={{ marginLeft: 6, color: "#FF4066" }}>− {r}</span>)}</div>
+                )}
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* Save */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleSave}
+            disabled={!dirty || saving}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 20px", borderRadius: 10, border: "none",
+              fontSize: 13, fontWeight: 700, color: "#04101F", cursor: !dirty || saving ? "not-allowed" : "pointer",
+              background: !dirty || saving ? t.dim : `linear-gradient(135deg, ${t.accent}, ${t.accentBlue})`, opacity: !dirty || saving ? 0.5 : 1,
+            }}>
+            {saving ? <><Spinner isDark={isDark} /> Deploying Changes…</> : <><Ic n="zap" s={14} /> Deploy Changes</>}
+          </button>
+          {!dirty && <span style={{ fontSize: 11.5, color: t.dim }}>No changes to save yet.</span>}
+        </div>
+      </div>
+
+      {/* Unsaved changes guard */}
+      {confirmLeave && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
+          <div style={{ width: 380, borderRadius: 14, background: t.surface, border: `1px solid ${t.border}`, padding: 20 }}>
+            <p style={{ fontSize: 14, fontWeight: 700, color: t.heading, marginBottom: 8 }}>Unsaved Changes</p>
+            <p style={{ fontSize: 12.5, color: t.dim, marginBottom: 16 }}>You have unsaved attribute changes. Are you sure you want to leave?</p>
+            <div className="flex justify-end gap-2">
+              <GhostButton label="Stay" isDark={isDark} onClick={() => setConfirmLeave(false)} />
+              <button onClick={() => { setConfirmLeave(false); onCancel(); }} style={{ padding: "8px 16px", borderRadius: 9, border: "none", background: "#FF4066", color: "white", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                Discard Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </PageShell>
+  );
+}
+
+function EditField({ label, value, onChange, t }: { label: string; value: string; onChange: (v: string) => void; t: ReturnType<typeof tokens> }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+      <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase", color: t.dim }}>{label}</span>
+      <input value={value} onChange={e => onChange(e.target.value)} style={inputStyle(t)} />
+    </label>
+  );
+}
+
+function InfoStatic({ label, value, t }: { label: string; value: string; t: ReturnType<typeof tokens> }) {
+  return (
+    <div>
+      <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase", color: t.dim }}>{label}</div>
+      <div style={{ fontSize: 13, fontWeight: 600, color: t.heading, marginTop: 6, fontFamily: "ui-monospace, monospace" }}>{value}</div>
+    </div>
+  );
+}

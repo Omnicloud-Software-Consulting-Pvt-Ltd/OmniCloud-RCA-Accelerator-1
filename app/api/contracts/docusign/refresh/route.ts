@@ -40,6 +40,7 @@ export async function POST(req: NextRequest) {
       baseUri: account.base_uri,
       connectedUserName: userInfo.name,
       connectedUserEmail: userInfo.email,
+      connectedUserId: userInfo.sub,
     });
 
     const updated = await getConnection(orgId);

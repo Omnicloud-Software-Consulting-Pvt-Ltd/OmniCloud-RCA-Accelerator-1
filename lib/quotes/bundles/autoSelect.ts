@@ -88,7 +88,9 @@ function componentToDraft(component: BundleComponent, parentDraftId: string): Qu
     unitPrice: component.product?.listPrice ?? 0,
     billingFrequency: component.billingFrequency?.value ?? null,
     subscriptionTerm: component.subscriptionTerm?.value ?? null,
-    sellingModelOptionId: component.sellingModel?.chosen?.id ?? null,
+    // §Never send a synthetic option id to Salesforce — see toDirectOption in lib/quotes/catalog/sellingModel.ts.
+    sellingModelOptionId: (component.sellingModel?.chosen && !component.sellingModel.chosen.isSynthetic) ? component.sellingModel.chosen.id : null,
+    sellingModelId: component.sellingModel?.chosen?.sellingModelId ?? null,
     attributeValues: defaultAttributeValues(component),
     pricingInclusion: component.pricingInclusion,
     pricebookStatus: component.pricebookStatus,
@@ -134,6 +136,7 @@ export function createRootDraft(product: CatalogProduct, isBundleParent: boolean
     billingFrequency: null,
     subscriptionTerm: null,
     sellingModelOptionId: null,
+    sellingModelId: null,
     attributeValues: {},
     pricingInclusion: false,
     pricebookStatus: "resolved",

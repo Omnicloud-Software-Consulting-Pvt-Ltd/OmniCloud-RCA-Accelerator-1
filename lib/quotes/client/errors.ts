@@ -3,6 +3,13 @@ import type { StructuredError } from "@/lib/quotes/types";
 const ERROR_CODE_CAUSES: Record<string, string> = {
   UNAUTHENTICATED: "Your Salesforce session has expired or was never established. Sign in again.",
   TOKEN_EXPIRED: "Your Salesforce session token expired. Sign in again.",
+  // §REQUEST_LIMIT_EXCEEDED remediation — a distinct, friendly cause so this
+  // reads as an org-wide capacity issue, not a bug in whichever dashboard
+  // happened to hit it. sfErrorResponse (lib/salesforce/serverSession.ts)
+  // already rewrites the top-level message to this same wording; this
+  // entry covers callers that only pass the raw code through.
+  SALESFORCE_API_LIMIT_EXCEEDED: "Salesforce API request capacity has been temporarily exhausted. Please wait before retrying.",
+  NETWORK_ERROR: "This request never reached the server — check your network connection.",
   REQUIRED_FIELD_MISSING: "A field Salesforce requires for this object was left blank in the request.",
   FIELD_CUSTOM_VALIDATION_EXCEPTION: "A validation rule configured in this Salesforce org rejected the request.",
   DUPLICATE_VALUE: "Salesforce rejected this because a duplicate rule matched an existing record.",

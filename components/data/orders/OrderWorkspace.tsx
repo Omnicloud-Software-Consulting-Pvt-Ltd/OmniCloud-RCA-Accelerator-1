@@ -46,6 +46,11 @@ export default function OrderWorkspace({
   const [addingMore, setAddingMore] = useState(false);
   const [pendingRoots, setPendingRoots] = useState<QuoteLineItemDraft[]>([]);
   const [pendingValid, setPendingValid] = useState(false);
+  // §Race-condition fix (Antivirus-class failure): true while any product's
+  // /products/configure call is still in flight — blocks "Save" so a line
+  // can never be submitted before its Selling Model/Billing Frequency
+  // resolution has actually completed.
+  const [pendingConfiguring, setPendingConfiguring] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ErrorPanelDataLike | null>(null);
 
@@ -224,13 +229,18 @@ export default function OrderWorkspace({
                     <LineItemsEditor
                       isDark={isDark}
                       pricebookId={detail.pricebookId}
-                      onChange={(roots, valid) => { setPendingRoots(roots); setPendingValid(valid); }}
+                      onChange={(roots, valid, isConfiguring) => { setPendingRoots(roots); setPendingValid(valid); setPendingConfiguring(isConfiguring); }}
                       existingLineItems={lineItems}
                       onAdjustExistingQuantity={handleAdjustExistingQuantity}
                     />
                     <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 10 }}>
                       <GhostButton label="Cancel" isDark={isDark} onClick={() => { setAddingMore(false); setPendingRoots([]); }} />
-                      <PrimaryButton label={busy ? "Saving…" : "Save New Order Items"} icon="check" isDark={isDark} disabled={!pendingValid || pendingRoots.length === 0 || busy} onClick={handleSaveNewLines} />
+                      <PrimaryButton
+                        label={busy ? "Saving…" : pendingConfiguring ? "Resolving product configuration…" : "Save New Order Items"}
+                        icon="check" isDark={isDark}
+                        disabled={!pendingValid || pendingRoots.length === 0 || busy || pendingConfiguring}
+                        onClick={handleSaveNewLines}
+                      />
                     </div>
                   </>
                 ) : (

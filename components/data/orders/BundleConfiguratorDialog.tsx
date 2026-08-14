@@ -151,6 +151,11 @@ export default function BundleConfiguratorDialog({ isDark, configuration, onConf
       root.children = buildDraftChildrenFromSelection(bundle.components, selected, root.draftId);
       applyChildBillingFrequencyOverrides(root.children, childBillingFrequencies);
     }
+    // §TEMP DIAGNOSTIC (remove once Antivirus-class Billing Frequency
+    // failures are confirmed resolved): the dialog-confirmed draft, root and
+    // every child, right before it's handed off to be added.
+    // eslint-disable-next-line no-console
+    console.log(`[BILLING FREQUENCY DRAFT] (dialog) product=${root.productId} ("${root.product.name}") sellingModelType=${root.sellingModelType ?? "null"} -> root.billingFrequency=${root.billingFrequency ?? "null"} source=${root.billingFrequencySource ?? "null"}; children=${JSON.stringify(root.children.map(c => ({ productId: c.productId, name: c.product.name, sellingModelType: c.sellingModelType, billingFrequency: c.billingFrequency, source: c.billingFrequencySource })))}`);
     onConfirm(root);
   }
 
@@ -183,6 +188,18 @@ export default function BundleConfiguratorDialog({ isDark, configuration, onConf
               <option value="">Select…</option>
               {billingFrequencyOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
+            {configuration.billingFrequency?.attempts && configuration.billingFrequency.attempts.length > 0 && (
+              <details style={{ marginTop: 8 }}>
+                <summary style={{ cursor: "pointer", color: t.dim, fontSize: 11.5 }}>Why couldn&apos;t this be resolved automatically?</summary>
+                <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 3 }}>
+                  {configuration.billingFrequency.attempts.map((a, i) => (
+                    <div key={i} style={{ fontSize: 11.5, color: t.dim }}>
+                      <span style={{ fontWeight: 700 }}>{a.step}:</span> {a.outcome}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
           </div>
         )}
 

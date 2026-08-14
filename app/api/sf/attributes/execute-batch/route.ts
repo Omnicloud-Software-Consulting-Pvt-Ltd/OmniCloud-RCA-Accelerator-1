@@ -1166,6 +1166,33 @@ async function executeBatch(
       const classificationId  = newCtx.classificationId ?? null;
       log(`  Product2.BasedOnId: field=${hasBasedOnId} | classificationId=${classificationId ?? "NOT SET — run Batch 5 first"}`);
 
+      // Pre-resolved productId — set by the client when its own Product
+      // Validation step (RCAAttributeStudio's Product Not Found flow)
+      // already confirmed an existing Product, created a new one via
+      // /api/sf/products/save, or the user explicitly picked one from
+      // search. Reuse it as-is instead of re-resolving by ProductCode/Name
+      // — the whole point of that gate is that THIS specific product must
+      // be the one the Attribute attaches to — but still perform the same
+      // BasedOnId update the reuse path below does, since PAD mapping
+      // (Batch 7) depends on it regardless of how productId was resolved.
+      if (newCtx.productId) {
+        log(`  [PRE-RESOLVED] ↩ Using productId supplied by Product Validation: ${newCtx.productId}`);
+        trackReuse(health, "Product2");
+        if (hasBasedOnId && classificationId) {
+          try {
+            await client.updateRecord("Product2", newCtx.productId, { BasedOnId: classificationId });
+            log(`  ✓ Updated Product2.BasedOnId = ${classificationId}`);
+          } catch (ue) {
+            log(`  ⚠ Could not update BasedOnId on pre-resolved Product2: ${ue instanceof Error ? ue.message : String(ue)}`);
+            log(`  ⚠ PAD mapping (Batch 7) may fail — verify Product2.BasedOnId manually in Salesforce`);
+          }
+        } else if (!classificationId) {
+          log(`  ⚠ classificationId not in context — BasedOnId not set on pre-resolved Product2; run Batch 5 before Batch 6`);
+        }
+        log("Batch 6 complete");
+        break;
+      }
+
       try {
         const existing = await client.query<{ Id: string }>(
           `SELECT Id FROM Product2 WHERE ProductCode = '${soqlEscape(data.productCode)}' LIMIT 1`,

@@ -76,6 +76,8 @@ export interface DocuSignConnectionRecord {
   baseUri: string | null;
   connectedUserName: string | null;
   connectedUserEmail: string | null;
+  /** DocuSign's own `sub` from /oauth/userinfo — the connected user's DocuSign user ID, distinct from docusignAccountId (the ACCOUNT). Used to surface a real sender user ID for the "Sent by" record, never guessed. */
+  connectedUserId: string | null;
   connectedAt: string | null;
   status: DocuSignConnectionStatus;
   lastError: string | null;
@@ -134,7 +136,7 @@ export function toPublicConfig(record: DocuSignConnectionRecord | null, orgId: s
     return {
       orgId, environment: "demo", clientId: "", hasClientSecret: false, hasWebhookSecret: false, callbackUrl: null,
       status: "disconnected", lastError: null, docusignAccountId: null, docusignAccountName: null, baseUri: null,
-      connectedUserName: null, connectedUserEmail: null, connectedAt: null,
+      connectedUserName: null, connectedUserEmail: null, connectedUserId: null, connectedAt: null,
     };
   }
   // Never include clientSecret, webhookSecret, accessToken, or refreshToken — this is the ONLY shape the browser ever sees.
@@ -152,6 +154,7 @@ export function toPublicConfig(record: DocuSignConnectionRecord | null, orgId: s
     baseUri: record.baseUri,
     connectedUserName: record.connectedUserName,
     connectedUserEmail: record.connectedUserEmail,
+    connectedUserId: record.connectedUserId,
     connectedAt: record.connectedAt,
   };
 }
@@ -178,7 +181,7 @@ export async function upsertConnectionSettings(orgId: string, input: { environme
     callbackUrl: input.callbackUrl?.trim() || null,
     accessToken: null, refreshToken: null, tokenExpiresAt: null,
     docusignAccountId: null, docusignAccountName: null, baseUri: null,
-    connectedUserName: null, connectedUserEmail: null, connectedAt: null,
+    connectedUserName: null, connectedUserEmail: null, connectedUserId: null, connectedAt: null,
     status: "disconnected", lastError: null,
   });
   // Read back from the SAME store immediately after saving — proves the
@@ -199,7 +202,7 @@ function maskForLog(clientId: string): string {
 export async function saveOAuthTokens(orgId: string, input: {
   accessToken: string; refreshToken: string; expiresInSeconds: number;
   docusignAccountId: string; docusignAccountName: string; baseUri: string;
-  connectedUserName: string; connectedUserEmail: string;
+  connectedUserName: string; connectedUserEmail: string; connectedUserId: string;
 }): Promise<void> {
   const updated = await store.update(orgId, {
     accessToken: input.accessToken,
@@ -210,6 +213,7 @@ export async function saveOAuthTokens(orgId: string, input: {
     baseUri: input.baseUri,
     connectedUserName: input.connectedUserName,
     connectedUserEmail: input.connectedUserEmail,
+    connectedUserId: input.connectedUserId,
     connectedAt: new Date().toISOString(),
     status: "connected",
     lastError: null,
@@ -242,7 +246,7 @@ export async function disconnectConnection(orgId: string): Promise<void> {
   await store.update(orgId, {
     accessToken: null, refreshToken: null, tokenExpiresAt: null,
     docusignAccountId: null, docusignAccountName: null, baseUri: null,
-    connectedUserName: null, connectedUserEmail: null, connectedAt: null,
+    connectedUserName: null, connectedUserEmail: null, connectedUserId: null, connectedAt: null,
     status: "disconnected", lastError: null,
   });
 }

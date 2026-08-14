@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
+import { SalesforceSuccessProvider } from "@/components/notifications/SalesforceSuccessContext";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -46,7 +47,9 @@ export default function RootLayout({
     >
       <body className="min-h-dvh overflow-x-hidden antialiased">
         <ThemeProvider>
-          {children}
+          <SalesforceSuccessProvider>
+            {children}
+          </SalesforceSuccessProvider>
         </ThemeProvider>
       </body>
     </html>
