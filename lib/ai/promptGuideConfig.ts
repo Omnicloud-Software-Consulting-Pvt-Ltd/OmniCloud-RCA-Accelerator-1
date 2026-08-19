@@ -58,8 +58,7 @@ export type PromptGuideModule =
   | "bundle"
   | "quote"
   | "order"
-  | "contract"
-  | "pricingRule";
+  | "contract";
 
 export const promptGuideConfig: Record<PromptGuideModule, PromptGuideConfig> = {
   product: {
@@ -275,36 +274,5 @@ export const promptGuideConfig: Record<PromptGuideModule, PromptGuideConfig> = {
       "This app doesn't attach Products/Services to Contracts as structured line items — mentioning one (like \"for the Laptop Pro support service\") only becomes part of the free-text Description.",
     ],
     reviewNote: "After Generate, review the populated Contract Details fields, then check Generated JSON / Execution Log / Salesforce Response before confirming Create Contract.",
-  },
-
-  pricingRule: {
-    title: "AI Prompt Guide — Attribute-Based Pricing",
-    whatItCreates: "Creates an Attribute-Based Pricing Procedure for one Product — a Price Adjustment Schedule with one rule/condition/adjustment per attribute condition you describe.",
-    requiredFields: [
-      { label: "Procedure Name", hint: "Required by the create step." },
-      { label: "Product", hint: "Required — must resolve to a real Product in your org." },
-      { label: "At least one priced attribute condition", hint: "Required, unless you choose to reuse a pricing schedule that already exists on this product." },
-    ],
-    optionalFields: [
-      { label: "Selling Model", hint: "Resolved from the Product; required by the review step but not something you usually need to state if the product only has one." },
-      { label: "Base Price", hint: "Auto-fetched from the Standard Price Book — a missing entry is shown as a warning, never blocks creation." },
-      { label: "Effective From / To dates", hint: "Effective From is required by the review step; Effective To is optional (open-ended)." },
-      { label: "Description", hint: "Optional free text." },
-    ],
-    capabilities: [
-      "Multiple attribute conditions in one prompt — each with its own Attribute, Value, and adjustment.",
-      "Adjustment type described naturally: a percentage discount, a fixed dollar amount, or an override price.",
-    ],
-    interpretationNotes: [
-      "A dollar amount or percentage is only set if you actually state one — the AI never invents a price adjustment.",
-      "If an attribute or value you mention doesn't exactly match a real one in Salesforce, the flow stops and asks you to confirm the closest match instead of guessing.",
-      "If this product already has pricing rules, you can choose to reuse them instead of restating every condition.",
-    ],
-    example: { prompt: "Create attribute-based pricing for Laptop Pro 15: when RAM is 32GB, add $120; when storage is 1TB, add $200." },
-    multipleNote: "List as many attribute conditions as you like in one prompt (separate them with semicolons or \"and\") — each becomes its own pricing rule for the same product.",
-    notes: [
-      "Nothing is created in Salesforce until you confirm on the final Review page — Discover/Generate only fills in the form.",
-    ],
-    reviewNote: "After Discover & Review (or Generate), check the Pricing Mappings and Not Yet Mapped sections, then the Final Review summary, before clicking Confirm & Create.",
   },
 };

@@ -11,6 +11,12 @@ export function buildSalesforceRecordUrl(instanceUrl: string, objectApiName: str
   return `${instanceUrl.replace(/\/+$/, "")}/lightning/r/${objectApiName}/${recordId}/view`;
 }
 
+/** For navigating to an object's list/home page rather than one specific record — e.g. "View the 22
+ * Attribute-Based Adjustments this run touched" has no single record to deep-link to. */
+export function buildSalesforceObjectHomeUrl(instanceUrl: string, objectApiName: string): string {
+  return `${instanceUrl.replace(/\/+$/, "")}/lightning/o/${objectApiName}/home`;
+}
+
 /** The only Salesforce record information ever exposed to the frontend for navigation — no tokens, no secrets. */
 export interface CreatedSalesforceRecord {
   objectApiName: string;

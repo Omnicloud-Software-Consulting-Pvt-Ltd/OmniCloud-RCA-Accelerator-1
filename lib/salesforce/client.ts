@@ -170,6 +170,16 @@ export interface SalesforceDebugLogEntry {
   type: "soql" | "rest" | "metadata-soap" | "record" | "retry" | "deploy-response" | "xml-diagnostic" | "zip-diagnostic" | "native-create-request" | "native-create-response" | "execution-trace";
   detail: string;
   timestamp: number;
+  /** §API/JSON Audit Trail — populated only on `type: "rest"` entries produced by `request()` itself;
+   * every other `logDebug()` call site (manual diagnostics) leaves these undefined. Request/response
+   * bodies are captured as-received/as-sent — sanitization for secrets happens at the point a caller
+   * builds a user-facing audit log from this array (see lib/salesforce/auditLog.ts), never here. */
+  method?: string;
+  url?: string;
+  requestBody?: unknown;
+  responseBody?: unknown;
+  httpStatus?: number;
+  durationMs?: number;
 }
 
 /* ── SalesforceClient ── */
@@ -195,6 +205,17 @@ export class SalesforceClient {
   /** Manual debug-log entry point for callers that know something worth recording beyond a plain SOQL/REST/SOAP call (e.g. a retry). */
   logDebug(type: SalesforceDebugLogEntry["type"], detail: string): void {
     this.debugLog.push({ type, detail, timestamp: Date.now() });
+  }
+
+  /** §API/JSON Audit Trail — records the full request/response of a single REST call. `requestBody`
+   * is parsed back to an object when it was sent as a JSON string, so the audit log holds real JSON,
+   * not an escaped string. */
+  private recordAudit(method: string, url: string, requestBody: unknown, responseBody: unknown, httpStatus: number, durationMs: number): void {
+    let parsedRequest = requestBody;
+    if (typeof requestBody === "string") {
+      try { parsedRequest = JSON.parse(requestBody); } catch { /* not JSON (e.g. form-encoded) — keep the raw string */ }
+    }
+    this.debugLog.push({ type: "rest", detail: `${method} ${url}`, timestamp: Date.now(), method, url, requestBody: parsedRequest, responseBody, httpStatus, durationMs });
   }
 
   /* Exchange the refresh token for a fresh access token. Returns true on success. */
@@ -239,7 +260,9 @@ export class SalesforceClient {
     _retried = false,
   ): Promise<T> {
     const url = path.startsWith("http") ? path : `${this.dataApiBase}${path}`;
-    if (!_retried) this.logDebug("rest", `${options.method ?? "GET"} ${url}`);
+    const method = options.method ?? "GET";
+    const startedAt = Date.now();
+    if (!_retried) this.logDebug("rest", `${method} ${url}`);
 
     const res = await fetch(url, {
       ...options,
@@ -251,7 +274,10 @@ export class SalesforceClient {
       },
     });
 
-    if (res.status === 204) return undefined as T;
+    if (res.status === 204) {
+      this.recordAudit(method, url, options.body, undefined, res.status, Date.now() - startedAt);
+      return undefined as T;
+    }
 
     // §Do not collapse the error: read the raw text ONCE (a Response body
     // can only be consumed once), then attempt JSON parsing — if parsing
@@ -276,6 +302,7 @@ export class SalesforceClient {
         const refreshed = await this.tryRefresh();
         if (refreshed) return this.request<T>(path, options, true);
       }
+      this.recordAudit(method, url, options.body, body ?? (parseFailed ? text.slice(0, 2000) : undefined), res.status, Date.now() - startedAt);
       const bodyRecord = body as { message?: string; error_description?: string } | null;
       const message = Array.isArray(body)
         ? ((body[0] as { message?: string } | undefined)?.message ?? res.statusText)
@@ -283,6 +310,7 @@ export class SalesforceClient {
       throw new SalesforceError(message, res.status, body, parseFailed ? text : null);
     }
 
+    this.recordAudit(method, url, options.body, body, res.status, Date.now() - startedAt);
     return body as T;
   }
 
