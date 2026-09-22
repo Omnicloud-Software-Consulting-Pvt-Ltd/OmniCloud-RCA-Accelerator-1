@@ -20,7 +20,7 @@
  * else's `<parentStep>` still pointed at. Removing only root branches with zero incoming references from
  * anything kept structurally cannot reproduce that.
  */
-import { extractStepGraph, type PhysicalStepNode } from "./xmlBlocks";
+import { extractStepGraph, getTagValue, type PhysicalStepNode } from "./xmlBlocks";
 
 export interface PrunedRootBranch {
   rootOccurrenceIndex: number;
@@ -91,6 +91,61 @@ function markLogicalParentChainRequired(graph: PhysicalStepNode[], start: Physic
   }
 }
 
+/**
+ * §ListGroup completeness (live evidence — Salesforce deploy rejection "Select list filter as the first
+ * element in list group. Please remove Attribute Discount Entries.") — a hash-verified capture of the real
+ * donor's raw XML proved a `<stepType>ListGroup</stepType>` container is an ATOMIC structural unit in
+ * Salesforce's schema: ALL 21 ListGroup containers in this donor share the exact same shape — an
+ * `AdvancedListFilter` step at `sequenceNumber` 1 (the "list filter" Salesforce's error refers to), followed
+ * by the container's real pricing/business-logic step(s) — with zero exceptions across AttributeDiscount,
+ * BundleDiscount, VolumeDiscount, VolumeTierDiscount, ManualDiscount, FormulaBasedPricing, and more.
+ *
+ * `computeRequiredOccurrenceIndexes`'s reachability walk only follows a target UPWARD: its own subtree, its
+ * physical ancestors, and its logical `<parentStep>` NAME chain. It has no notion of "this container's OTHER
+ * children must survive too." When AttributeDiscount's `<parentStep>` chain passes through a ListGroup
+ * (`ListContainer27`), that container's `AdvancedListFilter` SIBLING (also declaring
+ * `<parentStep>ListContainer27</parentStep>`, but never an ancestor or descendant of AttributeDiscount) was
+ * pruned away as an "unrelated root branch" — leaving the ListGroup with AttributeDiscount as its ONLY
+ * (and therefore first) child, exactly the malformed shape Salesforce rejected.
+ *
+ * Whenever a required occurrence's `<parentStep>` resolves to a ListGroup-typed container, this marks EVERY
+ * other step declaring that SAME `<parentStep>` name as required too (plus their own physical ancestors) —
+ * treating the ListGroup's full, real child set as one atomic unit, exactly like a root branch is already
+ * never split mid-tree. Fixed-point (like `computeRequiredOccurrenceIndexes`'s own root-promotion loop)
+ * because a newly-required sibling could itself sit under another ListGroup that then also needs completing.
+ */
+function markListGroupSiblingsRequired(graph: PhysicalStepNode[], required: Set<number>): void {
+  const byOccurrence = new Map(graph.map(n => [n.occurrenceIndex, n]));
+  const byParentStepName = new Map<string, PhysicalStepNode[]>();
+  for (const n of graph) {
+    if (!n.parentStep) continue;
+    const list = byParentStepName.get(n.parentStep) ?? [];
+    list.push(n);
+    byParentStepName.set(n.parentStep, list);
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const occ of [...required]) {
+      const node = byOccurrence.get(occ);
+      if (!node?.parentStep) continue;
+      const parentMatches = graph.filter(n => n.name === node.parentStep);
+      if (parentMatches.length !== 1 || getTagValue(parentMatches[0].content, "stepType") !== "ListGroup") continue;
+      for (const sibling of byParentStepName.get(node.parentStep) ?? []) {
+        if (required.has(sibling.occurrenceIndex)) continue;
+        required.add(sibling.occurrenceIndex);
+        changed = true;
+        let ancestor = sibling.parentOccurrenceIndex;
+        while (ancestor !== null) {
+          if (!required.has(ancestor)) { required.add(ancestor); changed = true; }
+          ancestor = byOccurrence.get(ancestor)?.parentOccurrenceIndex ?? null;
+        }
+      }
+    }
+  }
+}
+
 export interface RequiredOccurrenceComputation {
   required: Set<number>;
   removedRootBranches: PrunedRootBranch[];
@@ -141,6 +196,11 @@ export function computeRequiredOccurrenceIndexes(
       a = byOccurrence.get(a)?.parentOccurrenceIndex ?? null;
     }
   }
+
+  // §ListGroup completeness — see `markListGroupSiblingsRequired`'s own doc comment. Must run after every
+  // other way a step can become required (subtree/ancestors/logical chain/explicit additions) and before
+  // root-branch classification below, so a sibling this pulls in correctly keeps its OWN root branch too.
+  markListGroupSiblingsRequired(graph, required);
 
   const roots = graph.filter(n => n.depth === 0);
   const rootSubtree = new Map<number, number[]>();

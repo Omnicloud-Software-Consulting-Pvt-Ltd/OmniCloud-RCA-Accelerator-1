@@ -80,6 +80,8 @@ import {
   getAllTagValues,
   getTopLevelParameterBlocks,
   removeTopLevelParameters,
+  getNestedCustomElementParameterBlocks,
+  removeNestedCustomElementParameters,
   buildParameterBlock,
   isOutputParam,
   isInputParam,
@@ -99,7 +101,7 @@ import {
   computeRequiredOccurrenceIndexes,
   pruneXmlToRequiredOccurrences,
 } from "./pricingCanvasPruning";
-import { SHARED_SIGNAL_ACTION_TYPES, resolveAttributeBasedPricingDonor, resolveConnectedAncestor, buildNoCoherentDonorDiagnostic } from "./donorInspection";
+import { SHARED_SIGNAL_ACTION_TYPES, resolveAttributeBasedPricingDonor, resolveConnectedAncestor, buildNoCoherentDonorDiagnostic, type ConnectionMechanism } from "./donorInspection";
 import { injectVersionNumberAndRank } from "./versionEnvelopeFields";
 
 /* ── Constants (framework-level context variable names — safe to hardcode; NOT product/org-specific literals) ── */
@@ -126,11 +128,29 @@ const RCA_NATIVE_CTX = new Set([
   "PriceAdjustmentScheduleId", "PriceAdjustmentSchedule",
 ]);
 
-/** The generic bindings this engine actually knows how to wire — see the file-level "Deviation" note above. */
+/**
+ * The generic bindings this engine actually knows how to wire — see the file-level "Deviation" note above.
+ *
+ * §Root-cause fix (live evidence — Salesforce deploy rejection "Select list filter as the first element in
+ * list group. Please remove Attribute Discount Entries.") — a hash-verified capture of this donor's real raw
+ * XML proved `ProductId`, `ProductSellingModelId`, `LookUpName`, `LookUpId`, `LookUpApiName`,
+ * `IsContractEnabled`, `HideWaterfall`, `sectionCount`, `selectedFunction` and `IsRealTime` are NOT
+ * per-attribute/org-specific literals (the class this allowlist was built to exclude) — they are the
+ * SAME 10 field names, present identically, across EVERY Decision-Table-lookup pricing step in this donor
+ * (AttributeDiscount, BundleDiscount, VolumeDiscount, VolumeTierDiscount, the Contract-Pricing ListPrice
+ * lookup) — i.e. the standard, universal shape of an RCA Decision-Table "Select" lookup configuration
+ * (Salesforce's own "list group"/"list filter" concept), never invented per org. Their absence from this
+ * allowlist meant `shouldStripAttributeDiscountParam` removed them unconditionally, producing an
+ * AttributeDiscount step with no lookup configuration at all — exactly the malformed shape Salesforce
+ * rejected. `IsContracted` (the paired output) was never at risk — outputs are already exempt from
+ * stripping — but is listed here too for documentation completeness.
+ */
 const RECOGNIZED_PARAM_NAMES = new Set([
   "InputUnitPrice", "EffectiveFrom", "EffectiveTo", "Quantity",
   "PriceAdjustmentScheduleId", "PriceAdjustmentScheduleName", "PriceAdjustmentScheduleIds", "PriceAdjustmentScheduleType",
   "AttributeName", "AttributeValue", "IsPriceImpacting", "AdjustmentTypeField", "AdjustmentValueField",
+  "ProductId", "ProductSellingModelId", "LookUpName", "LookUpId", "LookUpApiName",
+  "IsContractEnabled", "HideWaterfall", "sectionCount", "selectedFunction", "IsRealTime", "IsContracted",
 ]);
 
 interface AdMapping {
@@ -380,6 +400,409 @@ function collectFieldMap(node: PhysicalStepNode): Map<string, string> {
   return map;
 }
 
+/**
+ * §Live-org fix (Rev_Mgmt_Default_Pricing_Procedure2_V1) — LAST-RESORT ListPrice pairing, used only when
+ * `resolveConnectedAncestor` finds no mechanism (parentStep chain, physical nesting, variable binding, or
+ * sequence order) connecting the selected AttributeDiscount branch to a ListPrice occurrence — a real,
+ * confirmed live shape: two ListPrice branches (Price Book / Contract) that publish outputs named
+ * `ListPrice`/`ItemContractPrice`, neither matching AttributeDiscount's `InputUnitPrice="NetUnitPrice"`,
+ * and an AttributeDiscount whose `<parentStep>` names a `ListContainer` (canvas placement, not a ListPrice
+ * step). Reuses the SAME `IsContractEnabled`/contract-flavored-naming signal `selectAttributeBasedDiscountBranch`
+ * already uses to disambiguate MULTIPLE AttributeDiscount occurrences — applied here to pair the CHOSEN
+ * AttributeDiscount with the ListPrice occurrence whose own field naming agrees on contract-vs-standard.
+ * Returns `node: null` (never a guess) unless the match is genuinely unambiguous: either exactly one
+ * ListPrice occurrence exists at all (no pairing decision needed), or exactly one shares the same
+ * contract-flavor as the AttributeDiscount branch.
+ */
+/**
+ * §Live-org fix (real donor XML captured via the donor-xml-diagnostic tool, `Rev_Mgmt_Default_Pricing_
+ * Procedure2_V1`) — the HIGHEST-CONFIDENCE ListPrice-pairing mechanism: the donor explicitly declares
+ * `IsContractEnabled` as a literal boolean parameter on BOTH the AttributeDiscount branch AND each
+ * ListPrice occurrence, and the captured XML proves exact equality between them correctly identifies the
+ * paired branch for BOTH AttributeDiscount occurrences (AD [13] IsContractEnabled=true -> ListPrice [60]
+ * IsContractEnabled=true, LookUpApiName=Contract_Pricing_Entries_Decision_Table; AD [14]
+ * IsContractEnabled=false -> ListPrice [63] IsContractEnabled=false, LookUpApiName=
+ * Price_Book_Entry_Decision_Table_v2). This is NOT a name/label/parentStep/sequence signal — it is a
+ * direct, explicit `<name>IsContractEnabled</name>...<value>true|false</value>` parameter binding the
+ * donor itself declares on both sides, present in the raw XML captured from the org, never inferred.
+ *
+ * Returns a discriminated outcome, never just `node | null`, because "the mechanism doesn't apply here"
+ * and "the mechanism applies but the data conflicts with itself" must be handled differently by the
+ * caller: `not-applicable` (AttributeDiscount has no IsContractEnabled, or there are no ListPrice
+ * occurrences at all) is safe to fall through to weaker, pre-existing signals; `conflict` (zero matches,
+ * 2+ matches, or ANY ListPrice occurrence has a missing/non-literal IsContractEnabled value) means this
+ * high-confidence mechanism found real, unresolvable evidence problems and MUST stop the whole resolution
+ * — falling through to a weaker signal after detecting a conflict here would risk silently picking one of
+ * the very candidates this mechanism just proved indistinguishable or contradictory, which is exactly the
+ * "never silently select one" behavior this exists to prevent.
+ */
+export type ContractEnabledBindingOutcome =
+  | { status: "resolved"; node: PhysicalStepNode; reason: string }
+  | { status: "not-applicable"; reason: string }
+  | { status: "conflict"; reason: string };
+
+export function resolveListPriceByContractEnabledBinding(graph: PhysicalStepNode[], adNode: PhysicalStepNode): ContractEnabledBindingOutcome {
+  const adRaw = collectFieldMap(adNode).get("IsContractEnabled") ?? null;
+  if (adRaw === null) {
+    return { status: "not-applicable", reason: `AttributeDiscount [${adNode.occurrenceIndex}] declares no IsContractEnabled parameter — this mechanism does not apply.` };
+  }
+  const adNorm = adRaw.trim().toLowerCase();
+  if (adNorm !== "true" && adNorm !== "false") {
+    return { status: "conflict", reason: `AttributeDiscount [${adNode.occurrenceIndex}]'s IsContractEnabled value ("${adRaw}") is not a literal true/false — refusing to guess.` };
+  }
+  const adBool = adNorm === "true";
+
+  const listPriceNodes = graph.filter(n => n.actionType === "ListPrice");
+  if (listPriceNodes.length === 0) {
+    return { status: "not-applicable", reason: "No ListPrice occurrence exists anywhere in this donor — this mechanism does not apply." };
+  }
+
+  const withValues = listPriceNodes.map(lp => ({ lp, raw: collectFieldMap(lp).get("IsContractEnabled") ?? null }));
+  const invalid = withValues.filter(v => v.raw === null || !["true", "false"].includes(v.raw.trim().toLowerCase()));
+  if (invalid.length > 0) {
+    return {
+      status: "conflict",
+      reason: `${invalid.length} of ${listPriceNodes.length} ListPrice occurrence(s) have a missing or non-literal IsContractEnabled value (${invalid.map(v => `[${v.lp.occurrenceIndex}]=${v.raw ?? "(none)"}`).join(", ")}) — insufficient evidence to trust this mechanism for any candidate; refusing to guess.`,
+    };
+  }
+
+  const matches = withValues.filter(v => (v.raw!.trim().toLowerCase() === "true") === adBool);
+  if (matches.length === 0) {
+    return {
+      status: "conflict",
+      reason: `0 of ${listPriceNodes.length} ListPrice occurrence(s) declare IsContractEnabled=${adBool} (all declare the opposite) — refusing to guess.`,
+    };
+  }
+  if (matches.length > 1) {
+    return {
+      status: "conflict",
+      reason: `ambiguous: ${matches.length} ListPrice occurrences share IsContractEnabled=${adBool} ([${matches.map(m => m.lp.occurrenceIndex).join(", ")}]) — refusing to guess which one.`,
+    };
+  }
+  const winner = matches[0];
+  return {
+    status: "resolved",
+    node: winner.lp,
+    reason: `Matched ListPrice [${winner.lp.occurrenceIndex}] via the donor's own explicit IsContractEnabled=${adBool} binding — a direct parameter declared on both AttributeDiscount [${adNode.occurrenceIndex}] and this ListPrice occurrence, unambiguous among ${listPriceNodes.length} candidate(s).`,
+  };
+}
+
+export function resolveListPriceByContractFlavorFallback(graph: PhysicalStepNode[], adNode: PhysicalStepNode): { node: PhysicalStepNode | null; reason: string } {
+  const listPriceNodes = graph.filter(n => n.actionType === "ListPrice");
+  if (listPriceNodes.length === 0) return { node: null, reason: "No ListPrice occurrence exists anywhere in this donor." };
+  if (listPriceNodes.length === 1) {
+    return { node: listPriceNodes[0], reason: "Exactly one ListPrice occurrence exists in this donor — unambiguous regardless of connectivity signal." };
+  }
+
+  const adFields = collectFieldMap(adNode);
+  const adIsContractEnabledRaw = adFields.get("IsContractEnabled") ?? null;
+  if (adIsContractEnabledRaw === null) {
+    return {
+      node: null,
+      reason: `${listPriceNodes.length} ListPrice occurrences exist in this donor, and AttributeDiscount [${adNode.occurrenceIndex}] declares no IsContractEnabled flag to disambiguate by — refusing to guess which one it uses.`,
+    };
+  }
+  const adIsContractEnabled = adIsContractEnabledRaw.toLowerCase() === "true";
+
+  const matches = listPriceNodes.filter(lp => {
+    const fields = collectFieldMap(lp);
+    const contractFlavored = [...fields.entries()].some(([k, v]) => /contract/i.test(k) || /contract/i.test(v));
+    return contractFlavored === adIsContractEnabled;
+  });
+  if (matches.length !== 1) {
+    return {
+      node: null,
+      reason: `${listPriceNodes.length} ListPrice occurrences exist; AttributeDiscount [${adNode.occurrenceIndex}]'s IsContractEnabled=${adIsContractEnabled} matched ${matches.length} of them by contract-flavored field naming (expected exactly 1) — refusing to guess which one it uses.`,
+    };
+  }
+  return {
+    node: matches[0],
+    reason: `Matched ListPrice [${matches[0].occurrenceIndex}] via IsContractEnabled=${adIsContractEnabled} against its own contract-flavored field naming — a lower-confidence, last-resort signal used only because no direct connectivity mechanism (parentStep chain, physical nesting, variable binding, or sequence order) resolved.`,
+  };
+}
+
+/**
+ * §Live diagnostics (Rev_Mgmt_Default_Pricing_Procedure2_V1) — a per-candidate evidence dump comparing
+ * `adNode` against EVERY ListPrice occurrence in the donor, so a rejected/ambiguous resolution shows
+ * exactly what was checked and why each candidate did or didn't match, instead of a bare "not found."
+ * Purely diagnostic (never used to make a selection decision itself — `resolveConnectedAncestor` and
+ * `resolveListPriceByContractFlavorFallback` remain the sole decision-makers); "a field value equals..."
+ * is an approximate signal here (this function doesn't distinguish input/output the way the real
+ * resolvers do) precisely so it stays honest about being informational, not authoritative.
+ *
+ * §Nothing is discarded — every field printed here (including `stepType`/`label`, which `PhysicalStepNode`
+ * does not pre-extract into a named property) is read on demand via `getTagValue(node.full, ...)` from
+ * the COMPLETE raw XML `extractStepGraph` already retains verbatim for every node (`.full`/`.content`).
+ * The parser was never the bottleneck — no bytes are thrown away — only which fields get a NAMED property
+ * is limited; anything else is still reachable this way if a future investigation needs it. Caveat:
+ * `getTagValue` returns the FIRST match anywhere in the given text, so if a node ever has a NESTED
+ * `<steps>` child that also declares its own `<stepType>`, this could read the child's instead of the
+ * node's own — a real but low-probability imprecision for ListPrice/AttributeDiscount specifically (they
+ * don't typically nest further `<steps>`), acceptable here since this is diagnostic-only, never decisive.
+ */
+function buildListPriceEvidenceTable(graph: PhysicalStepNode[], adNode: PhysicalStepNode): string {
+  const listPriceNodes = graph.filter(n => n.actionType === "ListPrice");
+  const adFields = collectFieldMap(adNode);
+  const adInputUnitPrice = adFields.get("InputUnitPrice") ?? null;
+  const adIsContractEnabledRaw = adFields.get("IsContractEnabled") ?? null;
+  const adIsContractEnabled = adIsContractEnabledRaw === null ? null : adIsContractEnabledRaw.toLowerCase() === "true";
+  const adStepType = getTagValue(adNode.content, "stepType");
+  const adLabel = getTagValue(adNode.content, "label");
+  const siblingsOfAd = adNode.parentStep ? graph.filter(n => n.parentStep === adNode.parentStep && n.occurrenceIndex !== adNode.occurrenceIndex) : [];
+
+  // §Live investigation — one remaining REAL (non-heuristic) data-flow path that hadn't been checked: does
+  // ANY ListPrice's own OUTPUT value get consumed as one of PricingSettings' own INPUT values? If so, that
+  // is genuine one-hop-removed proof (ListPrice -> PricingSettings input -> PricingSettings' own NetUnitPrice
+  // output -> AttributeDiscount), the SAME kind of exact output/input value match already trusted for the
+  // direct `variable-binding`/`price-waterfall-variable` signals — never a name/label/stepType comparison.
+  // Reported here as DIAGNOSTIC ONLY (never auto-selected) until an actual match is confirmed against real
+  // donor bytes; this codebase does not wire unconfirmed signals into automatic resolution.
+  const pricingSettingsNodes = graph.filter(n => n.actionType === "PricingSettings");
+  const psInputBindings = pricingSettingsNodes.flatMap(ps =>
+    getAllParameterBlocksRecursive(ps.full).filter(p => isInputParam(p.block)).map(p => ({ name: getParamName(p.block), value: getParamValue(p.block) })),
+  );
+  const psInputSummary = pricingSettingsNodes.length === 0
+    ? "(no PricingSettings occurrence found in this donor)"
+    : psInputBindings.length === 0
+      ? "(PricingSettings has no input parameters anywhere in its subtree)"
+      : psInputBindings.map(b => `${b.name ?? "(none)"}=${b.value ?? "(none)"}`).join(", ");
+
+  const header = [
+    `[ListPrice evidence] AttributeDiscount [${adNode.occurrenceIndex}] (name=${adNode.name ?? "(none)"}, label=${adLabel ?? "(none)"}, stepType=${adStepType ?? "(not present in raw XML)"}, parentStep=${adNode.parentStep ?? "(none)"}, sequenceNumber=${adNode.sequenceNumber ?? "(none)"}, InputUnitPrice=${adInputUnitPrice ?? "(none)"}, IsContractEnabled=${adIsContractEnabledRaw ?? "(none)"}):`,
+    `  Sibling steps (same <parentStep>, i.e. same container as this AttributeDiscount): ${siblingsOfAd.length === 0 ? "(none)" : siblingsOfAd.map(s => `[${s.occurrenceIndex}] ${s.actionType ?? "(no actionType)"} name=${s.name ?? "(none)"}`).join("; ")}`,
+    `  PricingSettings own input bindings (checked for a ListPrice-output match below — a real, non-heuristic data-flow path, not yet confirmed): ${psInputSummary}`,
+  ].join("\n");
+
+  if (listPriceNodes.length === 0) return `${header}\n  NO ListPrice occurrence exists anywhere in this donor.`;
+
+  const rows = listPriceNodes.map(lp => {
+    const lpFields = collectFieldMap(lp);
+    const lpStepType = getTagValue(lp.content, "stepType");
+    const lpLabel = getTagValue(lp.content, "label");
+    const lpOutputValues = getAllParameterBlocksRecursive(lp.full).filter(p => isOutputParam(p.block)).map(p => getParamValue(p.block)).filter((v): v is string => !!v);
+    // §Deliberately NOT match signals — an earlier turn treated "same <parentStep>" as proof of a real
+    // branch relationship, then found it directly contradicted this file's own already-established
+    // finding about THIS donor: "<parentStep> naming a ListContainer/ListGroup governs canvas PLACEMENT,
+    // not pricing DATA dependency" (see donorInspection.ts's removed `shared-container-sibling` signal).
+    // `name`/`label`/`stepType` are reported purely as RAW FACTS for a human to judge — never as automated
+    // verdicts, per explicit instruction not to reason from name similarity (e.g. "ContractId"/"Product2Id").
+    const sameParentStep = !!adNode.parentStep && lp.parentStep === adNode.parentStep;
+    const fieldValueMatch = adInputUnitPrice !== null && [...lpFields.values()].includes(adInputUnitPrice);
+    const contractFlavored = [...lpFields.entries()].some(([k, v]) => /contract/i.test(k) || /contract/i.test(v));
+    const contractMatch = adIsContractEnabled !== null && contractFlavored === adIsContractEnabled;
+    const feedsIntoPricingSettings = lpOutputValues.some(v => psInputBindings.some(b => b.value === v));
+    const verdict = fieldValueMatch
+      ? "possible match — a field value equals AttributeDiscount's InputUnitPrice (see resolveConnectedAncestor for the authoritative input/output-aware check)"
+      : feedsIntoPricingSettings
+        ? "possible match — this ListPrice's own output value is consumed as one of PricingSettings' own input values (a real one-hop data-flow path, not yet wired into automatic resolution)"
+        : contractMatch
+          ? `possible match — contract-flavored naming (${contractFlavored}) agrees with IsContractEnabled (${adIsContractEnabled})`
+          : "no proven match via any currently-trusted signal";
+    return `  ListPrice [${lp.occurrenceIndex}] (name=${lp.name ?? "(none)"}, label=${lpLabel ?? "(none)"}, stepType=${lpStepType ?? "(not present in raw XML)"}, parentStep=${lp.parentStep ?? "(none)"}${sameParentStep ? " [same parentStep as AttributeDiscount — NOT treated as proof, see note above]" : ""}, sequenceNumber=${lp.sequenceNumber ?? "(none)"}, outputs=[${lpOutputValues.join(", ") || "none"}]) — ${verdict}`;
+  });
+  return [header, ...rows].join("\n");
+}
+
+export interface PricingFlowAncestorsResult {
+  success: boolean;
+  lpMatch: PhysicalStepNode | null;
+  psMatch: PhysicalStepNode | null;
+  lpMechanism: string | null;
+  psMechanism: string | null;
+  fatalErrors: string[];
+  warnings: string[];
+  evidenceLog: string;
+}
+
+/**
+ * §Diagnostic log format requested alongside `resolveListPriceByContractEnabledBinding` — prints every
+ * ListPrice candidate's own IsContractEnabled value and whether it was rejected or matched, so a human can
+ * verify the decision without re-deriving it from `evidenceLog`'s more general table.
+ */
+function buildContractEnabledDiagnosticLog(graph: PhysicalStepNode[], adNode: PhysicalStepNode, outcome: ContractEnabledBindingOutcome): string {
+  const adRaw = collectFieldMap(adNode).get("IsContractEnabled") ?? "(none)";
+  const listPriceNodes = graph.filter(n => n.actionType === "ListPrice");
+  const lines = [
+    "[ListPrice resolution]",
+    `AttributeDiscount [${adNode.occurrenceIndex}]`,
+    `  IsContractEnabled=${adRaw}`,
+    "",
+    "Candidates:",
+  ];
+  if (listPriceNodes.length === 0) {
+    lines.push("  (no ListPrice occurrences exist in this donor)");
+  } else {
+    for (const lp of listPriceNodes) {
+      const raw = collectFieldMap(lp).get("IsContractEnabled") ?? "(none)";
+      const isMatch = outcome.status === "resolved" && outcome.node.occurrenceIndex === lp.occurrenceIndex;
+      lines.push(`  ListPrice [${lp.occurrenceIndex}] IsContractEnabled=${raw} → ${isMatch ? "MATCH" : "rejected"}`);
+    }
+  }
+  lines.push("");
+  if (outcome.status === "resolved") {
+    lines.push("Resolved:", `  ListPrice [${outcome.node.occurrenceIndex}]`, "  confidence=explicit-contract-enabled-binding");
+  } else {
+    lines.push(`Not resolved via this mechanism (${outcome.status}): ${outcome.reason}`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * §Extracted (unchanged logic apart from the new Priority 1 below) — the EXACT resolution
+ * `buildAttributeCanvas` uses to pair the selected AttributeDiscount branch with its PricingSettings/
+ * ListPrice ancestors, factored out so it is directly unit-testable without mocking the entire deploy
+ * pipeline (per explicit instruction: "test the actual canvas-building selection, do not only unit-test a
+ * helper while the real canvas path still fails"). Priority, evidence-based end to end:
+ *   1. `resolveListPriceByContractEnabledBinding` — the donor's own explicit `IsContractEnabled` literal
+ *      binding, proven from REAL captured donor XML (`Rev_Mgmt_Default_Pricing_Procedure2_V1`) to correctly
+ *      identify both branches. HIGH CONFIDENCE. A `conflict` outcome stops the whole resolution here —
+ *      never falls through, since that would risk silently picking one of candidates just proven
+ *      indistinguishable/contradictory. Only a `not-applicable` outcome (the donor doesn't declare this
+ *      parameter at all) falls through to (2).
+ *   2. `resolveConnectedAncestor`'s 5 signals (parentStep-chain, physical-nesting, variable-binding,
+ *      price-waterfall-variable, sequence-order), then `resolveListPriceByContractFlavorFallback` as the
+ *      final, lowest-confidence attempt — unchanged from before this turn.
+ * Never fabricates a match — `success: false` with a complete evidence dump when nothing resolves.
+ * §Note: a `shared-container-sibling` signal ("two steps declaring the same <parentStep> belong to the
+ * same branch") was added and then REMOVED in an earlier turn — it directly contradicted this exact
+ * donor's own already-established finding that <parentStep> here governs canvas placement, not data
+ * dependency (see donorInspection.ts). The explicit IsContractEnabled binding above is NOT that kind of
+ * inference — it is a literal parameter value, not a structural/positional guess.
+ */
+/** Mechanisms `resolveConnectedAncestor` can return for ListPrice that constitute real, direct,
+ * mechanical proof of a data-flow/structural relationship — an explicit `<parentStep>` reference, actual
+ * XML nesting, or an exact InputUnitPrice==published-output variable match. Deliberately excludes
+ * `sequence-order` (relative execution order only — the donor's own doc comment on
+ * `resolveConnectedAncestor` calls this out as "does not PROVE a data dependency"), which stays ranked
+ * BELOW the conditional `IsContractEnabled` signal, not above it. */
+const STRONG_LIST_PRICE_MECHANISMS = new Set<ConnectionMechanism>(["parentStep-chain", "physical-nesting", "variable-binding"]);
+
+/**
+ * §Root-cause fix (offline+live forensic analysis, 2nd org — `Laptop_Attribute_Pricing_Timeout_Fix_Test_V1`)
+ * — real, hash-verified donor XML captured from this org proved `IsContractEnabled` is NOT a reliable
+ * branch discriminator here: the donor has exactly ONE ListPrice occurrence (nothing to disambiguate
+ * between at all), and its `IsContractEnabled=false` merely differs from AttributeDiscount's
+ * `IsContractEnabled=true` as two independently-configured step properties — completely unconnected to
+ * which ListPrice branch is correct, since there IS no other branch. Meanwhile the donor's OWN explicit
+ * data-flow proof is unambiguous and was present the whole time: ListPrice publishes an output whose
+ * `<value>` is `NetUnitPrice`, and AttributeDiscount's `InputUnitPrice` reads exactly that same
+ * `NetUnitPrice` variable — the exact match `resolveViaVariableBinding`/`resolveConnectedAncestor`
+ * (`variable-binding` mechanism) already existed to prove, correctly, for this donor. The bug was never in
+ * that mechanism — it was in this function's PRIORITY ORDER: `IsContractEnabled` ran FIRST and its
+ * `conflict` outcome was an absolute hard stop, so the strong, correct `variable-binding` proof was never
+ * even attempted.
+ *
+ * Fixed generally (no org/donor/product/name/Id of any kind referenced): `resolveConnectedAncestor`'s
+ * strong-tier mechanisms (`parentStep-chain`, `physical-nesting`, `variable-binding` — real structural/
+ * data-flow proof) are now tried FIRST. If one resolves unambiguously, it is used directly —
+ * `IsContractEnabled` is still computed and logged for transparency, but never blocks a resolution the
+ * donor's own structure already proves. Only when no strong mechanism resolves (0 or 2+ ambiguous
+ * candidates, or no parentStep/nesting connection either) does `IsContractEnabled` become the deciding
+ * CONDITIONAL signal — preserving its original role and its original "conflict = hard stop, never
+ * silently fall through" behavior exactly, for donors where it's genuinely needed (a real prior donor has
+ * MULTIPLE ListPrice occurrences where `variable-binding` cannot disambiguate at all — see this function's
+ * git history / `resolveListPriceByContractEnabledBinding`'s own doc comment). `sequence-order` (weakest)
+ * still ranks below `IsContractEnabled`, exactly as the pre-existing 5-signal priority already established.
+ */
+export function resolvePricingFlowAncestors(donorGraph: PhysicalStepNode[], adNode: PhysicalStepNode, donorFullName: string): PricingFlowAncestorsResult {
+  const warnings: string[] = [];
+  const evidenceLog = buildListPriceEvidenceTable(donorGraph, adNode);
+
+  // §Priority 1 — real, direct structural/data-flow evidence (see STRONG_LIST_PRICE_MECHANISMS above).
+  // Computed once, reused below whether or not it resolves strongly.
+  const lpResolvedFirst = resolveConnectedAncestor(donorGraph, adNode, "ListPrice");
+  const hasStrongLpEvidence = lpResolvedFirst.node !== null && STRONG_LIST_PRICE_MECHANISMS.has(lpResolvedFirst.mechanism);
+
+  const contractEnabledOutcome = resolveListPriceByContractEnabledBinding(donorGraph, adNode);
+  const contractEnabledLog = buildContractEnabledDiagnosticLog(donorGraph, adNode, contractEnabledOutcome);
+
+  if (hasStrongLpEvidence) {
+    const psResolvedForStrongMatch = resolveConnectedAncestor(donorGraph, adNode, "PricingSettings");
+    warnings.push(`ℹ Resolved ListPrice via direct structural/data-flow evidence (${lpResolvedFirst.mechanism}) — the donor's own IsContractEnabled binding was checked but is not the deciding signal here (see below).`);
+    warnings.push(contractEnabledLog);
+    if (!psResolvedForStrongMatch.node) {
+      return {
+        success: false, lpMatch: lpResolvedFirst.node, psMatch: null, lpMechanism: lpResolvedFirst.mechanism, psMechanism: null, warnings, evidenceLog,
+        fatalErrors: [`Selected AttributeDiscount branch [${adNode.occurrenceIndex}] in donor "${donorFullName}" resolves to ListPrice ("${lpResolvedFirst.node!.name ?? "(unnamed)"}") via ${lpResolvedFirst.mechanism}, but never resolves to a PricingSettings step via any known mechanism — a coherent Attribute-Based Pricing flow requires both.\n\n${evidenceLog}`],
+      };
+    }
+    return {
+      success: true, lpMatch: lpResolvedFirst.node, psMatch: psResolvedForStrongMatch.node,
+      lpMechanism: lpResolvedFirst.mechanism, psMechanism: psResolvedForStrongMatch.mechanism,
+      fatalErrors: [], warnings, evidenceLog,
+    };
+  }
+
+  // §Priority 2 — no strong direct evidence resolved ListPrice. Fall back to the donor's own explicit
+  // IsContractEnabled binding (CONDITIONAL evidence). A `conflict` outcome (ambiguous, zero-match, or any
+  // candidate's IsContractEnabled is missing/non-literal) STOPS the whole resolution here — never falls
+  // through to a weaker signal, which would risk silently picking one of the very candidates this
+  // mechanism just proved indistinguishable or contradictory.
+  if (contractEnabledOutcome.status === "conflict") {
+    return {
+      success: false, lpMatch: null, psMatch: null, lpMechanism: null, psMechanism: null, warnings, evidenceLog,
+      fatalErrors: [
+        `Selected AttributeDiscount branch [${adNode.occurrenceIndex}] in donor "${donorFullName}": no strong direct data-flow evidence (parentStep chain, physical nesting, or an exact InputUnitPrice/published-output variable match) resolved a ListPrice candidate, and the donor's own explicit IsContractEnabled binding found a conflict that must not be silently worked around: ${contractEnabledOutcome.reason}\n\n${contractEnabledLog}\n\n${evidenceLog}`,
+      ],
+    };
+  }
+  if (contractEnabledOutcome.status === "resolved") {
+    const psResolvedForContractMatch = resolveConnectedAncestor(donorGraph, adNode, "PricingSettings");
+    warnings.push(contractEnabledLog);
+    if (!psResolvedForContractMatch.node) {
+      return {
+        success: false, lpMatch: contractEnabledOutcome.node, psMatch: null, lpMechanism: "explicit-contract-enabled-binding", psMechanism: null, warnings, evidenceLog,
+        fatalErrors: [`Selected AttributeDiscount branch [${adNode.occurrenceIndex}] in donor "${donorFullName}" resolves to ListPrice ("${contractEnabledOutcome.node.name ?? "(unnamed)"}") via its explicit IsContractEnabled binding, but never resolves to a PricingSettings step via any known mechanism — a coherent Attribute-Based Pricing flow requires both.\n\n${evidenceLog}`],
+      };
+    }
+    return {
+      success: true, lpMatch: contractEnabledOutcome.node, psMatch: psResolvedForContractMatch.node,
+      lpMechanism: "explicit-contract-enabled-binding", psMechanism: psResolvedForContractMatch.mechanism,
+      fatalErrors: [], warnings, evidenceLog,
+    };
+  }
+  // contractEnabledOutcome.status === "not-applicable" — fall through to the pre-existing signal chain
+  // (the weak sequence-order/none result already computed above as lpResolvedFirst, then the last-resort
+  // contract-flavor fallback), unchanged from before this fix.
+  warnings.push(contractEnabledLog);
+
+  const psResolved = resolveConnectedAncestor(donorGraph, adNode, "PricingSettings");
+  let lpMatch = lpResolvedFirst.node;
+  const psMatch = psResolved.node;
+  let lpMechanismLabel: string = lpResolvedFirst.mechanism;
+
+  if (!lpMatch && psMatch) {
+    const fallback = resolveListPriceByContractFlavorFallback(donorGraph, adNode);
+    if (fallback.node) {
+      lpMatch = fallback.node;
+      lpMechanismLabel = "contract-flavor-fallback";
+      warnings.push(`ℹ ListPrice paired via last-resort contract-flavor matching, not a direct connectivity signal: ${fallback.reason}`);
+    } else {
+      return {
+        success: false, lpMatch: null, psMatch, lpMechanism: null, psMechanism: psResolved.mechanism, warnings, evidenceLog,
+        fatalErrors: [
+          `Selected AttributeDiscount branch [${adNode.occurrenceIndex}] in donor "${donorFullName}" resolves to PricingSettings (via the shared price-waterfall variable) but does not resolve to any ListPrice step via any known mechanism, and the last-resort contract-flavor fallback could not disambiguate either: ${fallback.reason}\n\n${evidenceLog}`,
+        ],
+      };
+    }
+  }
+
+  if (!lpMatch) {
+    return {
+      success: false, lpMatch: null, psMatch, lpMechanism: null, psMechanism: psResolved.mechanism, warnings, evidenceLog,
+      fatalErrors: [`Selected AttributeDiscount branch [${adNode.occurrenceIndex}] in donor "${donorFullName}" does not resolve to a ListPrice step via any known mechanism (<parentStep> chain, physical nesting, shared-container sibling, variable binding, or sequence order) — this should be unreachable given the donor-selection stage already proved connectivity; refusing to guess.\n\n${evidenceLog}`],
+    };
+  }
+  if (!psMatch) {
+    return {
+      success: false, lpMatch, psMatch: null, lpMechanism: lpMechanismLabel, psMechanism: null, warnings, evidenceLog,
+      fatalErrors: [`Selected AttributeDiscount branch [${adNode.occurrenceIndex}] in donor "${donorFullName}" resolves to ListPrice ("${lpMatch.name ?? "(unnamed)"}") but never resolves to a PricingSettings step via any known mechanism — a coherent Attribute-Based Pricing flow requires both.\n\n${evidenceLog}`],
+    };
+  }
+
+  return { success: true, lpMatch, psMatch, lpMechanism: lpMechanismLabel, psMechanism: psResolved.mechanism, fatalErrors: [], warnings, evidenceLog };
+}
+
 /** §Part 2 — walk the LOGICAL <parentStep> name chain upward from `start` to the root, resolving each
  * name via a PROVEN-UNIQUE lookup (never trusted blindly — see the file-level "Occurrence-based
  * identity" note). Stops (without failing the caller) the moment a name doesn't resolve to exactly one
@@ -549,28 +972,88 @@ function renderPhysicalTree(nodes: PhysicalStepNode[]): string {
   return lines.join("\n");
 }
 
-/* ── Patch A: strip product-specific literal bindings. ── */
-function patchA_stripProductLiterals(ownPart: string): string {
-  return removeTopLevelParameters(ownPart, block => {
-    if (isOutputParam(block)) return false; // never touch outputs
-    const name = getParamName(block);
-    // InputUnitPrice is the pricing-waterfall binding — preserved verbatim from the donor regardless of
-    // its bound value, never stripped/renamed (see file-level "Pricing-waterfall binding" note).
-    if (name === "InputUnitPrice") return false;
-    const value = getParamValue(block);
-    if (!name || !RECOGNIZED_PARAM_NAMES.has(name)) return true; // unrecognized param name -> strip unconditionally
-    const isInput = isInputParam(block) || getTagValue(block, "type") === "Parameter";
-    if (isInput && value && !ABP_STANDARD_CTX.has(value) && !RECOGNIZED_PARAM_NAMES.has(value)) return true; // bound to an unrecognized context var -> strip
-    return false;
-  });
+/**
+ * §Live-org fix — the ONE predicate deciding whether an AttributeDiscount parameter is a safe, generic,
+ * reusable binding or a donor-specific literal that must never survive into a newly-generated procedure.
+ * Applied to BOTH top-level parameters AND parameters nested inside `<customElement>` — a donor can carry
+ * a product/attribute-specific literal (e.g. an ad-hoc parameter literally named after one specific
+ * attribute, with its value hardcoded, from however that donor was originally hand-configured in
+ * Salesforce) OR a stale creation-time Id (e.g. a PriceAdjustmentScheduleId parameter whose `<value>` is
+ * a literal Id instead of the generic context-variable reference) in EITHER location — `PriceAdjustmentScheduleId`
+ * itself is required to live nested (see Patch C), so nested content can never be assumed safe just
+ * because top-level content is checked.
+ */
+// §Live-org fix (real donor evidence) — a real Salesforce record Id (15 or 18 alphanumeric characters, no
+// separators) is NEVER a valid variable/constant reference — this is the one shape Patch A must always
+// strip from PriceAdjustmentScheduleId, regardless of name-recognition. A real donor's own constant/
+// context-variable name (e.g. "AttributePASIdConstant", "ItemContractAttributePasId") is inherently
+// unenumerable in advance (see the file-level "generic allowlist" note) and is never this shape.
+function looksLikeSalesforceIdLiteral(value: string): boolean {
+  return /^[a-zA-Z0-9]{15}$/.test(value) || /^[a-zA-Z0-9]{18}$/.test(value);
+}
+
+function shouldStripAttributeDiscountParam(block: string): boolean {
+  if (isOutputParam(block)) return false; // never touch outputs
+  const name = getParamName(block);
+  // InputUnitPrice is the pricing-waterfall binding — preserved verbatim from the donor regardless of
+  // its bound value, never stripped/renamed (see file-level "Pricing-waterfall binding" note).
+  if (name === "InputUnitPrice") return false;
+  const value = getParamValue(block);
+  // §Live-org fix (real donor evidence, Rev_Mgmt_Default_Pricing_Procedure2_V1) — PriceAdjustmentScheduleId
+  // is entirely owned by Patch C (verbatim-clone-or-decline-to-fabricate) and the self-reference check in
+  // `validateAttributeCanvas` — Patch A must never second-guess its value against a hardcoded allowlist
+  // (ABP_STANDARD_CTX/RECOGNIZED_PARAM_NAMES can never enumerate every real org's own constant/context-
+  // variable name), only strip the ONE genuinely unsafe shape: a literal, stale Salesforce record Id.
+  if (name && /^PriceAdjustmentSchedule(Id|Name|Ids|Type)?$/i.test(name)) {
+    return !!value && looksLikeSalesforceIdLiteral(value);
+  }
+  if (!name || !RECOGNIZED_PARAM_NAMES.has(name)) return true; // unrecognized param name -> strip unconditionally
+  // §Root-cause fix (live evidence — same deploy rejection as the RECOGNIZED_PARAM_NAMES comment above) —
+  // the "is this value a recognized context variable" check only makes sense for a type=Parameter
+  // (variable-REFERENCE) input; it is a category error for a type=Literal input, whose <value> is org/
+  // decision-table DATA (a Salesforce Id, a Decision Table API name, a UI function name, a boolean/count),
+  // never a variable name, and was NEVER going to appear in a context-variable allowlist. Applying this
+  // check to Literal-typed lookup-configuration parameters (LookUpId/LookUpApiName/LookUpName/
+  // IsContractEnabled/HideWaterfall/sectionCount/selectedFunction/IsRealTime) unconditionally stripped
+  // them regardless of the RECOGNIZED_PARAM_NAMES fix above. Restricting this check to genuine
+  // variable-reference inputs (`isInputParam(block) && type === "Parameter"`, AND not OR) preserves the
+  // existing, already-correct behavior for AttributeName/AttributeValue/EffectiveFrom/etc. (all
+  // type=Parameter) while letting Literal-typed values pass through verbatim once their name is recognized
+  // — the same "preserve the donor's own real data, never second-guess it" treatment PriceAdjustmentScheduleId
+  // already gets above.
+  const isVariableReferenceInput = isInputParam(block) && getTagValue(block, "type") === "Parameter";
+  if (isVariableReferenceInput && value && !ABP_STANDARD_CTX.has(value) && !RECOGNIZED_PARAM_NAMES.has(value)) return true; // bound to an unrecognized context var -> strip
+  return false;
+}
+
+/* ── Patch A: strip product-specific literal bindings — both top-level AND customElement-nested (Patch C
+ * later re-adds a clean, generic PriceAdjustmentScheduleId binding if this step removed a bad one). ── */
+export function patchA_stripProductLiterals(ownPart: string): string {
+  let result = removeTopLevelParameters(ownPart, shouldStripAttributeDiscountParam);
+  result = removeNestedCustomElementParameters(result, shouldStripAttributeDiscountParam);
+  return result;
 }
 
 /* ── Patch C: preserve PriceAdjustmentScheduleId verbatim, nested inside the donor's EXISTING <customElement> — never a freshly-created wrapper, never top-level. ── */
-function patchC_preserveScheduleId(originalOwnPart: string, patchedOwnPart: string, warnings: string[]): string {
+export function patchC_preserveScheduleId(originalOwnPart: string, patchedOwnPart: string, warnings: string[]): string {
   const scheduleRe = /^PriceAdjustmentSchedule(Id|Name|Ids|Type)?$/i;
 
-  const alreadyNested = extractCustomElementBlocks(patchedOwnPart).some(ce => getAllTagValues(ce, "name").some(n => scheduleRe.test(n)));
-  if (alreadyNested) return patchedOwnPart;
+  // §Live-deploy investigation (this turn) — Salesforce's real Metadata API rejected the deployed
+  // AttributeDiscount's nested PriceAdjustmentScheduleId parameter with "isn't a valid variable name."
+  // Static analysis alone cannot tell which of THREE structurally distinct paths through this function
+  // produced the offending value for a given build (already-nested passthrough / verbatim top-level
+  // clone / synthetic self-referential fallback) — each is reachable depending on what the SELECTED
+  // donor's own template actually contains, which varies build to build. Rather than guess, every path
+  // now unconditionally logs which branch fired and the exact value it leaves in place, so the next
+  // live run's own warnings settle this with evidence instead of another round of static inference.
+  const alreadyNestedBlock = getNestedCustomElementParameterBlocks(patchedOwnPart)
+    .find(b => { const n = getParamName(b.block); return !!n && scheduleRe.test(n); });
+  if (alreadyNestedBlock) {
+    warnings.push(
+      `ℹ [ScheduleId trace] PATH=already-nested-passthrough — the SELECTED donor's own AttributeDiscount step already had a nested PriceAdjustmentScheduleId parameter before this patch ran, so it was left completely untouched. name="${getParamName(alreadyNestedBlock.block)}" value="${getParamValue(alreadyNestedBlock.block)}". Raw block: ${alreadyNestedBlock.block}`,
+    );
+    return patchedOwnPart;
+  }
 
   const originalTopLevelMatch = getTopLevelParameterBlocks(originalOwnPart).find(b => {
     const n = getParamName(b.block);
@@ -583,9 +1066,32 @@ function patchC_preserveScheduleId(originalOwnPart: string, patchedOwnPart: stri
     return !!n && scheduleRe.test(n);
   });
 
-  const paramBlockXml = originalTopLevelMatch
-    ? originalTopLevelMatch.block // verbatim — never synthesize a replacement when the template already had one
-    : buildParameterBlock({ input: true, name: "PriceAdjustmentScheduleId", output: false, type: "Parameter", value: "PriceAdjustmentScheduleId" });
+  // §Root-cause fix (live evidence confirmed) — Salesforce's own deploy rejection ("PriceAdjustmentScheduleId
+  // isn't a valid variable name") proved this fallback's prior behavior wrong: it manufactured
+  // `value="PriceAdjustmentScheduleId"` — the value equal to the parameter's own name — whenever the
+  // SELECTED donor had no PriceAdjustmentScheduleId binding anywhere to clone from. A `<value>` on an
+  // input `<parameters>` of `type=Parameter` is a REFERENCE to an actually-declared variable, never a
+  // literal; a self-referential value is never a valid reference unless the parameter's own name also
+  // happens to be independently declared as a real envelope variable (checked, and enforced, by
+  // `validateAttributeCanvas` below — never assumed safe here). This function has no way to safely
+  // invent what a real donor's correct binding would be (see the file-level investigation notes on
+  // "contract"/"constant"-flavored real donor values) — per explicit instruction, it must never fabricate
+  // one. When no genuine donor binding exists, PriceAdjustmentScheduleId is left GENUINELY ABSENT — the
+  // existing "AttributeDiscount has no PriceAdjustmentScheduleId parameter" fatal in `validateAttributeCanvas`
+  // already stops the build for exactly this reason, with an honest cause instead of invalid XML reaching
+  // Salesforce.
+  if (!originalTopLevelMatch) {
+    warnings.push(
+      `✕ [ScheduleId trace] PATH=no-donor-binding-found — the SELECTED donor's AttributeDiscount step has NO PriceAdjustmentScheduleId binding anywhere (top-level or nested). A self-referential fallback (value=name) is NOT fabricated here, because that is exactly the shape Salesforce's Metadata API has been confirmed to reject as "isn't a valid variable name." Left genuinely unset — the build will fail fast below rather than deploy invalid XML. To fix: either select a donor whose AttributeDiscount step has a real PriceAdjustmentScheduleId binding, or determine this org's correct declared context-variable name for it and add it to this donor before cloning.`,
+    );
+    return result;
+  }
+
+  const paramBlockXml = originalTopLevelMatch.block; // verbatim — never synthesize a replacement when the template already had one
+
+  warnings.push(
+    `ℹ [ScheduleId trace] PATH=verbatim-top-level-clone — the SELECTED donor's AttributeDiscount step had PriceAdjustmentScheduleId at the top level (wrong nesting for deploy) and it was re-nested VERBATIM, unmodified. Raw block: ${originalTopLevelMatch.block}`,
+  );
 
   const inserted = insertIntoExistingCustomElement(result, paramBlockXml);
   if (!inserted.applied) {
@@ -645,7 +1151,24 @@ function postBuildGuard(steps: { actionType: string; ownXml: string }[]): string
   }
   const ad = steps.find(s => s.actionType === "AttributeDiscount");
   if (ad) {
-    const leaked = getTopLevelParameterBlocks(ad.ownXml)
+    // §Root-cause fix (this turn) — live evidence: a donor org's AttributeDiscount legitimately publishes
+    // OUTPUT parameters under its own org-specific names (e.g. NetUnitPrice/Subtotal/IsContracted — the
+    // donor's own already-working declaration of what this step computes and hands to whatever consumes
+    // it downstream). `RECOGNIZED_PARAM_NAMES` was built to enumerate only the small set of INPUT bindings
+    // this engine actively manages (see the file-level "Deviation" note) — it was never meant to be a
+    // complete list of every legal AttributeDiscount parameter, and an output's real name is inherently
+    // org-specific (there is no fixed, portable set to hardcode, exactly the same reasoning that already
+    // rules out a hardcoded product-attribute-name list elsewhere in this file). `shouldStripAttributeDiscountParam`
+    // already encodes the correct rule — "never touch outputs" — because an output parameter only NAMES
+    // what this step publishes; it carries no bound literal value the way an input does, so it can never be
+    // a "leaked donor-specific literal" the way an unrecognized INPUT can. This guard must apply the exact
+    // same rule, or it flags every donor's genuine (and harmless) output declarations as a fabricated
+    // failure — which is exactly what produced this run's false "leaked parameter" error. Scans BOTH
+    // top-level AND customElement-NESTED input parameters; a donor-specific literal can live in either
+    // location, and PriceAdjustmentScheduleId itself is required to live nested, so nested content was
+    // never safe to skip here.
+    const leaked = [...getTopLevelParameterBlocks(ad.ownXml), ...getNestedCustomElementParameterBlocks(ad.ownXml)]
+      .filter(b => !isOutputParam(b.block))
       .map(b => getParamName(b.block))
       .filter((n): n is string => !!n && !RECOGNIZED_PARAM_NAMES.has(n));
     if (leaked.length > 0) errors.push(`Unrecognized/leaked parameter name(s) survived patching on AttributeDiscount: ${leaked.join(", ")}`);
@@ -653,7 +1176,76 @@ function postBuildGuard(steps: { actionType: string; ownXml: string }[]): string
   return errors;
 }
 
-function validateAttributeCanvas(
+export interface SelfReferentialParameterIssue {
+  name: string;
+  value: string;
+  rawBlock: string;
+}
+
+/**
+ * §Evidence-scoped exemption for the self-referential-input check below — deliberately NARROWER than
+ * `RCA_NATIVE_CTX`. `RCA_NATIVE_CTX` answers "is this VALUE a name Salesforce's RCA runtime recognizes at
+ * all" (used for the separate, weaker "unresolved binding" check) — it says nothing about whether a
+ * PARTICULAR parameter is safe to bind to ITSELF. `PriceAdjustmentScheduleId`, for instance, IS in
+ * `RCA_NATIVE_CTX` (some other step's value can legitimately equal that string), but a hash-verified capture
+ * of this exact donor's real, live XML (`Rev_Mgmt_Default_Pricing_Procedure2_V1`, occurrences 13/14) proves
+ * its OWN `PriceAdjustmentScheduleId` parameter is NEVER self-referential — both branches bind it to a
+ * genuinely distinct name (`ItemContractAttributePasId` / `AttributePASIdConstant`) — exactly the shape of
+ * the original, real bug this validator was built to catch. Reusing the whole `RCA_NATIVE_CTX` set here would
+ * silently re-open that exact hole. Only `AttributeValue` currently has real, both-branches evidence of being
+ * a legitimate self-reference (see `findInvalidSelfReferentialInputParameters`'s own comment) — extend this
+ * set only when the SAME rigor (a real capture, both IsContractEnabled branches, cross-checked against
+ * sibling parameters) proves a specific NEW name safe, never by assuming symmetry with `RCA_NATIVE_CTX`.
+ */
+const RCA_NATIVE_SELF_REFERENTIAL_CTX = new Set(["AttributeValue"]);
+
+/**
+ * §Centralized parameter-binding rule (generalized from the PriceAdjustmentScheduleId investigation, then
+ * proven to recur on AttributeValue) — the ONE place that decides whether an input Parameter's
+ * self-referential value (`<name>X</name>...<value>X</value>`) is valid. It is valid when `X` is either
+ * (a) independently declared as a real envelope variable, or (b) a member of `RCA_NATIVE_SELF_REFERENTIAL_CTX`
+ * — the narrow, evidence-proven set of Salesforce RCA implicit context variables PROVEN safe to
+ * self-reference (see that const's own comment for why this is deliberately NOT `RCA_NATIVE_CTX`).
+ *
+ * §Root-cause correction (live donor evidence, hash-verified capture of Rev_Mgmt_Default_Pricing_Procedure2_V1) —
+ * this function originally checked `declaredVars` alone, on the theory that any allowlist of "safe" names was
+ * the same mistake as a hardcoded `ABP_STANDARD_CTX`-style bypass. That theory was correct for the
+ * PriceAdjustmentScheduleId case (a value fabricated by an EARLIER, buggy patch, with no donor-native
+ * precedent) but proved WRONG for AttributeValue: raw XML captured directly from the live org shows
+ * `<name>AttributeValue</name>...<value>AttributeValue</value>` present verbatim in BOTH AttributeDiscount
+ * occurrences of this donor (occurrence 13, IsContractEnabled=true; occurrence 14, IsContractEnabled=false).
+ * `AttributeValue` was only ever flagged because its context-variable name happens to be spelled identically
+ * to the parameter name that references it (`AttributeName`→`Attribute` is the exact same binding shape and
+ * was never flagged, purely because the two strings differ) — its sibling context variables (`Product`,
+ * `Attribute`, `PriceImpactingAttribute`, `LineItemQuantity`, `ProductSellingModel`, `PricingDate`) are
+ * likewise never envelope-declared or step-produced in this donor, but NONE of them ever appear
+ * self-referentially in the real data (their consuming parameter is always spelled differently, e.g.
+ * `ProductId`≠`Product`), so they are deliberately NOT added to the exemption — there is no evidence they
+ * need it, and adding them anyway would be exactly the "allowlist by assumption" this fix avoids. A
+ * self-referential value that is neither declared nor in this narrow proven set (e.g. a freshly fabricated
+ * one, like the original ScheduleId bug) is still caught — nothing about that detection is weakened.
+ *
+ * OUTPUT parameters are always exempt — an output legitimately "announces" its own name as its value (e.g.
+ * `<name>NetUnitPrice</name><output>true</output><value>NetUnitPrice</value>` is how a donor declares "this
+ * step publishes NetUnitPrice," a completely different semantic from an INPUT reference). Reused by
+ * `validateAttributeCanvas` across every cloned pricing element (PricingSettings/ListPrice/AttributeDiscount)
+ * so the rule is applied uniformly, never re-implemented per call site.
+ */
+export function findInvalidSelfReferentialInputParameters(stepXml: string, declaredVars: Set<string>): SelfReferentialParameterIssue[] {
+  const all = [...getTopLevelParameterBlocks(stepXml), ...getNestedCustomElementParameterBlocks(stepXml)];
+  const issues: SelfReferentialParameterIssue[] = [];
+  for (const p of all) {
+    const name = getParamName(p.block);
+    const value = getParamValue(p.block);
+    const isInputTypeParameter = isInputParam(p.block) && getTagValue(p.block, "type") === "Parameter";
+    if (isInputTypeParameter && name && value && name === value && !declaredVars.has(value) && !RCA_NATIVE_SELF_REFERENTIAL_CTX.has(value)) {
+      issues.push({ name, value, rawBlock: p.block });
+    }
+  }
+  return issues;
+}
+
+export function validateAttributeCanvas(
   parts: { psXml: string; lpXml: string; adOwnXml: string },
   templateActionTypesObserved: Set<string>,
   declaredVars: Set<string>,
@@ -686,6 +1278,27 @@ function validateAttributeCanvas(
   if (topLevelHasSchedule) fatal.push('PriceAdjustmentScheduleId is present at the top level of AttributeDiscount instead of nested inside <customElement> — Salesforce rejects this with "Element parameters invalid at this location in type ExpressionSetStep".');
   if (!nestedHasSchedule) fatal.push("AttributeDiscount has no PriceAdjustmentScheduleId parameter (top-level or nested) — the deployed procedure would have no way to resolve its PriceAdjustmentSchedule at runtime.");
 
+  // §Root-cause fix (live evidence confirmed, generalized across turns from PriceAdjustmentScheduleId to
+  // AttributeValue — the same shape recurs on different parameters) — Salesforce's real Metadata API
+  // rejects a deployed input Parameter whose `<value>` is self-referential (equal to its own `<name>`)
+  // with "isn't a valid variable name." A `<value>` on an input `<parameters>` of `type=Parameter` is a
+  // REFERENCE to an actually declared variable, never a literal — so a self-referential value is invalid
+  // UNLESS that same name is independently declared as a real envelope variable (checked against
+  // `declaredVars`, never a hardcoded allowlist — a generic allowlist would just accidentally treat a
+  // parameter's own name as a valid reference to itself, exactly the bug this replaces). Applied to EVERY
+  // cloned pricing element's own input parameters — PricingSettings and ListPrice included, not just
+  // AttributeDiscount — since the same invalid shape is possible on any of them and none were checked
+  // before this fix; catches it regardless of whether the self-reference was freshly synthesized by a
+  // patch or came verbatim from the donor's own (latent, never-previously-deployed-through-this-path)
+  // template.
+  for (const [stepLabel, stepXml] of [["PricingSettings", parts.psXml], ["ListPrice", parts.lpXml], ["AttributeDiscount", parts.adOwnXml]] as const) {
+    for (const issue of findInvalidSelfReferentialInputParameters(stepXml, declaredVars)) {
+      fatal.push(
+        `${stepLabel} input parameter "${issue.name}" has a self-referential value ("${issue.value}" — identical to its own name) that is NOT declared as a variable anywhere in this Expression Set's envelope. Salesforce rejects this as "isn't a valid variable name" — a Parameter's <value> must reference an actually-declared variable, never the parameter's own name as a literal. Raw block: ${issue.rawBlock}`,
+      );
+    }
+  }
+
   // Re-verify AD_MAPPINGS bindings landed as expected (defense in depth).
   for (const mapping of AD_MAPPINGS.filter(m => m.requiresVarCheck)) {
     const existing = getTopLevelParameterBlocks(parts.adOwnXml).find(b => getParamName(b.block) === mapping.paramName);
@@ -696,8 +1309,16 @@ function validateAttributeCanvas(
     }
   }
 
-  // Leakage scan (defense in depth).
-  const leaked = getTopLevelParameterBlocks(parts.adOwnXml).map(b => getParamName(b.block)).filter((n): n is string => !!n && !RECOGNIZED_PARAM_NAMES.has(n));
+  // Leakage scan (defense in depth) — both top-level AND customElement-nested (see postBuildGuard's
+  // identical scope fix for why nested content can never be assumed already-clean). Output parameters are
+  // exempt for the SAME reason postBuildGuard exempts them: a donor's own AttributeDiscount can legitimately
+  // publish org-specific output names (e.g. NetUnitPrice/Subtotal/IsContracted) that `RECOGNIZED_PARAM_NAMES`
+  // — an INPUT-binding allowlist, never meant to enumerate every legal output name — was never going to
+  // contain; `shouldStripAttributeDiscountParam` already never touches outputs, so this check must not
+  // flag what that function correctly left alone.
+  const leaked = [...getTopLevelParameterBlocks(parts.adOwnXml), ...getNestedCustomElementParameterBlocks(parts.adOwnXml)]
+    .filter(b => !isOutputParam(b.block))
+    .map(b => getParamName(b.block)).filter((n): n is string => !!n && !RECOGNIZED_PARAM_NAMES.has(n));
   if (leaked.length > 0) fatal.push(`Unrecognized parameter name(s) on AttributeDiscount: ${leaked.join(", ")}`);
 
   // ListPrice: the required lookup/customElement fields must still be present — unrelated to the
@@ -713,6 +1334,206 @@ function validateAttributeCanvas(
   return { fatal, warnings };
 }
 
+/**
+ * §Root-cause investigation (this turn) — live error: "PriceAdjustmentScheduleId isn't a valid variable
+ * name" during the actual Salesforce Metadata API deploy (Create Expression Set Version / Create Pricing
+ * Procedure) — i.e. this is NOT one of this codebase's own local validation gates (those all passed —
+ * "Bind Inputs ✓"); Salesforce's own server-side validation rejected something in the submitted metadata.
+ *
+ * Traced as far as static code analysis allows, WITHOUT guessing a fix (per explicit instruction): this
+ * codebase's clone-and-patch architecture uses "PriceAdjustmentScheduleId" in at least two structurally
+ * different ways that could each independently produce this exact wording, and only the real deployed
+ * bytes + Salesforce's own line/column-level error detail (already captured elsewhere in this pipeline —
+ * see `deployResult.status.componentFailures` in createPipeline.ts) can distinguish them:
+ *   1. `patchC_preserveScheduleId` nests a `<parameters>` block inside AttributeDiscount's own
+ *      `<customElement>` whose `<value>` is the string "PriceAdjustmentScheduleId" — EITHER cloned
+ *      verbatim from the donor's own already-working binding, OR (only when the donor's template had NO
+ *      such parameter at all) synthesized as a self-referential fallback. If the donor's own binding
+ *      actually resolves via some OTHER mechanism (e.g. a step this build's single-donor pruning removes,
+ *      or a donor-side construct tolerated by Salesforce only because it predates a stricter CREATE-time
+ *      validation that a brand-new component now goes through), that reference would deploy broken.
+ *   2. A genuinely separate, envelope-level `<variables><name>...</name></variables>` declaration (the
+ *      real Expression Set "variables" construct this file already protects from renaming during envelope
+ *      regeneration — see the `protectedVariableBlocks` mechanism above) could itself be named
+ *      "PriceAdjustmentScheduleId" and be what Salesforce is actually rejecting — entirely independent of
+ *      AttributeDiscount's own parameter.
+ * This function dumps BOTH exactly as they exist in the given (already-deployed-and-rejected) XML, so the
+ * next attempt's evidence settles which one it actually is, instead of another guess.
+ */
+export function buildScheduleVariableDiagnostic(finalFileXml: string): string {
+  const lines: string[] = ["=== PriceAdjustmentScheduleId — RAW DEPLOYED-XML EVIDENCE ==="];
+
+  const variableBlocks = extractFlatBlocks(finalFileXml, "variables");
+  lines.push("", `Envelope-level <variables> declarations found: ${variableBlocks.length}`);
+  if (variableBlocks.length === 0) {
+    lines.push("(none — this file declares no top-level <variables> at all; rules out mechanism #2 below)");
+  } else {
+    for (const block of variableBlocks) {
+      const name = getTagValue(block, "name") ?? "(no <name> found)";
+      lines.push(`--- <variables> name="${name}" ${name === "PriceAdjustmentScheduleId" ? "◄◄◄ MATCHES THE REJECTED NAME" : ""} ---`, block);
+    }
+  }
+
+  lines.push("", '=== every raw occurrence of the string "PriceAdjustmentScheduleId" in the deployed file (±120 chars of context) ===');
+  const needle = "PriceAdjustmentScheduleId";
+  let idx = finalFileXml.indexOf(needle);
+  let count = 0;
+  while (idx !== -1 && count < 50) {
+    const start = Math.max(0, idx - 120);
+    const end = Math.min(finalFileXml.length, idx + needle.length + 120);
+    lines.push(`[byte offset ${idx}] ...${finalFileXml.slice(start, end)}...`);
+    idx = finalFileXml.indexOf(needle, idx + needle.length);
+    count++;
+  }
+  if (count === 0) lines.push('(the literal string was not found anywhere in the deployed file — surprising, given Salesforce\'s own error names it directly; check whether the error is about a DIFFERENT, similarly-worded name instead.)');
+  else lines.push(`(${count} occurrence(s) shown, newest scan capped at 50)`);
+
+  lines.push(
+    "",
+    "Mechanism #1 (AttributeDiscount's own nested parameter) vs #2 (an envelope-level <variables> declaration) — " +
+    "whichever actually appears above, cross-reference against Salesforce's own componentFailures lineNumber/columnNumber " +
+    "(captured separately, see the full deploy diagnostic) to identify the EXACT XML location Salesforce rejected, rather than assuming.",
+  );
+  return lines.join("\n");
+}
+
+export interface FinalCanvasStructuralAudit {
+  envelopeVariables: { name: string; raw: string }[];
+  pricingElementOccurrences: { occurrenceIndex: number; actionType: string | null; name: string | null }[];
+  inputParameters: { stepActionType: string | null; occurrenceIndex: number; name: string | null; value: string | null }[];
+  outputParameters: { stepActionType: string | null; occurrenceIndex: number; name: string | null; value: string | null }[];
+  unresolvedInputBindings: { stepActionType: string | null; occurrenceIndex: number; name: string | null; value: string | null }[];
+  selfReferentialInputs: { stepActionType: string | null; occurrenceIndex: number; name: string; value: string }[];
+  missingRequiredBindings: string[];
+  /** §ListGroup structural check (live evidence — Salesforce deploy rejection "Select list filter as the
+   * first element in list group. Please remove Attribute Discount Entries.") — for every step in the final
+   * canvas with `<stepType>ListGroup</stepType>`, reports its real children (by `<parentStep>` match),
+   * ordered by `<sequenceNumber>`, and whether the first one is an `AdvancedListFilter` — the exact,
+   * evidence-proven shape every one of the real donor's 21 ListGroup containers has, with zero exceptions. */
+  listGroups: {
+    occurrenceIndex: number; name: string | null;
+    children: { occurrenceIndex: number; name: string | null; stepType: string | null; sequenceNumber: string | null }[];
+    firstChildIsAdvancedListFilter: boolean;
+    issue: string | null;
+  }[];
+  selectedListPrice: { occurrenceIndex: number; name: string | null; isContractEnabled: string | null } | null;
+  selectedAttributeDiscount: { occurrenceIndex: number; name: string | null; isContractEnabled: string | null } | null;
+  passed: boolean;
+  summary: string;
+}
+
+/**
+ * §Step 8 requirement — a complete, human-readable structural audit of the FINAL, fully composed and
+ * pruned Expression Set XML (`finalFileXml` — the exact bytes handed to Salesforce's deploy call), run
+ * REGARDLESS of whether `validateAttributeCanvas` already passed or failed on the pre-prune parts, so a
+ * human reviewing a failed (or successful) build sees the complete picture in one place: every envelope
+ * variable, every pricing element occurrence, every input/output parameter, which inputs are self-
+ * referential/unresolved, and which branch (ListPrice/AttributeDiscount, with their IsContractEnabled
+ * values) was actually selected. This is a REPORTING function — it never makes a selection decision and
+ * never mutates anything; the actual pass/fail gate remains `validateAttributeCanvas` (already invoked
+ * earlier in the same build, before pruning) plus this audit's own `passed` flag, which the caller must
+ * still check before ever deploying (see `createPipeline.ts`'s use of `canvas.finalFileXml`/`canvas.success`).
+ */
+export function buildFinalCanvasStructuralAudit(finalFileXml: string): FinalCanvasStructuralAudit {
+  const graph = extractStepGraph(finalFileXml);
+  const envelopeVariables = extractFlatBlocks(finalFileXml, "variables").map(raw => ({ name: getTagValue(raw, "name") ?? "(no <name> found)", raw }));
+  // §Self-contained — derives the SAME declared-variables set from `finalFileXml`'s own envelope, never
+  // requiring the caller to pass in whatever internal `declaredVars` `buildAttributeCanvas` used, so this
+  // audit can be run independently against any already-composed final XML (e.g. from a saved diagnostic
+  // artifact) without needing anything beyond the XML itself.
+  const declaredVars = new Set(envelopeVariables.map(v => v.name).filter(n => n !== "(no <name> found)"));
+  const pricingElementOccurrences = graph.map(n => ({ occurrenceIndex: n.occurrenceIndex, actionType: n.actionType, name: n.name }));
+
+  const inputParameters: FinalCanvasStructuralAudit["inputParameters"] = [];
+  const outputParameters: FinalCanvasStructuralAudit["outputParameters"] = [];
+  const unresolvedInputBindings: FinalCanvasStructuralAudit["unresolvedInputBindings"] = [];
+  const selfReferentialInputs: FinalCanvasStructuralAudit["selfReferentialInputs"] = [];
+
+  for (const node of graph) {
+    const bindings = [...getTopLevelParameterBlocks(node.full), ...getNestedCustomElementParameterBlocks(node.full)];
+    for (const b of bindings) {
+      const name = getParamName(b.block);
+      const value = getParamValue(b.block);
+      const isInputTypeParameter = isInputParam(b.block) && getTagValue(b.block, "type") === "Parameter";
+      const entry = { stepActionType: node.actionType, occurrenceIndex: node.occurrenceIndex, name, value };
+      if (isOutputParam(b.block)) {
+        outputParameters.push(entry);
+        continue;
+      }
+      if (isInputTypeParameter) {
+        inputParameters.push(entry);
+        if (value && !declaredVars.has(value) && !RCA_NATIVE_CTX.has(value)) unresolvedInputBindings.push(entry);
+        // §Same NARROW exemption as `findInvalidSelfReferentialInputParameters` — deliberately
+        // `RCA_NATIVE_SELF_REFERENTIAL_CTX`, not `RCA_NATIVE_CTX` (see that const's doc comment): only
+        // `AttributeValue` has real, both-branches evidence of being a legitimate self-reference.
+        if (name && value && name === value && !declaredVars.has(value) && !RCA_NATIVE_SELF_REFERENTIAL_CTX.has(value)) selfReferentialInputs.push({ ...entry, name, value });
+      }
+    }
+  }
+
+  const scheduleRe = /^PriceAdjustmentSchedule(Id|Name|Ids|Type)?$/i;
+  const adNode = graph.find(n => n.actionType === "AttributeDiscount") ?? null;
+  const lpNode = graph.find(n => n.actionType === "ListPrice") ?? null;
+  const missingRequiredBindings: string[] = [];
+  if (!adNode) missingRequiredBindings.push("No AttributeDiscount occurrence in the final canvas.");
+  else {
+    if (!extractCustomElementBlocks(adNode.full).some(ce => getAllTagValues(ce, "name").some(n => scheduleRe.test(n)))) {
+      missingRequiredBindings.push("AttributeDiscount has no PriceAdjustmentScheduleId parameter (top-level or nested) in the final canvas.");
+    }
+    // §Root-cause fix (live evidence — Salesforce deploy rejection "Select list filter as the first
+    // element in list group. Please remove Attribute Discount Entries.") — this is the gap that let that
+    // bug slip past every prior local check: `validateAttributeCanvas`'s "Part 10" required-fields check
+    // (see buildAttributeCanvas) only verifies the DONOR's selected branch has these fields BEFORE Patch A
+    // strips anything; nothing previously re-verified they SURVIVE into the FINAL, post-strip canvas. These
+    // 10 names are Salesforce's own standard Decision-Table-lookup configuration for a Select/Get step
+    // (proven, via this donor's own real XML, to be universal across every pricing decision-table action
+    // type, never a per-attribute literal) — their absence here is exactly the shape Salesforce rejected.
+    const adFields = collectFieldMap(adNode);
+    for (const required of ["ProductId", "ProductSellingModelId", "LookUpName", "LookUpId", "LookUpApiName", "selectedFunction", "sectionCount"]) {
+      if (!adFields.has(required)) {
+        missingRequiredBindings.push(`AttributeDiscount is missing required Decision-Table lookup parameter "${required}" in the final canvas — Salesforce will reject this as an incomplete list-group/list-filter configuration.`);
+      }
+    }
+  }
+  if (!lpNode) missingRequiredBindings.push("No ListPrice occurrence in the final canvas.");
+
+  // §ListGroup structural check — see the `listGroups` field's own doc comment. Evaluated over the WHOLE
+  // final graph (not just the selected AttributeDiscount's own container) so any ListGroup left incomplete
+  // by pruning is caught, regardless of which pricing element it belongs to.
+  const listGroups: FinalCanvasStructuralAudit["listGroups"] = [];
+  for (const node of graph) {
+    if (getTagValue(node.content, "stepType") !== "ListGroup") continue;
+    const children = graph
+      .filter(n => n.parentStep === node.name)
+      .sort((a, b) => Number(a.sequenceNumber ?? 0) - Number(b.sequenceNumber ?? 0))
+      .map(n => ({ occurrenceIndex: n.occurrenceIndex, name: n.name, stepType: getTagValue(n.content, "stepType"), sequenceNumber: n.sequenceNumber }));
+    const firstChildIsAdvancedListFilter = children.length > 0 && children[0].stepType === "AdvancedListFilter";
+    let issue: string | null = null;
+    if (children.length === 0) issue = `ListGroup "${node.name}" has no children in the final canvas — Salesforce requires a list filter as its first element.`;
+    else if (!firstChildIsAdvancedListFilter) issue = `ListGroup "${node.name}"'s first child (by sequenceNumber) is "${children[0].name}" (stepType=${children[0].stepType ?? "none"}), not an AdvancedListFilter — Salesforce rejects this as "Select list filter as the first element in list group."`;
+    listGroups.push({ occurrenceIndex: node.occurrenceIndex, name: node.name, children, firstChildIsAdvancedListFilter, issue });
+  }
+  const listGroupIssues = listGroups.filter(g => g.issue).map(g => g.issue as string);
+
+  const isContractEnabledOf = (n: PhysicalStepNode | null) => n ? (collectFieldMap(n).get("IsContractEnabled") ?? null) : null;
+  const selectedAttributeDiscount = adNode ? { occurrenceIndex: adNode.occurrenceIndex, name: adNode.name, isContractEnabled: isContractEnabledOf(adNode) } : null;
+  const selectedListPrice = lpNode ? { occurrenceIndex: lpNode.occurrenceIndex, name: lpNode.name, isContractEnabled: isContractEnabledOf(lpNode) } : null;
+
+  const passed = selfReferentialInputs.length === 0 && missingRequiredBindings.length === 0 && listGroupIssues.length === 0;
+  const summary = [
+    `Final canvas structural audit: ${passed ? "PASSED" : "FAILED"}.`,
+    `${pricingElementOccurrences.length} pricing element occurrence(s), ${envelopeVariables.length} envelope variable(s), ${inputParameters.length} input parameter(s), ${outputParameters.length} output parameter(s).`,
+    `Self-referential invalid inputs: ${selfReferentialInputs.length}. Unresolved input bindings (value not declared/native): ${unresolvedInputBindings.length}. Missing required bindings: ${missingRequiredBindings.length}. ListGroup structural issues: ${listGroupIssues.length}.`,
+    `Selected AttributeDiscount: [${selectedAttributeDiscount?.occurrenceIndex ?? "none"}] IsContractEnabled=${selectedAttributeDiscount?.isContractEnabled ?? "(none)"}. Selected ListPrice: [${selectedListPrice?.occurrenceIndex ?? "none"}] IsContractEnabled=${selectedListPrice?.isContractEnabled ?? "(none)"}.`,
+  ].join(" ");
+
+  return {
+    envelopeVariables, pricingElementOccurrences, inputParameters, outputParameters,
+    unresolvedInputBindings, selfReferentialInputs, missingRequiredBindings, listGroups,
+    selectedListPrice, selectedAttributeDiscount, passed, summary,
+  };
+}
+
 /** Number of `<parameters>` blocks (top-level + nested) in a subtree of text. */
 function countParameters(xml: string): number {
   return extractFlatBlocks(xml, "parameters").length;
@@ -721,10 +1542,47 @@ function countParameters(xml: string): number {
 /** One envelope-level identifier tag (label/description/fullName/developerName/name/
  * expressionSetDefinition) whose value was regenerated from the new Pricing Procedure's own name/API
  * name instead of being copied from the donor. */
-interface RegeneratedIdentifier {
+export interface RegeneratedIdentifier {
   tag: string;
   donorValue: string;
   newValue: string;
+}
+
+/**
+ * §Root-cause fix (live evidence — "Refusing to deploy" false-positive on a Laptop re-run) — deliberately
+ * EXCLUDES `expressionSetDefinition`. It is the VERSION's foreign-key reference back to its PARENT
+ * ExpressionSetDefinition, always regenerated as the bare `ctx.apiName` with no version suffix — by
+ * Salesforce's own schema this reference is intentionally STABLE across every version of the same
+ * Expression Set, never a per-version identity. `createPipeline.ts`'s OWN org-uniqueness pre-flight check
+ * (`validateExpressionSetUniquenessAgainstOrg`) already established and documented this exact fact for a
+ * different, SOQL-verified check; this donor-comparison check simply hadn't been brought in line with it.
+ *
+ * Donor selection (`resolveAttributeBasedPricingDonor`) is deliberately product-agnostic — it scores
+ * candidates purely on structural coherence, never by name — so once a product's OWN prior Expression Set
+ * exists in the org, it can legitimately become the highest-scoring donor for regenerating a NEW version of
+ * ITSELF (confirmed live: once Laptop's own V1 existed, `resolveAttributeBasedPricingDonor` started
+ * returning Laptop's/Monitor's own small, clean, product-specific artifacts ahead of the large shared
+ * `Rev_Mgmt_Default_Pricing_Procedure2_V1`). In that self-referential-donor case, `ctx.apiName` EQUALS the
+ * donor's own `expressionSetDefinition` by construction — the CORRECT, required value for creating a new
+ * version under the same parent, not a naming collision. `fullName` (the version's OWN, genuinely
+ * version-suffixed identity) remains identity-bearing; only its match would indicate the version-number
+ * regeneration actually failed.
+ */
+const IDENTITY_BEARING_TAGS = new Set(["fullName", "developerName", "name"]);
+
+export interface IdentityCollisionCheckResult {
+  donorCollisions: RegeneratedIdentifier[];
+  nonIdentityMatches: RegeneratedIdentifier[];
+}
+
+/** Extracted for direct unit testing — the exact same logic `buildAttributeCanvas` uses to decide whether a
+ * regenerated envelope identifier's match against the donor's own value is a real collision (identity-
+ * bearing field) or expected/benign (descriptive field, or the deliberately-stable expressionSetDefinition
+ * reference). */
+export function checkIdentityCollisions(regeneratedIdentifiers: RegeneratedIdentifier[]): IdentityCollisionCheckResult {
+  const donorCollisions = regeneratedIdentifiers.filter(r => IDENTITY_BEARING_TAGS.has(r.tag) && r.donorValue.trim() !== "" && r.newValue === r.donorValue);
+  const nonIdentityMatches = regeneratedIdentifiers.filter(r => !IDENTITY_BEARING_TAGS.has(r.tag) && r.donorValue.trim() !== "" && r.newValue === r.donorValue);
+  return { donorCollisions, nonIdentityMatches };
 }
 
 
@@ -985,38 +1843,27 @@ export async function buildAttributeCanvas(
   const attributeDiscountBranchSelection = branchSelection;
 
   // §Live-org fix — PricingSettings/ListPrice are resolved against the SELECTED AttributeDiscount branch
-  // using the SAME 4-signal, priority-ordered evidence `resolveAttributeBasedPricingDonor` already proved
-  // connectivity with (`<parentStep>` chain, then physical nesting, then a matching InputUnitPrice/
-  // published-output variable binding, then declared sequence-order — see `resolveConnectedAncestor`'s doc
-  // comment, donorInspection.ts) — never assumed to be "the only one in the file" (a coherent donor can
-  // legitimately bundle more than one pricing flow, and MULTIPLE ListPrice occurrences, each paired with a
-  // different AttributeDiscount via its own variable binding), and never a guess: whichever real mechanism
-  // proved eligibility during donor selection is exactly what's used here too, so the two stages can never
+  // via `resolvePricingFlowAncestors` — the exact same function this file's own regression tests exercise
+  // directly, so testing it IS testing the real canvas-building selection path, never a parallel
+  // reimplementation. Never assumed to be "the only one in the file" (a coherent donor can legitimately
+  // bundle more than one pricing flow, and MULTIPLE ListPrice occurrences, each paired with a different
+  // AttributeDiscount via its own evidence), and never a guess: whichever real mechanism proved
+  // eligibility during donor selection is exactly what's used here too, so the two stages can never
   // disagree about whether/how this branch is connected.
-  const lpResolved = resolveConnectedAncestor(donorGraph, adNode, "ListPrice");
-  const psResolved = resolveConnectedAncestor(donorGraph, adNode, "PricingSettings");
-  const lpMatch = lpResolved.node;
-  const psMatch = psResolved.node;
-  if (!lpMatch) {
-    return {
-      success: false,
-      fatalErrors: [`Selected AttributeDiscount branch [${adNode.occurrenceIndex}] in donor "${donorSelection.fullName}" does not resolve to a ListPrice step via any known mechanism (<parentStep> chain, physical nesting, or sequence order) — this should be unreachable given the donor-selection stage already proved connectivity; refusing to guess.`],
-      warnings, attributeDiscountBranchSelection, donorExtractionDeterministic,
-    };
+  const ancestors = resolvePricingFlowAncestors(donorGraph, adNode, donorSelection.fullName);
+  warnings.push(...ancestors.warnings);
+  if (!ancestors.success || !ancestors.lpMatch || !ancestors.psMatch) {
+    return { success: false, fatalErrors: ancestors.fatalErrors, warnings, attributeDiscountBranchSelection, donorExtractionDeterministic };
   }
-  if (!psMatch) {
-    return {
-      success: false,
-      fatalErrors: [`Selected AttributeDiscount branch [${adNode.occurrenceIndex}] in donor "${donorSelection.fullName}" resolves to ListPrice ("${lpMatch.name ?? "(unnamed)"}") but never resolves to a PricingSettings step via any known mechanism — a coherent Attribute-Based Pricing flow requires both.`],
-      warnings, attributeDiscountBranchSelection, donorExtractionDeterministic,
-    };
-  }
+  const { lpMatch, psMatch } = ancestors;
+  const lpMechanismLabel = ancestors.lpMechanism ?? "none";
   client.logDebug(
     "xml-diagnostic",
     [
       `✓ Donor steps in this flow: PricingSettings ("${psMatch.name ?? "(unnamed)"}"), ListPrice ("${lpMatch.name ?? "(unnamed)"}").`,
-      `→ AttributeDiscount → ListPrice relationship: ${lpResolved.mechanism}${lpResolved.mechanism === "sequence-order" ? " (lower-confidence signal — no explicit <parentStep> or physical nesting was found; relies on declared execution order only)" : ""}.`,
-      `→ AttributeDiscount → PricingSettings relationship: ${psResolved.mechanism}${psResolved.mechanism === "sequence-order" ? " (lower-confidence signal)" : ""}.`,
+      `→ AttributeDiscount → ListPrice relationship: ${lpMechanismLabel}${lpMechanismLabel === "sequence-order" || lpMechanismLabel === "contract-flavor-fallback" ? " (lower-confidence signal)" : ""}.`,
+      `→ AttributeDiscount → PricingSettings relationship: ${ancestors.psMechanism ?? "none"}${ancestors.psMechanism === "sequence-order" ? " (lower-confidence signal)" : ""}.`,
+      ancestors.evidenceLog,
     ].join("\n"),
   );
 
@@ -1112,7 +1959,7 @@ export async function buildAttributeCanvas(
   // connection (`<parentStep>` chain, physical nesting, or declared sequence order — see
   // `resolveAttributeBasedPricingDonor`) — this donor is used exactly as it already exists.
   const adXml = adOwnPatched + adNestedAndClose;
-  client.logDebug("xml-diagnostic", `[Canvas composition] AttributeDiscount.parentStep ("${adNode.parentStep ?? "(none)"}") is unmodified — it already resolves to ListPrice ("${lpMatch.name ?? "(unnamed)"}") within the selected donor's own graph via ${lpResolved.mechanism}.`);
+  client.logDebug("xml-diagnostic", `[Canvas composition] AttributeDiscount.parentStep ("${adNode.parentStep ?? "(none)"}") is unmodified — it already resolves to ListPrice ("${lpMatch.name ?? "(unnamed)"}") within the selected donor's own graph via ${lpMechanismLabel}.`);
 
   // Finalize the structured pricing-waterfall result AFTER patching — `inputUnitPriceValue` reflects
   // what is ACTUALLY in the generated XML, never the pre-patch donor value once a correction was applied.
@@ -1516,9 +2363,13 @@ export async function buildAttributeCanvas(
   // compound identity string together with `ctx.apiName`) is correctly still checked here: two DIFFERENT
   // apiNames can never collide there since the base name differs, and Section 6's version-number injection
   // (above) already guarantees this run's OWN suffix targets the resolved next version, not the donor's.
-  const IDENTITY_BEARING_TAGS = new Set(["fullName", "developerName", "name", "expressionSetDefinition"]);
-  const donorCollisions = regeneratedIdentifiers.filter(r => IDENTITY_BEARING_TAGS.has(r.tag) && r.donorValue.trim() !== "" && r.newValue === r.donorValue);
-  const nonIdentityMatches = regeneratedIdentifiers.filter(r => !IDENTITY_BEARING_TAGS.has(r.tag) && r.donorValue.trim() !== "" && r.newValue === r.donorValue);
+  //
+  // §Root-cause fix (live evidence — "Refusing to deploy" false-positive on a Laptop re-run) — see
+  // `checkIdentityCollisions`'s own doc comment for why `expressionSetDefinition` is deliberately excluded:
+  // it's the version's stable, never-version-suffixed reference back to its PARENT ExpressionSetDefinition,
+  // and donor selection is product-agnostic enough that a product's own prior artifact can legitimately
+  // become its own new version's donor — making that match CORRECT, not a collision.
+  const { donorCollisions, nonIdentityMatches } = checkIdentityCollisions(regeneratedIdentifiers);
   const donorFullName = regeneratedIdentifiers.find(r => r.tag === "fullName")?.donorValue ?? "(none found in donor)";
   const generatedFullName = regeneratedIdentifiers.find(r => r.tag === "fullName")?.newValue ?? "(none generated)";
   client.logDebug("xml-diagnostic", [

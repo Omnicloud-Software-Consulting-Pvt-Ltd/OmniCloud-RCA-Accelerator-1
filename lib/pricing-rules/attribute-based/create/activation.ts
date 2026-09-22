@@ -20,6 +20,70 @@ import type { ProcedureStepLite } from "../types";
 import { buildFailureDiagnostics } from "./errorDiagnostics";
 import { describeExpressionSetVersionSchema, fetchExpressionSetViaConnectRest } from "./verifySalesforceState";
 
+/**
+ * §Root-cause fix (live evidence) — this pipeline activates every new ExpressionSetVersion it deploys, but
+ * never deactivated the PREVIOUS one. Querying the real, authoritative Business Rules Connect REST resource
+ * (`GET /connect/business-rules/expression-set/{id}` — the same endpoint Salesforce's own pricing engine
+ * reads, proven more reliable than SOQL against `ExpressionSetVersion` for this object elsewhere in this
+ * file) for `Laptop_Attribute_Based_Pricing_Procedure` found FOUR versions (V2, V3, V4, V5) simultaneously
+ * `enabled: true` — only V1 was correctly superseded. Every one of this pipeline's own runs (one per new
+ * attribute rule) creates and activates a new version without ever turning off the one it replaces, so
+ * stale, superseded versions accumulate as "enabled" indefinitely.
+ *
+ * `IsActive` (the real field, Describe-confirmed elsewhere in this file) is a per-record boolean, not a
+ * single-current-pointer field — Salesforce imposes no server-side "only one active version" constraint
+ * itself, so leaving old versions enabled is a purely additive, non-obviously-rejected mistake this
+ * pipeline must prevent on its own. Deactivating every OTHER currently-enabled version of the SAME
+ * ExpressionSetDefinition (via the same Connect REST resource for discovery, then a plain field update per
+ * stale version) right after confirming the new one is active — non-fatal per version (one already-immutable
+ * or already-inactive version must never block cleaning up the others), never touching the version just
+ * activated.
+ */
+export async function deactivateOtherEnabledVersions(
+  client: SalesforceClient,
+  expressionSetId: string,
+  keepVersionId: string,
+  field: string,
+  fieldType: "boolean" | "string",
+  steps: ProcedureStepLite[],
+  warnings: string[],
+): Promise<void> {
+  let fetched: Awaited<ReturnType<typeof fetchExpressionSetViaConnectRest>>;
+  try {
+    fetched = await fetchExpressionSetViaConnectRest(client, expressionSetId);
+  } catch (err) {
+    const message = `Could not enumerate other ExpressionSetVersions via Connect REST to check for stale enabled ones (non-fatal): ${err instanceof Error ? err.message : String(err)}`;
+    step(steps, "activate-version", "info", `→ ${message}`);
+    warnings.push(message);
+    return;
+  }
+
+  const others = (fetched.response.versions ?? []).filter(v => {
+    if (!v.id || v.id === keepVersionId) return false;
+    const enabledFlag = v.enabled ?? v.isEnabled ?? v.isActive;
+    return enabledFlag === true;
+  });
+
+  if (others.length === 0) {
+    step(steps, "activate-version", "info", "→ No other enabled ExpressionSetVersion found for this ExpressionSetDefinition — nothing to deactivate.");
+    return;
+  }
+
+  step(steps, "activate-version", "info", `→ ${others.length} other ExpressionSetVersion(s) are still enabled (${others.map(v => v.id).join(", ")}) — deactivating each so exactly one version is active.`);
+  const inactiveValue: boolean | string = fieldType === "boolean" ? false : "Draft";
+  for (const other of others) {
+    const otherId = other.id as string;
+    try {
+      await client.updateRecord("ExpressionSetVersion", otherId, { [field]: inactiveValue });
+      step(steps, "activate-version", "success", `✓ Deactivated stale ExpressionSetVersion ${otherId} (versionNumber=${other.versionNumber ?? "?"}).`);
+    } catch (err) {
+      const message = `Could not deactivate stale ExpressionSetVersion ${otherId} (non-fatal — it remains enabled and should be deactivated manually in Setup): ${err instanceof Error ? err.message : String(err)}`;
+      step(steps, "activate-version", "info", `→ ${message}`);
+      warnings.push(message);
+    }
+  }
+}
+
 function step(steps: ProcedureStepLite[], name: string, status: ProcedureStepLite["status"], message: string) {
   steps.push({ step: name, status, message, timestamp: Date.now() });
 }
@@ -113,6 +177,7 @@ export async function activateExpressionSetVersion(
     if (isActivationConfirmed(fieldType, currentRawValue)) {
       step(steps, "activate-version", "success", `✓ ExpressionSetVersion is already active — no update attempted (Salesforce rejects redundant updates to an already-enabled version).`);
       step(steps, "activate-version", "success", "✓ Expression Set Version status: Active.");
+      if (expressionSetId) await deactivateOtherEnabledVersions(client, expressionSetId, versionId, field, fieldType, steps, warnings);
       return {
         status: "Active",
         detail: detail({ attempted: false, endpoint: "none (already active)", field, fieldType, readBackConfirmed: true }),
@@ -165,6 +230,7 @@ export async function activateExpressionSetVersion(
     }
     step(steps, "activate-version", "success", `✓ Expression Set Version activation request succeeded.`);
     step(steps, "activate-version", "success", `✓ Expression Set Version status: Active (confirmed via direct Id read-back on ${field}).`);
+    if (expressionSetId) await deactivateOtherEnabledVersions(client, expressionSetId, versionId, field, fieldType, steps, warnings);
     return {
       status: "Active",
       detail: detail({ attempted: true, endpoint, field, fieldType, httpStatus: 200, readBackConfirmed: true, connectRestCrossCheck }),
@@ -188,6 +254,7 @@ export async function activateExpressionSetVersion(
         if (isActivationConfirmed(fieldType, recheckValue)) {
           step(steps, "activate-version", "success", `✓ Confirmed via read-back: ${field} = ${JSON.stringify(recheckValue)} — already Active.`);
           step(steps, "activate-version", "success", "✓ Expression Set Version status: Active.");
+          if (expressionSetId) await deactivateOtherEnabledVersions(client, expressionSetId, versionId, field, fieldType, steps, warnings);
           return {
             status: "Active",
             detail: detail({ attempted: true, endpoint, field, fieldType, httpStatus, salesforceErrorCode: errorCode, salesforceErrorMessage: failure.salesforceErrorMessage ?? failure.reason, readBackConfirmed: true }),

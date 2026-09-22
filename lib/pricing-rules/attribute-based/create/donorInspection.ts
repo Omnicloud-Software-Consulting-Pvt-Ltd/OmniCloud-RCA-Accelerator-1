@@ -23,7 +23,7 @@ const ABSENT = "<absent>";
 /** Unrelated-pricing-type signals per Phase 2B's own suggested classification — the same "shared/default
  * procedure bundles every pricing capability" signal set the earlier investigation turn already named. */
 export const SHARED_SIGNAL_ACTION_TYPES = new Set([
-  "FormulaBasedPricing", "ManualDiscount", "VolumeTierDiscount", "BundleDiscount", "Proration", "SubscriptionPricing",
+  "FormulaBasedPricing", "ManualDiscount", "VolumeTierDiscount", "VolumeDiscount", "BundleDiscount", "Proration", "SubscriptionPricing",
 ]);
 
 function deriveFallbackFullName(fileName: string): string {
@@ -114,7 +114,26 @@ function parsedSequenceNumber(node: PhysicalStepNode): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-export type ConnectionMechanism = "parentStep-chain" | "physical-nesting" | "variable-binding" | "sequence-order" | "none";
+export type ConnectionMechanism = "parentStep-chain" | "physical-nesting" | "variable-binding" | "price-waterfall-variable" | "sequence-order" | "none";
+
+/**
+ * §REMOVED (self-contradiction found, not disproved by live data — this environment has no live
+ * Salesforce session and no persisted copy of this donor's raw XML, so the hypothesis below could never
+ * be confirmed OR refuted from real bytes). A `shared-container-sibling` signal — two steps declaring the
+ * IDENTICAL `<parentStep>` value treated as proof they belong to the same pricing branch — was added and
+ * shipped, then found to directly contradict THIS FILE'S OWN already-established finding about this exact
+ * donor (see the very next doc comment below): "`<parentStep>` in this org governs canvas PLACEMENT, not
+ * the actual pricing DATA dependency" — discovered when AttributeDiscount's own `<parentStep>` naming a
+ * `ListContainer` was proven NOT to indicate a real dependency on whatever else that container touches.
+ * Treating "two steps share a parentStep container" as reliable evidence uses the EXACT SAME assumption
+ * (this donor's ListContainer/parentStep values carry semantic meaning) that was already discredited one
+ * investigation earlier, on the same donor. Since ListPrice's specific identity is load-bearing — the
+ * selected occurrence's raw XML is cloned verbatim into the deployed canvas (see `resolvePricingFlowAncestors`
+ * in canvasBuilder.ts: `lpXml = lpMatch.full`, then spliced into the composed Expression Set and its own
+ * LookUpId/output values read directly) — a wrong pairing would not fail loudly, it would silently deploy
+ * a procedure that computes price from the WRONG ListPrice branch. An unproven, self-contradicting
+ * mechanism is worse than no mechanism here; removed rather than kept because a synthetic test passed.
+ */
 
 /**
  * §Live-org fix (2nd occurrence) — a REAL org's working Attribute-Based donor (`Rev_Mgmt_Default_...`)
@@ -128,21 +147,35 @@ export type ConnectionMechanism = "parentStep-chain" | "physical-nesting" | "var
  * This is not invented — both the input value and the output value are already present, verbatim, in the
  * donor's own XML; recognizing a match between them as connectivity proof only promotes a signal
  * `canvasBuilder.ts` already trusted for pricing-waterfall VALIDATION (see `resolveTargetInputUnitPriceValue`)
- * into ALSO serving as donor-connectivity proof. Requires an UNAMBIGUOUS match — exactly one ListPrice
- * occurrence in the donor publishes the value AttributeDiscount consumes; two or more candidates
+ * into ALSO serving as donor-connectivity proof. Requires an UNAMBIGUOUS match — exactly one occurrence of
+ * `publisherActionType` in the donor publishes the value AttributeDiscount consumes; two or more candidates
  * publishing the same value is genuine ambiguity, never resolved by guessing.
+ *
+ * §Live-org fix (3rd occurrence, `Rev_Mgmt_Default_Pricing_Procedure2_V1`) — generalized from
+ * ListPrice-only to an arbitrary `publisherActionType`. Real donor evidence: NEITHER of this org's two
+ * ListPrice branches publishes an output named `NetUnitPrice` (they publish `ListPrice`/`ItemContractPrice`
+ * respectively) — but PricingSettings genuinely DOES declare `NetUnitPrice` as one of its own outputs, and
+ * BOTH AttributeDiscount occurrences declare `InputUnitPrice` bound to exactly that name. This is Revenue
+ * Cloud's documented "pricing waterfall" convention: `NetUnitPrice` is a shared, running price context that
+ * PricingSettings owns/coordinates and that price-affecting steps (ListPrice, AttributeDiscount, ...) read
+ * and write in sequence — a real, org-native mechanism, not a step-to-step point-to-point binding the way
+ * `variable-binding` (ListPrice-scoped) models it. Callers use this to prove AttributeDiscount participates
+ * in the SAME pricing flow as PricingSettings even when neither `<parentStep>` nor physical nesting nor a
+ * direct ListPrice output match exists — never used to claim a fabricated DIRECT ListPrice dependency.
  */
-function resolveListPriceViaVariableBinding(graph: PhysicalStepNode[], adNode: PhysicalStepNode): { node: PhysicalStepNode | null; matchedValue: string | null } {
+function resolveViaVariableBinding(
+  graph: PhysicalStepNode[], adNode: PhysicalStepNode, publisherActionType: string,
+): { node: PhysicalStepNode | null; matchedValue: string | null } {
   const adBindings = collectAllParameterBindings(ownFieldsOnly(adNode));
   const inputUnitPrice = findBindingValue(adBindings, "InputUnitPrice");
   if (!inputUnitPrice) return { node: null, matchedValue: null };
 
-  const listPriceNodes = graph.filter(n => n.actionType === "ListPrice");
-  const matches = listPriceNodes.filter(lp =>
-    // Searched through the WHOLE ListPrice subtree (never assumed to be a direct/top-level field) —
-    // passing `lp.full` (not `ownFieldsOnly(lp)`) to the same binding collector used everywhere else in
+  const publisherNodes = graph.filter(n => n.actionType === publisherActionType);
+  const matches = publisherNodes.filter(p =>
+    // Searched through the WHOLE publisher subtree (never assumed to be a direct/top-level field) —
+    // passing `p.full` (not `ownFieldsOnly(p)`) to the same binding collector used everywhere else in
     // this file gives exactly that recursive scope, matching canvasBuilder.ts's own established pattern.
-    collectAllParameterBindings(lp.full).some(b => b.output && b.value === inputUnitPrice),
+    collectAllParameterBindings(p.full).some(b => b.output && b.value === inputUnitPrice),
   );
   if (matches.length !== 1) return { node: null, matchedValue: null };
   return { node: matches[0], matchedValue: inputUnitPrice };
@@ -150,7 +183,7 @@ function resolveListPriceViaVariableBinding(graph: PhysicalStepNode[], adNode: P
 
 /**
  * §Live-org fix — resolves how (if at all) `node` (an AttributeDiscount occurrence) is connected to the
- * nearest ancestor in `graph` with actionType `targetActionType`, checking FOUR independent, real,
+ * nearest ancestor in `graph` with actionType `targetActionType`, checking FIVE independent, real,
  * already-present signals in this exact priority order (strongest evidence first — never a guess, never an
  * invented tag):
  *   1. `parentStep-chain` — `node`'s own `<parentStep>` NAME chain (Salesforce's own resolution mechanism)
@@ -162,14 +195,25 @@ function resolveListPriceViaVariableBinding(graph: PhysicalStepNode[], adNode: P
  *   3. `variable-binding` — ONLY checked when `targetActionType === "ListPrice"` and `node` is an
  *      AttributeDiscount occurrence (the one relationship this signal has live evidence for): its
  *      `InputUnitPrice` value unambiguously matches one specific ListPrice occurrence's own published
- *      output value (see `resolveListPriceViaVariableBinding`) — proven necessary by a SECOND real org
+ *      output value (see `resolveViaVariableBinding`) — proven necessary by a SECOND real org
  *      whose AttributeDiscount's `<parentStep>` names a `ListContainer` (canvas placement), not ListPrice.
- *   4. `sequence-order` — weakest signal, used only when none of the above resolves: within the SAME
+ *   4. `price-waterfall-variable` — ONLY checked when `targetActionType === "PricingSettings"` and `node`
+ *      is an AttributeDiscount occurrence: its `InputUnitPrice` value unambiguously matches PricingSettings'
+ *      own published output value — proven necessary by a THIRD real org (`Rev_Mgmt_Default_Pricing_
+ *      Procedure2_V1`) whose two ListPrice branches publish `ListPrice`/`ItemContractPrice` (never
+ *      `NetUnitPrice`), while PricingSettings genuinely publishes `NetUnitPrice` and BOTH AttributeDiscount
+ *      occurrences consume exactly that name — Revenue Cloud's documented shared "pricing waterfall"
+ *      variable, owned/coordinated by PricingSettings, not a direct ListPrice→AttributeDiscount link.
+ *      §This is a PricingSettings-only signal, deliberately never generalized to ListPrice pairing — see
+ *      the removed `shared-container-sibling` signal's doc comment above for why extending "shared
+ *      container" reasoning to ListPrice specifically was found to self-contradict this exact donor's own
+ *      established parentStep semantics.
+ *   5. `sequence-order` — weakest signal, used only when none of the above resolves: within the SAME
  *      donor graph, a step of `targetActionType` exists whose own `<sequenceNumber>` is strictly less than
  *      `node`'s (i.e. it executes earlier in this donor's own declared canvas order). This does not PROVE a
  *      data dependency, only relative execution order that is already explicit in the donor's own XML —
  *      callers must log this mechanism explicitly as lower-confidence, never silently treat it the same as
- *      the three stronger signals.
+ *      the stronger signals.
  * Returns `"none"` if nothing resolves — never fabricates a connection.
  */
 export interface ResolvedConnectedAncestor {
@@ -177,7 +221,7 @@ export interface ResolvedConnectedAncestor {
   mechanism: ConnectionMechanism;
 }
 
-/** Same 4-signal priority as the file-level doc above, but returns the actual matching ANCESTOR NODE
+/** Same 5-signal priority as the file-level doc above, but returns the actual matching ANCESTOR NODE
  * alongside the mechanism that found it — `canvasBuilder.ts` needs the real node (to read its `<name>`,
  * splice its content, etc.), not just a boolean/label. For `sequence-order`, picks the closest predecessor
  * (highest `<sequenceNumber>` that is still less than `node`'s own) among same-actionType candidates —
@@ -191,8 +235,13 @@ export function resolveConnectedAncestor(graph: PhysicalStepNode[], node: Physic
   if (viaPhysical) return { node: viaPhysical, mechanism: "physical-nesting" };
 
   if (targetActionType === "ListPrice" && node.actionType === "AttributeDiscount") {
-    const viaBinding = resolveListPriceViaVariableBinding(graph, node);
+    const viaBinding = resolveViaVariableBinding(graph, node, "ListPrice");
     if (viaBinding.node) return { node: viaBinding.node, mechanism: "variable-binding" };
+  }
+
+  if (targetActionType === "PricingSettings" && node.actionType === "AttributeDiscount") {
+    const viaWaterfall = resolveViaVariableBinding(graph, node, "PricingSettings");
+    if (viaWaterfall.node) return { node: viaWaterfall.node, mechanism: "price-waterfall-variable" };
   }
 
   const nodeSeq = parsedSequenceNumber(node);
@@ -334,6 +383,14 @@ function classifyDonor(input: {
   pricingSettingsCount: number;
   listPriceCount: number;
   anyAttributeDiscountConnectedToListPrice: boolean;
+  // §Live-org fix (Rev_Mgmt_Default_Pricing_Procedure2_V1) — a real donor can have AttributeDiscount
+  // connected to PricingSettings via the shared price-waterfall variable (see `price-waterfall-variable`
+  // in `resolveConnectedAncestor`'s doc comment) while genuinely NOT connected to either ListPrice branch
+  // by name/output — this is still real, evidenced participation in the SAME pricing flow, since
+  // PricingSettings owns the running NetUnitPrice context both ListPrice and AttributeDiscount read/write.
+  // Never used alone: `hasListPrice` is still required separately, so this never claims coherence for a
+  // donor that lacks a ListPrice branch entirely.
+  anyAttributeDiscountConnectedToPricingSettings: boolean;
 }): { classification: DonorClassification; reasons: string[] } {
   const reasons: string[] = [];
   const hasPricingSettings = input.pricingSettingsCount > 0;
@@ -364,6 +421,10 @@ function classifyDonor(input: {
   }
   if (unrelated.length === 0 && input.anyAttributeDiscountConnectedToListPrice) {
     reasons.push("No unrelated pricing-type branches, and at least one AttributeDiscount occurrence resolves back to ListPrice (via its <parentStep> chain, physical nesting, a matching input/output variable binding, or declared sequence order).");
+    return { classification: "ATTRIBUTE_BASED_PRICING_LIKELY", reasons };
+  }
+  if (unrelated.length === 0 && input.anyAttributeDiscountConnectedToPricingSettings) {
+    reasons.push("No unrelated pricing-type branches, and at least one AttributeDiscount occurrence resolves back to PricingSettings via the shared price-waterfall variable (its InputUnitPrice matches PricingSettings' own published output), even though it does not resolve back to ListPrice directly.");
     return { classification: "ATTRIBUTE_BASED_PRICING_LIKELY", reasons };
   }
   reasons.push("Has the core PricingSettings/ListPrice/AttributeDiscount signal, but not enough evidence for a more specific classification.");
@@ -474,6 +535,7 @@ export function inspectDonorCandidate(fileName: string, xml: string): Expression
     pricingSettingsCount: pricingSettingsOccurrences,
     listPriceCount: listPriceOccurrences,
     anyAttributeDiscountConnectedToListPrice: attributeDiscountBranches.some(b => b.connectedToListPrice),
+    anyAttributeDiscountConnectedToPricingSettings: attributeDiscountBranches.some(b => b.connectedToPricingSettings),
   });
 
   return {
@@ -501,26 +563,51 @@ export function rankCandidates(candidates: ExpressionSetDonorCandidate[]): Donor
       else if (c.classification === "PRICING_PROCEDURE_LIKELY") { score += 3; reasons.push("classified PRICING_PROCEDURE_LIKELY"); }
       else if (c.classification === "SHARED_PRICING_PROCEDURE_LIKELY") { score += 1; reasons.push("classified SHARED_PRICING_PROCEDURE_LIKELY (large, many unrelated branches)"); }
       else { reasons.push(`classified ${c.classification}`); }
+
+      // §Live-org fix — prefer STRONGER evidence: a branch proven via its own real <parentStep> name, via
+      // genuine physical nesting, via a matching ListPrice input/output variable binding, or via the
+      // shared PricingSettings price-waterfall variable, all outrank one whose only signal is declared
+      // sequence-order (the weakest — "does not PROVE a data dependency," per `resolveConnectedAncestor`'s
+      // own doc comment) — never picks a weakly-evidenced donor over a strongly-evidenced one. Computed
+      // once here (not separately per target) so the unrelated-branch penalty below can be calibrated
+      // against it.
+      const listPriceBranches = c.attributeDiscountBranches.filter(b => b.connectedToListPrice);
+      const waterfallBranches = c.attributeDiscountBranches.filter(b => b.connectedToPricingSettings && b.pricingSettingsConnection === "price-waterfall-variable");
+      const bestMechanism = listPriceBranches.some(b => b.listPriceConnection === "parentStep-chain") ? "parentStep-chain"
+        : listPriceBranches.some(b => b.listPriceConnection === "physical-nesting") ? "physical-nesting"
+        : listPriceBranches.some(b => b.listPriceConnection === "variable-binding") ? "variable-binding"
+        : waterfallBranches.length > 0 ? "price-waterfall-variable"
+        : listPriceBranches.length > 0 ? "sequence-order"
+        : "none";
+      const connectivityScore = bestMechanism === "parentStep-chain" ? 5 : bestMechanism === "physical-nesting" ? 4
+        : bestMechanism === "variable-binding" ? 3 : bestMechanism === "price-waterfall-variable" ? 3
+        : bestMechanism === "sequence-order" ? 2 : 0;
+      score += connectivityScore;
+      if (bestMechanism === "none") reasons.push("no AttributeDiscount occurrence resolves to ListPrice or PricingSettings via any known mechanism");
+      else reasons.push(`≥1 AttributeDiscount occurrence resolves to its pricing flow — strongest evidence: ${bestMechanism} (+${connectivityScore})`);
+
       const unrelatedCount = c.uniqueActionTypes.filter(t => SHARED_SIGNAL_ACTION_TYPES.has(t)).length;
-      if (unrelatedCount > 0) { score -= unrelatedCount; reasons.push(`${unrelatedCount} unrelated pricing-type branch(es) present (-${unrelatedCount})`); }
-      const connectedBranches = c.attributeDiscountBranches.filter(b => b.connectedToListPrice);
-      if (connectedBranches.length > 0) {
-        score += 2;
-        // §Live-org fix — prefer STRONGER evidence: a branch proven via its own real <parentStep> name, or
-        // via genuine physical nesting, or via a matching input/output variable binding, outranks one
-        // whose only signal is declared sequence-order (the weakest) — never picks a weakly-evidenced
-        // donor over a strongly-evidenced one.
-        const bestMechanism = connectedBranches.some(b => b.listPriceConnection === "parentStep-chain")
-          ? "parentStep-chain"
-          : connectedBranches.some(b => b.listPriceConnection === "physical-nesting")
-            ? "physical-nesting"
-            : connectedBranches.some(b => b.listPriceConnection === "variable-binding")
-              ? "variable-binding"
-              : "sequence-order";
-        const mechanismBonus = bestMechanism === "parentStep-chain" ? 3 : bestMechanism === "physical-nesting" ? 2 : bestMechanism === "variable-binding" ? 1 : 0;
-        score += mechanismBonus;
-        reasons.push(`≥1 AttributeDiscount occurrence resolves to ListPrice (+2), strongest evidence: ${bestMechanism}${mechanismBonus > 0 ? ` (+${mechanismBonus})` : " (weakest signal — no bonus)"}`);
-      } else reasons.push("no AttributeDiscount occurrence resolves to ListPrice via any known mechanism");
+      if (unrelatedCount > 0) {
+        // §Live-org fix (Rev_Mgmt_Default_Pricing_Procedure2_V1) — this uncapped, per-unrelated-branch-type
+        // penalty made it mathematically impossible for ANY donor with many unrelated branches to ever
+        // clear `MINIMUM_TRUSTED_DONOR_SCORE`, regardless of how strong its OWN AttributeDiscount
+        // connectivity evidence was — contradicting the floor's actual purpose (distrust WEAK evidence
+        // bundled with many unrelated branches, not distrust STRONG evidence merely for being bundled).
+        // Capped at 3 (the same "unrelated.length >= 3" threshold `classifyDonor` already uses to accept
+        // "this IS a legitimately large shared procedure" as a real, expected shape) — but ONLY when the
+        // best connectivity mechanism is stronger than the weakest tier (sequence-order); a donor whose
+        // ONLY evidence is sequence-order keeps the FULL, uncapped penalty, since weak evidence bundled
+        // with many unrelated branches is exactly the low-confidence shape this floor must keep rejecting
+        // (see donorInspection.scoreFloor.test.ts's "Org B" regression).
+        const penaltyCap = bestMechanism !== "sequence-order" && bestMechanism !== "none" ? 3 : Infinity;
+        const penalty = Math.min(unrelatedCount, penaltyCap);
+        score -= penalty;
+        reasons.push(
+          penalty < unrelatedCount
+            ? `${unrelatedCount} unrelated pricing-type branch(es) present, capped at -${penalty} (strong connectivity evidence: ${bestMechanism})`
+            : `${unrelatedCount} unrelated pricing-type branch(es) present (-${penalty})`,
+        );
+      }
       if (c.physicalStepCount <= 10) { score += 1; reasons.push(`small physical step count (${c.physicalStepCount}) — unlikely to be a large shared procedure (+1)`); }
       return { fullName: c.fullName, score, reason: reasons.join("; ") };
     })
@@ -652,11 +739,17 @@ export async function resolveAttributeBasedPricingDonor(client: SalesforceClient
   const inspected = files.map(f => ({ file: f, candidate: inspectDonorCandidate(f.fileName, f.content) }));
   const candidatesWithAttributeDiscount = inspected.filter(e => e.candidate.attributeDiscountOccurrences > 0).map(e => e.candidate);
 
+  // §Live-org fix (Rev_Mgmt_Default_Pricing_Procedure2_V1) — a candidate is also eligible when at least
+  // one AttributeDiscount branch is proven connected to PricingSettings via the shared price-waterfall
+  // variable (`price-waterfall-variable`), even when NEITHER of the donor's ListPrice branches is the
+  // direct publisher of the value AttributeDiscount consumes. ListPrice's own presence is still separately
+  // required (`listPriceOccurrences > 0` above) — this never claims eligibility for a donor that lacks a
+  // ListPrice branch entirely, only recognizes a real, evidenced alternative path to the SAME pricing flow.
   const eligible = inspected.filter(({ candidate }) =>
     candidate.pricingSettingsOccurrences > 0
     && candidate.listPriceOccurrences > 0
     && candidate.attributeDiscountOccurrences > 0
-    && candidate.attributeDiscountBranches.some(b => b.connectedToListPrice),
+    && candidate.attributeDiscountBranches.some(b => b.connectedToListPrice || b.connectedToPricingSettings),
   );
   if (eligible.length === 0) return { selection: null, candidatesWithAttributeDiscount };
 
@@ -665,7 +758,7 @@ export async function resolveAttributeBasedPricingDonor(client: SalesforceClient
   if (top.score < MINIMUM_TRUSTED_DONOR_SCORE) {
     client.logDebug(
       "xml-diagnostic",
-      `→ Donor rejected — every candidate with a proven ListPrice connection still scored below the confidence floor (top: "${top.fullName}" scored ${top.score}, minimum trusted score is ${MINIMUM_TRUSTED_DONOR_SCORE}). ` +
+      `→ Donor rejected — every candidate with a proven ListPrice/PricingSettings connection still scored below the confidence floor (top: "${top.fullName}" scored ${top.score}, minimum trusted score is ${MINIMUM_TRUSTED_DONOR_SCORE}). ` +
       `Never selecting "the least-bad of several untrustworthy donors" — see the ranking below for exactly why each one was penalized.\n` +
       ranking.map((r, i) => `${i + 1}. ${r.fullName} — score ${r.score} — ${r.reason}`).join("\n"),
     );
@@ -673,7 +766,7 @@ export async function resolveAttributeBasedPricingDonor(client: SalesforceClient
   }
   const selected = eligible.find(e => e.candidate.fullName === top.fullName)!;
   const connectedAttributeDiscountOccurrenceIndexes = selected.candidate.attributeDiscountBranches
-    .filter(b => b.connectedToListPrice)
+    .filter(b => b.connectedToListPrice || b.connectedToPricingSettings)
     .map(b => b.occurrenceIndex);
 
   return {

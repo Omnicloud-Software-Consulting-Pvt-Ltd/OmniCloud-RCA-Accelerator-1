@@ -167,6 +167,12 @@ export interface AttributeBasedMappingOverrides {
   valuesToCreate?: string[];
   /** `${realAttributeName}::${enteredValue}` -> the user's chosen adjustment type/amount for that row (Part 3) — overrides whatever (if anything) the prompt itself stated. */
   adjustmentOverrides?: Record<string, { adjustmentType: ExtractedAdjustmentType; adjustment: number }>;
+  /** §Phase 6 fix — the user's choice when the prompt's stated base price disagrees with Salesforce's
+   * real Standard Pricebook price (`price-conflict` stage). `USE_EXISTING` proceeds with Salesforce's
+   * real price unmentioned; `USE_NEW` proceeds acknowledging the prompt's stated price for reference —
+   * neither ever changes the real Salesforce price, which is a Product/Pricebook concern outside this
+   * pipeline's scope. */
+  basePriceDecision?: "USE_EXISTING" | "USE_NEW";
 }
 
 /* ── Final discriminated result — the UI renders exactly one of these per call. ── */
@@ -175,6 +181,16 @@ export type AttributeBasedAnalysisResult =
   | { stage: "product-missing"; error: string; steps: ProcedureStepLite[] }
   | { stage: "product-not-found"; productName: string; suggestions: ProductCandidate[]; extracted: ExtractedPricingRequirement; steps: ProcedureStepLite[] }
   | { stage: "product-ambiguous"; productName: string; matches: ProductCandidate[]; extracted: ExtractedPricingRequirement; steps: ProcedureStepLite[] }
+  | {
+      /** §Phase 6 fix — the prompt explicitly stated a base price that disagrees with Salesforce's real
+       * Standard Pricebook price for this product. Never silently resolved either way. */
+      stage: "price-conflict";
+      product: DiscoveredProduct;
+      extracted: ExtractedPricingRequirement;
+      existingBasePrice: number;
+      requestedBasePrice: number;
+      steps: ProcedureStepLite[];
+    }
   | { stage: "salesforce-error"; error: string; steps: ProcedureStepLite[] }
   | { stage: "no-attributes-found"; product: DiscoveredProduct; extracted: ExtractedPricingRequirement; steps: ProcedureStepLite[] }
   | {

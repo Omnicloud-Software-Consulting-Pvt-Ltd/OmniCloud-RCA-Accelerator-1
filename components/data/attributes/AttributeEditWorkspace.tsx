@@ -79,17 +79,26 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
 
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveWarning, setSaveWarning] = useState<string | null>(null);
+  const [addValueError, setAddValueError] = useState<string | null>(null);
   const [showChangesPanel, setShowChangesPanel] = useState(false);
   const [confirmLeave, setConfirmLeave] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState<EditableValue | null>(null);
 
+  /** Applies a fresh, canonical Salesforce read into local state — the ONLY thing that decides what's shown, never an optimistic guess. Reused for the initial load and for re-syncing after a save. */
+  const applyAttribute = (attribute: AttributeDetail) => {
+    setOriginal(attribute);
+    setFields(toFields(attribute));
+    setValues(
+      attribute.picklistValues
+        .filter(v => v.isActive !== false)
+        .map(v => ({ ...v, status: "existing" as const, editedDisplayValue: v.displayValue })),
+    );
+  };
+
   useEffect(() => {
     quoteApiGet<{ success: true; attribute: AttributeDetail }>("Load attribute", `/api/sf/attributes/${attributeId}`)
-      .then(res => {
-        setOriginal(res.attribute);
-        setFields(toFields(res.attribute));
-        setValues(res.attribute.picklistValues.map(v => ({ ...v, status: "existing" as const, editedDisplayValue: v.displayValue })));
-      })
+      .then(res => applyAttribute(res.attribute))
       .catch(err => setLoadError(toErrorPanelData(err, "Could not load this attribute")))
       .finally(() => setLoading(false));
   }, [attributeId]);
@@ -107,6 +116,13 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
   const handleAddValue = () => {
     const text = newValueText.trim();
     if (!text) return;
+    setAddValueError(null);
+    const key = text.toLowerCase();
+    const isDuplicate = values.some(v => v.status !== "pendingRemove" && v.editedDisplayValue.trim().toLowerCase() === key);
+    if (isDuplicate) {
+      setAddValueError(`"${text}" already exists on this attribute.`);
+      return;
+    }
     const maxSeq = values.reduce((m, v) => Math.max(m, v.sequence), 0);
     setValues(prev => [...prev, {
       id: `pending-${Date.now()}-${text}`, value: text, displayValue: text, sequence: maxSeq + 1, isActive: true,
@@ -136,6 +152,7 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
     if (!original || !fields || !dirty) return;
     setSaving(true);
     setSaveError(null);
+    setSaveWarning(null);
 
     const patch: Record<string, unknown> = {};
     if (fields.name !== original.name) patch.name = fields.name;
@@ -154,11 +171,31 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ patch: Object.keys(patch).length ? patch : undefined, addValues, removeValueIds, updateValues }),
       });
-      const data = await res.json();
+      const data: {
+        success: boolean;
+        errors?: { step: string; error: string }[];
+        skipped?: { step: string; reason: string }[];
+        attribute?: AttributeDetail | null;
+      } = await res.json();
+
+      // A partial/failed save still returns the CANONICAL post-attempt
+      // Salesforce state (whatever actually landed) — always re-sync the
+      // form to it so the user is never looking at stale optimistic state
+      // that doesn't match what's really in Salesforce.
+      if (data.attribute) applyAttribute(data.attribute);
+
       if (!res.ok || !data.success) {
-        setSaveError(data.error ?? "Failed to save attribute changes.");
+        const detail = data.errors?.length
+          ? data.errors.map(e => e.error).join(" • ")
+          : "Salesforce rejected one or more of these changes.";
+        setSaveError(detail);
         return;
       }
+
+      if (data.skipped?.length) {
+        setSaveWarning(data.skipped.map(s => s.reason).join(" • "));
+      }
+
       const instanceUrl = loadSession()?.instanceUrl;
       if (instanceUrl) {
         const record = toCreatedSalesforceRecord(instanceUrl, "AttributeDefinition", attributeId, fields.name);
@@ -170,7 +207,7 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
       }
       onSaved();
     } catch {
-      setSaveError("Network error — could not reach Salesforce.");
+      setSaveError("Network error — could not reach Salesforce. Your changes were not saved — please try again.");
     } finally {
       setSaving(false);
     }
@@ -216,6 +253,11 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
       <div style={{ padding: 24, display: "flex", flexDirection: "column", gap: 24, maxWidth: 900 }}>
 
         {saveError && <ErrorPanel isDark={isDark} error={{ title: "Could not save attribute changes", message: saveError }} />}
+        {saveWarning && !saveError && (
+          <div className="flex items-start gap-2" style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid #F59E0B55", background: "rgba(245,158,11,0.08)", fontSize: 12, color: "#F59E0B" }}>
+            <Ic n="alert" s={14} /> <span>{saveWarning}</span>
+          </div>
+        )}
 
         {/* Basic Information */}
         <section>
@@ -266,10 +308,10 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
               </p>
             </div>
 
-            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: addValueError ? 6 : 12 }}>
               <input
                 value={newValueText}
-                onChange={e => setNewValueText(e.target.value)}
+                onChange={e => { setNewValueText(e.target.value); if (addValueError) setAddValueError(null); }}
                 onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); handleAddValue(); } }}
                 placeholder="New picklist value…"
                 style={{ ...inputStyle(t), flex: 1 }}
@@ -279,6 +321,9 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
                 <Ic n="plus" s={13} /> Add Value
               </button>
             </div>
+            {addValueError && (
+              <p style={{ fontSize: 11.5, color: "#FF4066", marginBottom: 12 }}>{addValueError}</p>
+            )}
 
             {confirmRemove && (
               <div style={{ marginBottom: 12, padding: 14, borderRadius: 10, border: "1px solid #FF406655", background: "rgba(255,64,102,0.06)" }}>

@@ -230,19 +230,23 @@ export async function deployExpressionSetDefinition(
   apiName: string,
   fileXml: string,
   donorFileName?: string,
+  // §Bundle-Based Pricing port — parametrized so this same deploy engine can be reused unchanged for any
+  // pricing-type's Expression Set (e.g. "BundleDiscount"). Defaults to "AttributeDiscount" so every
+  // existing call site (which passes only 4 args) keeps its exact prior behavior.
+  expectedActionType: string = "AttributeDiscount",
 ): Promise<DeployExpressionSetResult> {
   const donor = buildDonorDescriptor(donorFileName);
   const naming = deriveNamingConvention(donor, donorFileName);
 
-  // Cheap pre-zip check — only confirm the AttributeDiscount step is present.
-  if (!fileXml.includes("<actionType>AttributeDiscount</actionType>")) {
+  // Cheap pre-zip check — only confirm the expected pricing-type step is present.
+  if (!fileXml.includes(`<actionType>${expectedActionType}</actionType>`)) {
     const emptyReport: DeployPackagingReport = {
       zipTree: [], files: [], packageXml: "", memberChecks: [], naming, zipRootOk: false, zipRootIssues: [],
       donor, generated: null, comparison: [], packageXmlMemberCheck: null, safeToDeploy: false,
       safetyIssues: ["Pre-zip check failed before packaging was attempted."], reportText: "",
     };
     const result: DeployExpressionSetResult = {
-      success: false, status: null, error: "Pre-zip check failed: no <actionType>AttributeDiscount</actionType> in the generated file.",
+      success: false, status: null, error: `Pre-zip check failed: no <actionType>${expectedActionType}</actionType> in the generated file.`,
       packagingReport: emptyReport, generatedFileXml: fileXml,
     };
     client.logDebug("deploy-response", `Parsed DeployExpressionSetResult:\n${JSON.stringify({ success: result.success, error: result.error, generatedFileXmlLength: result.generatedFileXml.length }, null, 2)}`);

@@ -101,6 +101,30 @@ export async function analyzeAttributeBasedPrompt(client: SalesforceClient, apiK
   }
   push("verify-product", "success", `Found ${product.name} (${product.productCode || product.id}).`);
 
+  /* ── §Phase 6 fix — existing vs requested base price. Attribute-Based Adjustments apply ON TOP of
+   * whatever Salesforce's real Standard Pricebook List Price already is (`product.basePrice`) — this
+   * pipeline has no mechanism to change that price itself (a Product2/PricebookEntry concern, out of
+   * scope for an Attribute-Based Adjustment). If the prompt explicitly stated a base price that DISAGREES
+   * with the real one, never silently pick either side: surface it and require an explicit decision,
+   * exactly like every other ambiguity this pipeline already refuses to guess through. Skipped entirely
+   * when the prompt never stated a price at all (`extracted.basePrice === null`) — nothing to compare. */
+  if (extracted.basePrice !== null && product.basePrice !== null && Math.abs(extracted.basePrice - product.basePrice) >= 0.005) {
+    const decision = input.overrides?.basePriceDecision;
+    if (!decision) {
+      push(
+        "verify-price", "info",
+        `Prompt requests a base price of ${extracted.basePrice}, but Salesforce's existing Standard Pricebook price is ${product.basePrice} — need you to choose which to use.`,
+      );
+      return { stage: "price-conflict", product, extracted, existingBasePrice: product.basePrice, requestedBasePrice: extracted.basePrice, steps };
+    }
+    push(
+      "verify-price", "info",
+      decision === "USE_EXISTING"
+        ? `Using Salesforce's existing base price (${product.basePrice}) — the prompt's requested ${extracted.basePrice} is not applied.`
+        : `Proceeding with the prompt's requested base price (${extracted.basePrice}) for reference — Attribute-Based Adjustments still apply on top of Salesforce's real List Price (${product.basePrice}), which this pipeline does not itself change; update the product's price in Salesforce Setup if the List Price should actually be ${extracted.basePrice}.`,
+    );
+  }
+
   /* ── Step 4 — discover attributes ── */
   push("discover-attributes", "start", "Discovering this product's attributes from Salesforce.");
   const { attributes: discoveredAttributes, warnings: discoveryWarnings } = await discoverProductAttributes(client, product.id);

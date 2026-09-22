@@ -41,10 +41,11 @@ import {
   resolveOrCreatePriceAdjustmentSchedule, createOrReuseAttributeBasedAdjRules,
   createAttributeAdjustmentConditions, createAttributeBasedAdjustments, verifyAdjustmentRecordsReadBack,
   verifyAttributeBasedAdjustmentConfigurations, resolveAttributeContexts, resolveAllPriceImpactingAttributeNames,
+  verifyRuntimeAdjustmentResolution, expandAttributeCombinationRules,
   MissingAttributeConfigurationError,
-  type NativeCreationResult, type AdjustmentDecision,
+  type NativeCreationResult, type AdjustmentDecision, type AdjustmentConflict, type AdjustmentDecisionOverride,
 } from "./nativeRecords";
-import { buildAttributeCanvas } from "./canvasBuilder";
+import { buildAttributeCanvas, buildScheduleVariableDiagnostic, buildFinalCanvasStructuralAudit } from "./canvasBuilder";
 import { deployExpressionSetDefinition } from "./deploy";
 import { validateExpressionSetUniquenessAgainstOrg, diagnosePostDeployFailure, resolveNextAvailableExpressionSetVersion, type OrgUniquenessResult } from "./orgUniquenessValidation";
 import { activateExpressionSetVersion } from "./activation";
@@ -52,7 +53,8 @@ import { refreshListPriceDecisionTable, refreshAttributeDiscountEntries } from "
 import { verifySalesforceState, resolveExpressionSetId, resolveExpressionSetVersionId, buildConnectExpressionSetPath } from "./verifySalesforceState";
 import { EXPRESSION_SET_METADATA_TYPE } from "./soapEnvelope";
 import { inspectAllExpressionSetDefinitionDonors, resolveAttributeBasedPricingDonor, buildNoCoherentDonorDiagnostic } from "./donorInspection";
-import { buildFailureDiagnostics, buildLogicalFailure } from "./errorDiagnostics";
+import { buildFailureDiagnostics, buildLogicalFailure, classifyComponentFailures, CATEGORY_LABELS } from "./errorDiagnostics";
+import { checkAttributeBasedPricingCapacityPreflight } from "./capacityPreflight";
 import { buildSanitizedAuditLog } from "@/lib/salesforce/auditLog";
 import type { DiscoveredAttribute, DiscoveredProduct, PricingRulePlanRow, ProcedureStepLite } from "../types";
 import type {
@@ -160,6 +162,23 @@ export interface CreatePipelineInput {
   procedureName: string;
   description?: string;
   activate: boolean;
+  /** §Phase 9/24 — decisions the user already made for previously-reported `AdjustmentConflict`s (from a
+   * prior call's `pendingAdjustmentConflicts`), keyed by `adjustmentDecisionKey(attributeName, value)`.
+   * Stateless resubmit — the SAME convention `analyze.ts`'s own mapping/pricing overrides already use, no
+   * new server-side pending-operation store. Every OTHER already-created Rule/Condition/Adjustment from
+   * the original attempt is found and reused again automatically (this whole pipeline is already
+   * idempotent), so resubmitting never re-does completed work — only the previously-conflicted row(s)
+   * behave differently. */
+  adjustmentDecisions?: Record<string, AdjustmentDecisionOverride>;
+  /** §Root-cause fix (deterministic run-boundary provenance) — the SAME stateless-resubmit convention as
+   * `adjustmentDecisions` above: the caller may hand back the `executionId` a PRIOR call's result already
+   * returned, to resume that same run's combinatorial-closure Rule-completion eligibility (see
+   * `runBoundaryStore.ts`'s doc comment) — never a new server-side pending-operation store, just this run's
+   * own id reused as the lookup key into the existing in-memory run-boundary map. Omitted (the normal
+   * case) generates a fresh, independent `executionId` exactly as before this fix. Only meaningful within
+   * the SAME server process the original run happened in — see `runBoundaryStore.ts` for the honest
+   * non-durability caveat (lost on restart/redeploy/cold start, never shared across instances). */
+  resumeExecutionId?: string;
 }
 
 export async function runCreateAttributePricingPipeline(
@@ -170,7 +189,7 @@ export async function runCreateAttributePricingPipeline(
   const steps: ProcedureStepLite[] = [];
   const warnings: string[] = [];
 
-  const executionId = generateExecutionId();
+  const executionId = input.resumeExecutionId ?? generateExecutionId();
   client.logDebug("execution-trace", `Execution ID: ${executionId} — Attribute-Based Pricing creation started for product "${input.product.name}" (${input.product.id}).`);
 
   const emit = (name: string, status: "running" | "done" | "failed" | "warning", detail?: string) => onStep?.({ step: name, status, detail });
@@ -272,8 +291,23 @@ export async function runCreateAttributePricingPipeline(
    * `rules` are checked/corrected, never every discovered attribute on the product. ── */
   const requestedAttributeNames = [...new Set(input.rules.map(r => r.attributeName))];
   emit("configure-price-impacting", "running");
+  // §Request-efficiency fix (REQUEST_LIMIT_EXCEEDED remediation) — this Describe was previously fetched
+  // TWICE per pipeline run: once inside `ensurePriceImpactingAttributes` and again, moments later, inside
+  // `resolveAllPriceImpactingAttributeNames` below — two unconditional back-to-back calls describing the
+  // exact same object for the exact same product in the exact same execution. Fetched once here and
+  // threaded into both instead. `ensurePriceImpactingAttributes` also no longer re-describes it once per
+  // attribute needing a classification-override record (previously O(N) redundant Describes for N such
+  // attributes) — see `resolveProductAttributeDefinitionOverrideFields`'s new `preDescribed` param.
+  let sharedPadDescribe;
   try {
-    await ensurePriceImpactingAttributes(client, input.product.id, requestedAttributeNames, steps, message => emit("configure-price-impacting", "running", message));
+    sharedPadDescribe = await client.describeObject("ProductAttributeDefinition");
+  } catch (err) {
+    const failure = buildFailureDiagnostics("configure-price-impacting", err);
+    step(steps, "configure-price-impacting", "error", failure.reason);
+    return fail({ failure });
+  }
+  try {
+    await ensurePriceImpactingAttributes(client, input.product.id, requestedAttributeNames, steps, message => emit("configure-price-impacting", "running", message), sharedPadDescribe);
     emit("configure-price-impacting", "done", `${requestedAttributeNames.length} attribute(s) confirmed price impacting.`);
   } catch (err) {
     const failure = buildFailureDiagnostics("configure-price-impacting", err);
@@ -317,7 +351,7 @@ export async function runCreateAttributePricingPipeline(
   // inferred from the prompt); the union with the requested names is what `contexts` — and therefore
   // every downstream Rule/Condition/Adjustment/verification stage that reads it — is built from.
   const requestedAttrNames = [...new Set(input.rules.map(r => r.attributeName))];
-  const allPriceImpactingAttrNames = await resolveAllPriceImpactingAttributeNames(client, input.product.id);
+  const allPriceImpactingAttrNames = await resolveAllPriceImpactingAttributeNames(client, input.product.id, sharedPadDescribe);
   const attrNames = [...new Set([...requestedAttrNames, ...allPriceImpactingAttrNames])];
   if (allPriceImpactingAttrNames.length > 0) {
     const extra = allPriceImpactingAttrNames.filter(n => !requestedAttrNames.includes(n));
@@ -385,21 +419,30 @@ export async function runCreateAttributePricingPipeline(
   emit("create-adjustment", "running");
   let adjustmentIds: string[];
   let reusedAdjustmentIds: string[];
+  let updatedAdjustmentIds: string[];
+  let pendingConflicts: AdjustmentConflict[];
   let adjustmentDecisions: AdjustmentDecision[];
   try {
+    const decisionOverrides = input.adjustmentDecisions
+      ? new Map<string, AdjustmentDecisionOverride>(Object.entries(input.adjustmentDecisions))
+      : undefined;
     const result = await createAttributeBasedAdjustments(
       client, schema, { product: { id: input.product.id, name: input.product.name }, sellingModelId }, contexts, scheduleId, rulePlans, steps,
       message => emit("create-adjustment", "running", message),
+      decisionOverrides,
     );
     adjustmentIds = result.adjustmentIds;
     reusedAdjustmentIds = result.reusedAdjustmentIds;
+    updatedAdjustmentIds = result.updatedAdjustmentIds;
+    pendingConflicts = result.pendingConflicts;
     adjustmentDecisions = result.decisions;
-    const detail = adjustmentIds.length > 0 && reusedAdjustmentIds.length > 0
-      ? `${adjustmentIds.length} adjustment(s) created, ${reusedAdjustmentIds.length} existing adjustment(s) reused.`
-      : adjustmentIds.length > 0
-        ? `${adjustmentIds.length} adjustment(s) created.`
-        : `${reusedAdjustmentIds.length} existing adjustment(s) reused.`;
-    emit("create-adjustment", "done", detail);
+    const detail = [
+      adjustmentIds.length > 0 ? `${adjustmentIds.length} adjustment(s) created` : null,
+      reusedAdjustmentIds.length > 0 ? `${reusedAdjustmentIds.length} reused` : null,
+      updatedAdjustmentIds.length > 0 ? `${updatedAdjustmentIds.length} updated` : null,
+      pendingConflicts.length > 0 ? `${pendingConflicts.length} awaiting a value-conflict decision` : null,
+    ].filter(Boolean).join(", ") || "0 adjustments.";
+    emit("create-adjustment", pendingConflicts.length > 0 ? "warning" : "done", detail);
   } catch (err) {
     const failure = buildFailureDiagnostics("create-adjustment", err);
     step(steps, "create-adjustment", "error", failure.reason);
@@ -410,12 +453,136 @@ export async function runCreateAttributePricingPipeline(
     });
   }
 
+  /* ── §Phase 8/9/10/24 — one or more rules resolved to an identity that already exists in Salesforce
+   * with a DIFFERENT adjustment value than this request wants. Never auto-resolved (see
+   * `classifyAdjustmentMatch`'s own doc comment): the pipeline stops here, before anything downstream
+   * (Expression Set/Procedure/Activation) depends on a still-undecided Adjustment set, and reports every
+   * conflict together (never a resubmit-per-conflict cycle). Every OTHER rule that resolved cleanly this
+   * call is NOT lost — it's a real, already-created/reused/updated Salesforce record; the user's next
+   * resubmit (same request + `adjustmentDecisions` for the reported keys) will find and reuse all of
+   * them again via this pipeline's own pre-existing idempotency, never re-doing completed work. ── */
+  if (pendingConflicts.length > 0) {
+    emit("create-adjustment", "warning", `${pendingConflicts.length} Attribute-Based Adjustment(s) need a decision before this pricing procedure can be completed.`);
+    const procedureSnapshot = buildProcedureSnapshot({
+      executionId,
+      product: { id: input.product.id, name: input.product.name },
+      discoveredAttributes: input.discoveredAttributes,
+      rules: input.rules,
+      priceAdjustmentScheduleId: scheduleId,
+      ruleIds: rulePlans.map(p => p.ruleId),
+      conditionIds: rulePlans.flatMap(p => p.conditionIds),
+      adjustmentIds: [...adjustmentIds, ...reusedAdjustmentIds, ...updatedAdjustmentIds],
+    });
+    return {
+      success: false, status: "pending-adjustment-confirmation",
+      error: `[${executionId}] ${pendingConflicts.length} Attribute-Based Adjustment(s) already exist in Salesforce with a value different from what this prompt requests. ` +
+        `Resolve each one (keep the existing value, or apply the new one) and resubmit this same request with "adjustmentDecisions" set for each attribute/value pair — ` +
+        `nothing else needs to be redone, every already-resolved Rule/Condition/Adjustment from this attempt is reused automatically.`,
+      pendingAdjustmentConflicts: pendingConflicts,
+      warnings, steps, executionId, auditLog: buildSanitizedAuditLog(client.debugLog), procedureSnapshot,
+      priceAdjustmentScheduleId: scheduleId, ruleIds: rulePlans.map(p => p.ruleId), conditionIds: rulePlans.flatMap(p => p.conditionIds),
+      adjustmentIds: [...adjustmentIds, ...reusedAdjustmentIds, ...updatedAdjustmentIds], adjustmentDecisions,
+    };
+  }
+
   const native: NativeCreationResult = {
     scheduleId,
     ruleIds: rulePlans.map(p => p.ruleId),
     conditionIds: rulePlans.flatMap(p => p.conditionIds),
-    adjustmentIds: [...adjustmentIds, ...reusedAdjustmentIds],
+    adjustmentIds: [...adjustmentIds, ...reusedAdjustmentIds, ...updatedAdjustmentIds],
   };
+
+  /* ── §Root-cause fix (generic, product/org-agnostic Salesforce capacity preflight) — a real live
+   * failure proved this pipeline had zero awareness of Salesforce's own Data Storage limit before the
+   * combinatorial phase below, whose write volume scales with the CONNECTED PRODUCT's own attribute/value
+   * complexity (unbounded, unlike the single-attribute phase above, which is bounded by the prompt itself)
+   * — a product with many price-impacting attributes/values can need hundreds or thousands of new
+   * records, and this org's Data Storage can already be exhausted from ENTIRELY UNRELATED prior activity
+   * (a separate product's own pricing data, or any other work in this org) — never something a
+   * product-specific "combination count" threshold could catch. `checkAttributeBasedPricingCapacityPreflight`
+   * dynamically discovers the REAL combinatorial closure for THIS product and compares its real,
+   * reuse-aware write-cost estimate against this SAME org's REAL, live `/limits` — never a hardcoded
+   * product, org, or threshold. `status: "BLOCKED"` stops here, before a single combination write is
+   * attempted — every single-attribute Rule/Condition/Adjustment already created above stays exactly as
+   * it is (nothing here is undone), but nothing further is attempted until capacity is confirmed. */
+  emit("capacity-preflight", "running");
+  let capacityPreflight;
+  try {
+    capacityPreflight = await checkAttributeBasedPricingCapacityPreflight(
+      client, schema, { product: { id: input.product.id, name: input.product.name }, sellingModelId, scheduleId }, contexts,
+    );
+    step(
+      steps, "capacity-preflight", capacityPreflight.status === "BLOCKED" ? "error" : capacityPreflight.status === "REQUIRES_REVIEW" ? "info" : "success",
+      `${capacityPreflight.status}: ${capacityPreflight.reason}`,
+    );
+    emit("capacity-preflight", capacityPreflight.status === "BLOCKED" ? "failed" : "done", capacityPreflight.reason);
+  } catch (err) {
+    // §Never let the capacity check ITSELF become a hard failure for a run that would otherwise have
+    // succeeded — a read-only /limits or discovery call failing (permissions, transient network) is
+    // logged and surfaced as a warning, not treated as "capacity confirmed safe" (that would defeat the
+    // whole point) NOR as a fatal error (that would make this NEW safety check less reliable than having
+    // no check at all). The combinatorial phase still proceeds, unprotected, exactly as before this fix.
+    const failure = buildFailureDiagnostics("capacity-preflight", err);
+    warnings.push(`Capacity preflight could not complete (${failure.reason}) — proceeding without a verified Data Storage check for the combinatorial phase below.`);
+    emit("capacity-preflight", "warning", failure.reason);
+  }
+
+  if (capacityPreflight?.status === "BLOCKED") {
+    const failure = buildLogicalFailure(
+      "capacity-preflight",
+      `[ORG CAPACITY — Salesforce Data Storage, not an Expression Set/XML defect] ${capacityPreflight.reason}`,
+      undefined,
+      { category: "salesforce-storage-limit" },
+    );
+    return {
+      success: false, status: "blocked", error: `[${executionId}] ${failure.reason}`, failure,
+      warnings, steps, executionId, auditLog: buildSanitizedAuditLog(client.debugLog),
+      procedureSnapshot: buildProcedureSnapshot({
+        executionId, product: { id: input.product.id, name: input.product.name },
+        discoveredAttributes: input.discoveredAttributes, rules: input.rules,
+        priceAdjustmentScheduleId: scheduleId, ruleIds: native.ruleIds, conditionIds: native.conditionIds, adjustmentIds: native.adjustmentIds,
+      }),
+      priceAdjustmentScheduleId: scheduleId, ruleIds: native.ruleIds, conditionIds: native.conditionIds, adjustmentIds: native.adjustmentIds,
+      capacityPreflight,
+    };
+  }
+
+  /* ── §Root-cause architecture fix (user-directed: "Full combinatorial closure") — Salesforce's
+   * AttributeDiscount Decision Table matches on ONE complete-combination hash per row (proven from real
+   * DecisionTableParameter metadata); every single-attribute rule above represents exactly one varying
+   * attribute with everything else at baseline. Selecting two price-impacting attributes away from default
+   * at once therefore needs its OWN Decision Table row, or Salesforce finds no match at all. This phase
+   * discovers every existing single-attribute priced option for this product and creates/reuses whichever
+   * 2+-attribute combination rows the closure still needs — additive, never fatal to the rest of this run:
+   * a failure here is a warning, since every single-attribute rule this run itself requested has already
+   * succeeded by this point. See `expandAttributeCombinationRules`'s own extensive doc comment for the full
+   * evidence chain and the deliberately-conservative combination arithmetic (same-type summing only; mixed
+   * types or an override involved are skipped, never guessed). */
+  if (capacityPreflight?.status === "REQUIRES_REVIEW") {
+    warnings.push(`Capacity preflight: ${capacityPreflight.reason} ${capacityPreflight.recommendedAction}`);
+  }
+  try {
+    const combinationResult = await expandAttributeCombinationRules(
+      client, schema, { product: { id: input.product.id, name: input.product.name }, sellingModelId, scheduleId }, contexts, steps,
+      message => emit("create-combination-rules", "running", message),
+      executionId,
+    );
+    if (combinationResult.plans.length > 0) {
+      native.ruleIds.push(...combinationResult.plans.filter(p => p.ruleId).map(p => p.ruleId!));
+      native.adjustmentIds.push(...combinationResult.plans.filter(p => p.adjustmentId).map(p => p.adjustmentId!));
+    }
+    emit(
+      "create-combination-rules", "done",
+      `${combinationResult.createdCount} combination adjustment(s) created, ${combinationResult.reusedCount} reused, ${combinationResult.skippedCount} skipped, from ${combinationResult.discoveredOptions.length} discovered single-attribute option(s).`,
+    );
+  } catch (err) {
+    const failure = buildFailureDiagnostics("create-combination-rules", err);
+    step(steps, "create-combination-rules", "error", failure.reason);
+    warnings.push(
+      `Multi-attribute combination rule expansion failed (non-fatal — every single-attribute rule this run requested has already succeeded): ${failure.reason}. ` +
+      `Cumulative pricing across multiple simultaneously-selected attributes may not apply until this is resolved on a future run.`,
+    );
+  }
 
   /* ── Step 7: Verify Adjustment Records (Part 9 step 9 + Parts 12/13/19) — read-back re-query before
    * anything downstream (the Expression Set) depends on these Ids. A unique-Id COUNT is not sufficient
@@ -444,17 +611,45 @@ export async function runCreateAttributePricingPipeline(
     `${verifiedCount}/${configVerification.entries.length} configurations logically verified.`,
   ].join("\n"));
 
+  /* ── §Root-cause fix (this turn) — `resolveRuntimeAttributeAdjustment` (single attribute/value lookup)
+   * is architecturally guaranteed to be ambiguous whenever that value is ALSO another rule's baseline
+   * default for the same attribute (Salesforce's own "associate all price-impacting attributes"
+   * requirement means every OTHER rule carries this exact value as one of its own conditions too) — that
+   * is a correctly-built dataset, not a broken one, and treating its "ambiguous" result as a hard failure
+   * produced exactly the live false positive this fix targets (Storage=256GB "ambiguous across 12
+   * records" when 12/12 adjustment configurations had already been independently confirmed correct).
+   * `verifyRuntimeAdjustmentResolution` matches on the COMPLETE condition set a Rule actually represents —
+   * the same identity `findExistingAttributeBasedAdjustment` already uses at create time, and the only
+   * concept Salesforce's own validation proves it actually enforces — so it correctly disambiguates a
+   * shared baseline value across many rules by construction. ── */
+  const runtimeVerification = await verifyRuntimeAdjustmentResolution(client, schema, contexts, rulePlans, adjustmentIdByRuleId);
+  for (const entry of runtimeVerification.entries) {
+    step(
+      steps, "verify-adjustment-records", entry.resolved ? "success" : "error",
+      entry.resolved
+        ? `✓ Runtime resolution: ${entry.attributeLabel} = ${entry.valueLabel} → complete configuration uniquely resolves to Adjustment ${entry.adjustmentId}.`
+        : `✕ Runtime resolution: ${entry.attributeLabel} = ${entry.valueLabel} — ${entry.reason}`,
+    );
+  }
+  const runtimeVerifiedCount = runtimeVerification.entries.filter(e => e.resolved).length;
+  const runtimeVerified = runtimeVerification.allResolved;
+
   const adjustmentVerified = adjustmentVerification.scheduleVerified
     && adjustmentVerification.ruleCount === native.ruleIds.length
     && adjustmentVerification.conditionCount === native.conditionIds.length
-    && configVerification.allVerified;
+    && configVerification.allVerified
+    && runtimeVerified;
   if (!adjustmentVerified) {
     const failure = buildLogicalFailure(
       "verify-adjustment-records",
       `Salesforce read-back could not confirm every Attribute-Based Pricing configuration: schedule verified=${adjustmentVerification.scheduleVerified}, ` +
       `rules ${adjustmentVerification.ruleCount}/${native.ruleIds.length}, conditions ${adjustmentVerification.conditionCount}/${native.conditionIds.length}, ` +
-      `adjustment configurations ${verifiedCount}/${configVerification.entries.length} logically verified. ` +
-      `Failed: ${configVerification.entries.filter(e => !e.verified).map(e => `${e.attributeLabel}=${e.valueLabel} (${e.reason})`).join("; ") || "none"}.`,
+      `adjustment configurations ${verifiedCount}/${configVerification.entries.length} logically verified, ` +
+      `runtime resolutions ${runtimeVerifiedCount}/${runtimeVerification.entries.length} resolved (complete-configuration match, never single-attribute). ` +
+      `Failed: ${[
+        ...configVerification.entries.filter(e => !e.verified).map(e => `${e.attributeLabel}=${e.valueLabel} (${e.reason})`),
+        ...runtimeVerification.entries.filter(e => !e.resolved).map(e => `${e.attributeLabel}=${e.valueLabel} runtime (${e.reason})`),
+      ].join("; ") || "none"}.`,
     );
     step(steps, "verify-adjustment-records", "error", failure.reason);
     return fail({
@@ -464,7 +659,7 @@ export async function runCreateAttributePricingPipeline(
     });
   }
   step(steps, "verify-adjustment-records", "success", "All Attribute-Based Pricing records and configurations confirmed via Salesforce read-back.");
-  emit("verify-adjustment-records", "done", `Schedule + ${native.ruleIds.length} rule(s) + ${native.conditionIds.length} condition(s) + ${verifiedCount}/${configVerification.entries.length} adjustment configuration(s) verified.`);
+  emit("verify-adjustment-records", "done", `Schedule + ${native.ruleIds.length} rule(s) + ${native.conditionIds.length} condition(s) + ${verifiedCount}/${configVerification.entries.length} adjustment configuration(s) + ${runtimeVerifiedCount}/${runtimeVerification.entries.length} runtime resolution(s) verified.`);
 
   /* ── Step 8: Refresh/resolve Attribute Discount Entries (Parts 6-8) — never creates one; a missing
    * standard table is a warning, never a reason to fail the run. ── */
@@ -818,6 +1013,46 @@ export async function runCreateAttributePricingPipeline(
   const deployPayloadFingerprint = createHash("sha256").update(canvas.finalFileXml).digest("hex");
   step(steps, "build-expression-set", "success", `✓ XML serialized (sha256 ${deployPayloadFingerprint}, ${canvas.finalFileXml.length} bytes).`);
   step(steps, "build-expression-set", "info", "→ Validating FINAL deployment payload.");
+
+  // §Step 8 requirement — an EXPLICIT, independent second gate against the exact bytes about to be
+  // deployed, in addition to (never instead of) `validateAttributeCanvas`'s own pre-prune check above. Runs
+  // regardless of `canvas.success` reaching this point, so a future change to canvas composition can never
+  // silently reintroduce an invalid self-referential binding downstream of the earlier check without this
+  // one also catching it before any Salesforce call is made.
+  const structuralAudit = buildFinalCanvasStructuralAudit(canvas.finalFileXml);
+  client.logDebug("xml-diagnostic", [
+    "[Final Canvas Structural Audit]", structuralAudit.summary,
+    `Envelope variables (${structuralAudit.envelopeVariables.length}): ${structuralAudit.envelopeVariables.map(v => v.name).join(", ") || "(none)"}`,
+    `Pricing element occurrences: ${structuralAudit.pricingElementOccurrences.map(o => `[${o.occurrenceIndex}] ${o.actionType ?? "(none)"} name=${o.name ?? "(none)"}`).join("; ")}`,
+    structuralAudit.selfReferentialInputs.length > 0
+      ? `Self-referential invalid inputs:\n${structuralAudit.selfReferentialInputs.map(i => `  ${i.stepActionType ?? "?"} [${i.occurrenceIndex}] ${i.name}=${i.value}`).join("\n")}`
+      : "No self-referential invalid inputs.",
+    structuralAudit.unresolvedInputBindings.length > 0
+      ? `Unresolved input bindings (value not declared/native):\n${structuralAudit.unresolvedInputBindings.map(i => `  ${i.stepActionType ?? "?"} [${i.occurrenceIndex}] ${i.name}=${i.value}`).join("\n")}`
+      : "No unresolved input bindings.",
+    structuralAudit.missingRequiredBindings.length > 0 ? `Missing required bindings:\n${structuralAudit.missingRequiredBindings.map(m => `  ${m}`).join("\n")}` : "No missing required bindings.",
+    `ListGroups (${structuralAudit.listGroups.length}):\n${structuralAudit.listGroups.map(g => `  [${g.occurrenceIndex}] ${g.name ?? "(unnamed)"} — children (by sequence): ${g.children.map(c => `${c.name ?? "(unnamed)"}(${c.stepType ?? "none"})`).join(", ") || "(none)"}${g.issue ? ` — ISSUE: ${g.issue}` : ""}`).join("\n") || "  (none)"}`,
+  ].join("\n"));
+  if (!structuralAudit.passed) {
+    const listGroupIssues = structuralAudit.listGroups.filter(g => g.issue).map(g => g.issue as string);
+    const reason = [
+      `Final canvas structural audit FAILED — refusing to deploy invalid XML.`,
+      structuralAudit.selfReferentialInputs.length > 0
+        ? `Self-referential invalid input parameter(s): ${structuralAudit.selfReferentialInputs.map(i => `${i.stepActionType ?? "?"}.${i.name}=${i.value}`).join(", ")}.`
+        : "",
+      structuralAudit.missingRequiredBindings.length > 0 ? `Missing required binding(s): ${structuralAudit.missingRequiredBindings.join(" ")}` : "",
+      listGroupIssues.length > 0 ? `ListGroup structural issue(s): ${listGroupIssues.join(" ")}` : "",
+      `Selected AttributeDiscount: [${structuralAudit.selectedAttributeDiscount?.occurrenceIndex ?? "none"}] IsContractEnabled=${structuralAudit.selectedAttributeDiscount?.isContractEnabled ?? "(none)"}. Selected ListPrice: [${structuralAudit.selectedListPrice?.occurrenceIndex ?? "none"}] IsContractEnabled=${structuralAudit.selectedListPrice?.isContractEnabled ?? "(none)"}.`,
+      `Envelope variables declared: ${structuralAudit.envelopeVariables.map(v => v.name).join(", ") || "(none)"}.`,
+    ].filter(Boolean).join(" ");
+    const failure = buildLogicalFailure("build-expression-set", reason);
+    step(steps, "build-expression-set", "error", `✕ ${reason}`);
+    return fail({
+      failure, warnings, createdValues, existingValuesReused: reusedValues,
+      priceAdjustmentScheduleId: native.scheduleId, ruleIds: native.ruleIds, conditionIds: native.conditionIds, adjustmentIds: native.adjustmentIds,
+      attributeDiscountBranchSelection: canvas.attributeDiscountBranchSelection, donorExtractionDeterministic: canvas.donorExtractionDeterministic,
+    });
+  }
   step(steps, "build-expression-set", "success", "✓ Deployment payload matches validated XML.");
   step(steps, "build-expression-set", "success", "→ Expression Set ready for deployment.");
   emit("build-expression-set", "done");
@@ -1012,8 +1247,50 @@ export async function runCreateAttributePricingPipeline(
         "This is not silently retried with a different Rank guess — re-running this build re-resolves Rank from the org's current state (both per-ExpressionSet and independently org-wide), which corrects a stale read; a genuine structural conflict will be reported again with the same diagnostics above.",
       ].join("\n");
     }
+    // §Root-cause investigation, corrected (this turn) — the PRIOR version of this block only attached
+    // rich diagnostics when `reason` matched a specific regex (`/isn'?t a valid variable name/i`). That
+    // gate is exactly the kind of guess this investigation must never depend on: Salesforce's real error
+    // text could use a different apostrophe character, different wording, or be phrased differently than
+    // assumed, and a live re-run proved the enrichment never appeared — the gate silently never matched,
+    // and nothing else revealed that. Fixed by making this UNCONDITIONAL: on ANY deploy failure, always
+    // capture (a) Salesforce's own full componentFailures detail (problem/problemType/line/column — this
+    // was already being PARSED elsewhere in this pipeline but never included in the headline error text)
+    // and (b) the raw deployed-XML evidence for every "PriceAdjustmentScheduleId" occurrence and every
+    // envelope-level `<variables>` declaration (see `buildScheduleVariableDiagnostic`'s own doc comment
+    // for why neither can be assumed from code alone). Logged via `client.logDebug` (flows into the
+    // execution-trace/audit log the UI already renders) AS WELL AS appended to `reason` (the headline
+    // error text) — two independent channels, so a rendering quirk in one can never hide this from the
+    // other the way the regex gate did.
+    const componentDetail = (deployResult.status?.componentFailures ?? [])
+      .map(f => `  ${f.fullName ?? f.fileName ?? "(unnamed component)"}: ${f.problem ?? "(no problem text)"} [problemType=${f.problemType ?? "?"}, line=${f.lineNumber ?? "?"}, column=${f.columnNumber ?? "?"}]`)
+      .join("\n") || "  (Salesforce's componentFailures array was empty — only the summary message above is available.)";
+    const scheduleVariableDiagnostic = buildScheduleVariableDiagnostic(canvas.finalFileXml);
+    client.logDebug("execution-trace", [
+      "[ABP] Deploy failure — full diagnostic (always captured, never gated on guessing the exact error wording)",
+      `[ABP] Raw Salesforce reason: ${reason}`,
+      "[ABP] Salesforce componentFailures (full detail):",
+      componentDetail,
+      "",
+      scheduleVariableDiagnostic,
+    ].join("\n"));
+    reason = [
+      reason,
+      "",
+      "Salesforce componentFailures (full detail, including line/column when Salesforce provides it):",
+      componentDetail,
+      "",
+      scheduleVariableDiagnostic,
+    ].join("\n");
     const diagnosis = diagnosePostDeployFailure(reason, uniqueness);
     if (diagnosis.isUniquenessConflict) reason = diagnosis.diagnosis;
+    // §Phase 5 fix — a storage/API-limit rejection can surface AS a component failure inside an otherwise
+    // structurally-fine deploy (see capacityPreflight.ts's own doc comment for the real failure this
+    // reproduces) — classified here from Salesforce's own componentFailures text, never from whether the
+    // XML itself looks wrong, so it's never mislabeled as an Expression Set/XML defect.
+    const failureCategory = classifyComponentFailures(deployResult.status?.componentFailures);
+    if (failureCategory !== "unclassified") {
+      reason = `[${CATEGORY_LABELS[failureCategory]}] ${reason}`;
+    }
     const failure = buildLogicalFailure("deploy-pricing-procedure", reason, undefined, {
       packagingReport: deployResult.packagingReport.reportText,
       deployComponentFailures: deployResult.status?.componentFailures,
@@ -1021,6 +1298,7 @@ export async function runCreateAttributePricingPipeline(
       generatedFileXml: deployResult.generatedFileXml,
       deployZipBase64: deployResult.deployZipBase64,
       rawDeployStatusXml: deployResult.rawDeployStatusXml,
+      ...(failureCategory !== "unclassified" ? { category: failureCategory } : {}),
     });
     step(steps, "deploy-pricing-procedure", "error", `✕ ${reason}`);
     return fail({

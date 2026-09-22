@@ -6,7 +6,8 @@
  * user-facing fields below (Part R: never silently swallow a failure).
  */
 import { SalesforceError } from "@/lib/salesforce/client";
-import type { CreateFailure } from "./types";
+import type { CreateFailure, SalesforceFailureCategory } from "./types";
+import type { ComponentFailure } from "./soapEnvelope";
 
 const RESOLUTION_HINTS: Record<string, string> = {
   "create-values": "Confirm the connected user has create access to AttributePicklistValue, and that the attribute's values genuinely come from the standard AttributePicklistValue object on this org.",
@@ -35,20 +36,67 @@ function extractSalesforceMessage(err: SalesforceError): string {
   return err.message;
 }
 
+/**
+ * §Phase 5 fix (generic failure-category classification) — pattern-matches on Salesforce's OWN error
+ * text/code, never on which pipeline step failed, so a storage-capacity rejection is labeled correctly no
+ * matter WHERE it surfaces (native-record creation, Expression Set Version deploy, Pricing Procedure
+ * creation, or activation) — never collapsed into an undifferentiated "Expression Set error." Neither
+ * pattern list references any product/org/step name — purely Salesforce's own, universally-documented
+ * error vocabulary.
+ */
+const STORAGE_LIMIT_PATTERNS = [/storage limit exceeded/i, /STORAGE_LIMIT_EXCEEDED/i];
+const API_LIMIT_PATTERNS = [/REQUEST_LIMIT_EXCEEDED/i, /TotalRequests Limit exceeded/i];
+
+function textMatchesAny(text: string | null | undefined, patterns: RegExp[]): boolean {
+  if (!text) return false;
+  return patterns.some(p => p.test(text));
+}
+
+export function classifyFailureCategory(errorCode: string | null | undefined, messageOrProblem: string | null | undefined): SalesforceFailureCategory | "unclassified" {
+  if (textMatchesAny(errorCode, STORAGE_LIMIT_PATTERNS) || textMatchesAny(messageOrProblem, STORAGE_LIMIT_PATTERNS)) return "salesforce-storage-limit";
+  if (textMatchesAny(errorCode, API_LIMIT_PATTERNS) || textMatchesAny(messageOrProblem, API_LIMIT_PATTERNS)) return "salesforce-api-limit";
+  return "unclassified";
+}
+
+/** Same classification applied across a whole Metadata API `componentFailures` array — a deploy can report
+ * multiple component problems; this returns the category of the first one that matches a known pattern
+ * (storage checked before API, since a storage rejection surfacing mid-deploy is the case this fix
+ * specifically targets), or "unclassified" if none do. */
+export function classifyComponentFailures(failures: ComponentFailure[] | null | undefined): SalesforceFailureCategory | "unclassified" {
+  for (const f of failures ?? []) {
+    const category = classifyFailureCategory(f.problemType, f.problem);
+    if (category !== "unclassified") return category;
+  }
+  return "unclassified";
+}
+
+const CATEGORY_RESOLUTION_HINTS: Partial<Record<SalesforceFailureCategory | "unclassified", string>> = {
+  "salesforce-storage-limit": "This org's Salesforce Data Storage is exhausted — this is NOT an Expression Set/XML defect, and no amount of retrying or code changes will fix it. Recover or provision additional Data Storage in Setup before retrying.",
+  "salesforce-api-limit": "This org's Salesforce API request limit is exhausted for today — this is NOT an Expression Set/XML defect. Wait for the daily limit to reset, or provision additional API capacity, before retrying.",
+};
+
+export const CATEGORY_LABELS: Partial<Record<SalesforceFailureCategory | "unclassified", string>> = {
+  "salesforce-storage-limit": "ORG CAPACITY — Salesforce Data Storage exhausted, not an Expression Set/XML defect",
+  "salesforce-api-limit": "ORG CAPACITY — Salesforce API limit exhausted, not an Expression Set/XML defect",
+};
+
 export function buildFailureDiagnostics(step: string, err: unknown, endpoint?: string): CreateFailure {
   // The stack trace (and the raw error object) only ever goes to the server console — never the JSON response.
   console.error(`[pricing-rules/attribute-based/create] "${step}" failed:`, err);
 
   if (err instanceof SalesforceError) {
     const salesforceErrorMessage = extractSalesforceMessage(err);
+    const category = classifyFailureCategory(err.errorCode, salesforceErrorMessage);
+    const label = CATEGORY_LABELS[category];
     return {
       step,
       endpoint,
       httpStatus: err.status,
       salesforceErrorCode: err.errorCode,
       salesforceErrorMessage,
-      reason: `${step} failed (HTTP ${err.status}${err.errorCode ? `, ${err.errorCode}` : ""}): ${salesforceErrorMessage}`,
-      resolutionHint: genericHint(step),
+      category: category !== "unclassified" ? category : undefined,
+      reason: `${label ? `[${label}] ` : ""}${step} failed (HTTP ${err.status}${err.errorCode ? `, ${err.errorCode}` : ""}): ${salesforceErrorMessage}`,
+      resolutionHint: CATEGORY_RESOLUTION_HINTS[category] ?? genericHint(step),
     };
   }
 

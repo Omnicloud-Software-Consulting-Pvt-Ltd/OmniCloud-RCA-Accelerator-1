@@ -202,7 +202,7 @@ export function ApiJsonDetailsPanel({
   parentStepValidation?: unknown[];
   duplicateStepNames?: string[];
   deployPayloadFingerprint?: string;
-  status?: "success" | "deployed_with_verification_warning" | "failed";
+  status?: "success" | "deployed_with_verification_warning" | "failed" | "pending-adjustment-confirmation" | "blocked";
   deploymentSummary?: { success: boolean; deploymentId: string | null; componentsDeployed: number; errors: number };
   verificationWarning?: string;
   verification?: {
@@ -261,7 +261,7 @@ export function ApiJsonDetailsPanel({
             <p style={{ fontSize: 11.5, fontWeight: 700, color: t.heading, margin: "0 0 6px" }}>Deployment &amp; Verification Summary</p>
             <p style={{ fontSize: 11, color: t.dim, margin: "0 0 6px" }}>
               The actual Metadata API deploy result (deployment Id, components deployed/errors) and the independent deploy-vs-read-back status of Expression Set, Expression Set Version, and Pricing Procedure — a read-back gap on an already-successful deploy is a warning, never converted into a failure.
-              {status === "deployed_with_verification_warning" ? " ⚠ Deployed with verification warning." : status === "failed" ? " ✕ Failed." : status === "success" ? " ✓ Fully verified." : ""}
+              {status === "deployed_with_verification_warning" ? " ⚠ Deployed with verification warning." : status === "failed" ? " ✕ Failed." : status === "success" ? " ✓ Fully verified." : status === "pending-adjustment-confirmation" ? " ⚠ Awaiting an adjustment-value decision — see the conflict panel above." : ""}
             </p>
             <JsonBlock
               isDark={isDark}

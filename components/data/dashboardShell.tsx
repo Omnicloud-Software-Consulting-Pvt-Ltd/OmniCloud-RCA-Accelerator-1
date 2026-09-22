@@ -687,6 +687,8 @@ export function ActionCard({ action, isDark, index, onLaunch }: {
       initial={{ opacity: 0, y: 18 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.04, duration: 0.38, ease: [0.16, 1, 0.3, 1] }}
+      whileHover={action.workflow ? { y: -2 } : undefined}
+      whileTap={action.workflow ? { scale: 0.98 } : undefined}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
       onClick={() => action.workflow && onLaunch(action.workflow)}
@@ -881,8 +883,8 @@ export function ObjectWorkspace({ obj, isDark, onLaunch, recentActivity, recentA
                 <span className="text-[12px] font-mono font-medium flex-1 truncate" style={{ color: isDark ? "rgba(180,210,240,0.85)" : "rgba(0,15,45,0.8)" }}>
                   {op.item}
                 </span>
-                <span className="text-[10px] shrink-0" style={{ color: isDark ? "rgba(90,120,160,0.5)" : "rgba(0,31,91,0.58)" }}>{op.meta}</span>
-                <span className="text-[10px] shrink-0" style={{ color: isDark ? "rgba(90,120,160,0.38)" : "rgba(0,31,91,0.52)" }}>{op.time}</span>
+                <span className="text-[10px] shrink-0" style={{ color: isDark ? "rgba(90,120,160,0.5)" : "rgba(15,45,100,0.75)" }}>{op.meta}</span>
+                <span className="text-[10px] shrink-0" style={{ color: isDark ? "rgba(90,120,160,0.38)" : "rgba(15,45,100,0.62)" }}>{op.time}</span>
               </motion.div>
             ))}
           </div>

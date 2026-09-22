@@ -39,6 +39,21 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/**
+ * §Request-efficiency fix — REQUEST_LIMIT_EXCEEDED remediation. Every bounded-retry loop in this file
+ * previously treated ANY thrown error identically: log it, sleep, retry on the same schedule as a
+ * transient "not found yet" propagation-lag condition. That is correct for a genuine not-found, but
+ * actively harmful for an org-wide API capacity exhaustion (HTTP 403, errorCode REQUEST_LIMIT_EXCEEDED)
+ * — retrying issues MORE requests against an org that is already out of capacity, and (for
+ * `resolveExpressionSetId`) each retry attempt itself issues one query PER candidate identity field, so
+ * a single resolution call already amplifies one failure into several. Checked at the top of every
+ * catch block in this file's retry loops; when true, the loop stops immediately (no sleep, no further
+ * attempts) and returns/propagates a result that names the real cause instead of a generic timeout.
+ */
+export function isRequestLimitExceeded(err: unknown): boolean {
+  return err instanceof SalesforceError && err.errorCode === "REQUEST_LIMIT_EXCEEDED";
+}
+
 /** Delay BEFORE attempts 2, 3, 4 respectively — short and increasing, per the explicit "bounded and
  * deterministic" requirement. Total worst-case added latency per lookup: ~5s. */
 const RETRY_DELAYS_MS = [1000, 2000, 2000];
@@ -172,7 +187,7 @@ export interface ExpressionSetIdResolution {
    * "deploy-component" is deliberately NOT a value here anymore — live evidence (Connect REST rejecting
    * that exact Id as "Invalid identifier") proved it is the ExpressionSetDefinition/deployment
    * component's own identity, never an ExpressionSet record Id. */
-  strategy: "describe-field-match" | "describe-failed" | "no-field-found" | "no-match" | "ambiguous" | "unverified";
+  strategy: "describe-field-match" | "describe-failed" | "no-field-found" | "no-match" | "ambiguous" | "unverified" | "request-limit-exceeded";
   /** The Describe-discovered identity field that produced the (verified) match — set only on success. */
   field?: string;
   method: string;
@@ -232,6 +247,18 @@ export async function resolveExpressionSetId(
         const error = err instanceof Error ? err.message : String(err);
         attempts.push({ field, lookupValue: args.apiName, matches: 0, matchedId: null, error });
         lastError = error;
+        // §Never retry REQUEST_LIMIT_EXCEEDED — stop immediately (no more field queries this attempt,
+        // no further attempts, no sleep) instead of amplifying an org-wide capacity exhaustion with more
+        // requests. Whatever this attempt already found for earlier fields is discarded deliberately —
+        // a partial result here is not safe to trust as "no match" or "found."
+        if (isRequestLimitExceeded(err)) {
+          onAttempt(attempt, false, `REQUEST_LIMIT_EXCEEDED — stopping immediately, never retrying: ${error}`);
+          return {
+            id: null, verified: false, strategy: "request-limit-exceeded",
+            method: `Salesforce API request capacity was exhausted (REQUEST_LIMIT_EXCEEDED) while resolving the ExpressionSet Id — stopped immediately rather than retrying and amplifying the org-wide limit. Already-created records are preserved; re-run once capacity recovers.`,
+            error, candidateAttempts: attempts, metadataDeploymentComponentId,
+          };
+        }
       }
     }
     lastAttempts = attempts;
@@ -443,7 +470,7 @@ export interface ExpressionSetVersionIdResolution {
    * collection is NOT by itself proof that object's `id` field is a valid record Id for direct REST
    * operations (activation) — this flag is the actual gate the caller uses before ever activating. */
   verified: boolean;
-  strategy: "connect-rest" | "connect-rest-unmatched" | "connect-rest-unverified" | "connect-rest-no-versions" | "soql-fallback" | "soql-fallback-failed" | "no-expression-set-id";
+  strategy: "connect-rest" | "connect-rest-unmatched" | "connect-rest-unverified" | "connect-rest-no-versions" | "soql-fallback" | "soql-fallback-failed" | "no-expression-set-id" | "request-limit-exceeded";
   method: string;
   error?: string;
   connectRequestPath?: string;
@@ -516,6 +543,16 @@ export async function resolveExpressionSetVersionId(
       const message = err instanceof Error ? err.message : String(err);
       lastError = message;
       if (err instanceof SalesforceError) lastHttpStatus = err.status;
+      // §Never retry REQUEST_LIMIT_EXCEEDED — same rationale as `resolveExpressionSetId` above: stop
+      // immediately instead of issuing up to 4 more REST calls against an org already out of capacity.
+      if (isRequestLimitExceeded(err)) {
+        onAttempt(attempt, false, `REQUEST_LIMIT_EXCEEDED — stopping immediately, never retrying: ${message}`);
+        return {
+          id: null, verified: false, strategy: "request-limit-exceeded",
+          method: `Salesforce API request capacity was exhausted (REQUEST_LIMIT_EXCEEDED) while resolving the ExpressionSetVersion Id via Connect REST — stopped immediately rather than retrying and amplifying the org-wide limit. Already-created records are preserved; re-run once capacity recovers.`,
+          error: message, connectRequestPath: path, connectHttpStatus: lastHttpStatus,
+        };
+      }
       onAttempt(attempt, false, message);
       if (isUnsupportedConnectRestResource(err)) { unsupported = true; break; }
     }

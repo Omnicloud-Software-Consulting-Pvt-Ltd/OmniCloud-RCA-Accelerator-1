@@ -9,12 +9,21 @@
 import type { ComponentFailure, DeployStatusInfo } from "./soapEnvelope";
 import type { ProcedureStepLite } from "../types";
 import type { SanitizedAuditEntry } from "@/lib/salesforce/auditLog";
-import type { AdjustmentDecision, MissingAttributeConfigInfo, ResolvedAttributeConfigInfo } from "./nativeRecords";
+import type { AdjustmentDecision, AdjustmentConflict, MissingAttributeConfigInfo, ResolvedAttributeConfigInfo } from "./nativeRecords";
 import type { ParentStepValidationEntry } from "./schemaDiff";
 import type { AttributeDiscountBranchSelection } from "./canvasBuilder";
 import type { ConnectExpressionSetResponse, ConnectExpressionSetVersion } from "./verifySalesforceState";
 import type { ActivationAttemptDetail } from "./activation";
 import type { ExpressionSetDonorInspectionResult } from "./donorInspection";
+import type { SalesforceCapacityPreflightResult } from "./capacityPreflight";
+
+/**
+ * §Phase 5 fix (generic failure-category classification) — never step-specific: a storage or API
+ * exhaustion can surface at ANY pipeline stage (native-record creation, Expression Set Version deploy,
+ * Pricing Procedure creation, activation), and must be labeled identically wherever it happens. See
+ * `errorDiagnostics.ts`'s `classifyFailureCategory`/`classifyComponentFailures`.
+ */
+export type SalesforceFailureCategory = "salesforce-storage-limit" | "salesforce-api-limit";
 
 export interface CreateFailure {
   step: string;
@@ -22,6 +31,10 @@ export interface CreateFailure {
   httpStatus?: number;
   salesforceErrorCode?: string;
   salesforceErrorMessage?: string;
+  /** Set only when this failure matches a recognized Salesforce org-capacity pattern — never invented,
+   * never inferred from which step failed. Absent (not `undefined`-valued but genuinely omitted) for every
+   * other kind of failure, so its mere presence is itself the signal a UI can key off of. */
+  category?: SalesforceFailureCategory;
   reason: string;
   resolutionHint: string;
   object?: string;
@@ -178,7 +191,23 @@ export interface CreateAttributePricingResult {
    * read-back incomplete"; `status` makes that explicit. `deployed_with_verification_warning` is only
    * ever set when `success` is ALSO true (Salesforce's own deploy result is the only thing that can make
    * the overall creation `failed`; an incomplete read-back on an already-successful deploy never does). */
-  status?: "success" | "deployed_with_verification_warning" | "failed";
+  status?: "success" | "deployed_with_verification_warning" | "failed" | "pending-adjustment-confirmation" | "blocked";
+  /** §Phase 3/4/11 fix (generic Salesforce capacity preflight) — present whenever the combinatorial
+   * closure's storage/API cost was checked against this org's REAL, live `/limits` before any combination
+   * write was attempted. `status: "blocked"` (with this field's own `status: "BLOCKED"`) means the run
+   * stopped here — zero combination Rules/Conditions/Adjustments were created — because proceeding would
+   * predictably exhaust this org's Data Storage partway through, exactly reproducing the
+   * "storage limit exceeded" failure this fix exists to catch BEFORE it happens, not after. Every field on
+   * it is dynamically computed from the connected org/product — never a hardcoded product or org value. */
+  capacityPreflight?: SalesforceCapacityPreflightResult;
+  /** §Phase 8/9/10/24 — present only when `status === "pending-adjustment-confirmation"`: one or more
+   * Rules resolved to an AttributeBasedAdjustment identity that already exists in Salesforce with a
+   * DIFFERENT adjustment value than this request wants. Never auto-resolved. Resubmit the SAME create
+   * request with `adjustmentDecisions` (keyed by `adjustmentDecisionKey(attributeName, value)`, from
+   * "./nativeRecords") set to `"USE_EXISTING"` or `"USE_NEW"` for each entry here to proceed — every
+   * other already-created/reused/updated record from this attempt is found and reused again
+   * automatically, never re-done. */
+  pendingAdjustmentConflicts?: AdjustmentConflict[];
   /** §Part 3 — the actual Metadata API deploy result identifiers, captured directly from Salesforce's
    * own response rather than reconstructed from the UI-supplied name. Present once the deploy call has
    * returned, whether it succeeded or not. */

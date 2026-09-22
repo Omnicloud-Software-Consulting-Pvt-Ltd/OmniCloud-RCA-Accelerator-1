@@ -4,6 +4,9 @@ import { useState } from "react";
 import { Ic, tokens, PageShell, FooterBar, PrimaryButton, GhostButton } from "./shared";
 import ProcedureForm from "./ProcedureForm";
 import AttributeBasedPricingCreate from "./AttributeBasedPricingCreate";
+import BundleBasedPricingCreate from "./BundleBasedPricingCreate";
+import VolumeBasedPricingCreate from "./VolumeBasedPricingCreate";
+import TierBasedPricingCreate from "./TierBasedPricingCreate";
 import type { ProductLookupMatch } from "./ProductLookup";
 import { salesforceRecordUrl } from "@/lib/salesforce/client/recordLink";
 import { loadSession } from "@/lib/auth/session";
@@ -166,6 +169,10 @@ export default function CreatePricingRuleFlow({
             {(Object.keys(PRICING_TYPE_LABELS) as PricingType[]).map(pt => {
               const implemented = IMPLEMENTED_PRICING_TYPES.includes(pt);
               const isAttributeBased = pt === "attribute-based";
+              const isBundleBased = pt === "bundle-based";
+              const isVolumeBased = pt === "volume-based";
+              const isTierBased = pt === "tier-based";
+              const isAiGuided = isAttributeBased || isBundleBased || isVolumeBased || isTierBased;
               return (
                 <button
                   key={pt}
@@ -183,11 +190,17 @@ export default function CreatePricingRuleFlow({
                   <span style={{ fontSize: 11.5, color: t.dim }}>
                     {isAttributeBased
                       ? "Describe your pricing in plain English — Salesforce automation is coming in the next phase."
-                      : implemented
-                        ? "Deploys a real Salesforce Expression Set."
-                        : "Coming soon — form only, not yet deployable."}
+                      : isBundleBased
+                        ? "Describe your bundle and component pricing in plain English — deploys a real Salesforce Expression Set."
+                        : isVolumeBased
+                          ? "Describe your quantity discount bands in plain English — deploys a real Salesforce Expression Set."
+                          : isTierBased
+                            ? "Describe your slab/tier quantity bands in plain English — deploys a real Salesforce Expression Set."
+                            : implemented
+                              ? "Deploys a real Salesforce Expression Set."
+                              : "Coming soon — form only, not yet deployable."}
                   </span>
-                  {isAttributeBased ? (
+                  {isAiGuided ? (
                     <span style={{ position: "absolute", top: 12, right: 12, fontSize: 10, fontWeight: 700, color: t.accent, background: isDark ? "rgba(0,212,255,0.12)" : "rgba(0,212,255,0.1)", border: `1px solid ${t.accent}50`, borderRadius: 999, padding: "2px 8px" }}>
                       AI-Guided
                     </span>
@@ -233,6 +246,9 @@ export default function CreatePricingRuleFlow({
   }
 
   const isAttributeBasedForm = form.pricingType === "attribute-based";
+  const isBundleBasedForm = form.pricingType === "bundle-based";
+  const isVolumeBasedForm = form.pricingType === "volume-based";
+  const isTierBasedForm = form.pricingType === "tier-based";
   const backButton = <GhostButton label="Back" icon="arrow-left" isDark={isDark} onClick={() => (lockedPricingType ? onBack?.() : setStep("select-type"))} />;
 
   // §Attribute-Based Pricing — its own AI-prompt-driven creation surface (see
@@ -245,6 +261,45 @@ export default function CreatePricingRuleFlow({
       <PageShell footer={<FooterBar isDark={isDark}>{backButton}</FooterBar>}>
         <div style={{ padding: "28px clamp(16px, 4vw, 56px)", maxWidth: 1000, margin: "0 auto", width: "100%" }}>
           <AttributeBasedPricingCreate isDark={isDark} />
+        </div>
+      </PageShell>
+    );
+  }
+
+  // §Bundle-Based Pricing — mirrors the Attribute-Based branch above exactly: its own AI-prompt-driven
+  // creation surface (see BundleBasedPricingCreate.tsx), owning its own inline actions.
+  if (isBundleBasedForm) {
+    return (
+      <PageShell footer={<FooterBar isDark={isDark}>{backButton}</FooterBar>}>
+        <div style={{ padding: "28px clamp(16px, 4vw, 56px)", maxWidth: 1000, margin: "0 auto", width: "100%" }}>
+          <BundleBasedPricingCreate isDark={isDark} />
+        </div>
+      </PageShell>
+    );
+  }
+
+  // §Volume-Based Pricing — mirrors the Bundle-Based branch above exactly: its own AI-prompt-driven
+  // creation surface plus an editable tier-rows form (see VolumeBasedPricingCreate.tsx), owning its own
+  // inline actions.
+  if (isVolumeBasedForm) {
+    return (
+      <PageShell footer={<FooterBar isDark={isDark}>{backButton}</FooterBar>}>
+        <div style={{ padding: "28px clamp(16px, 4vw, 56px)", maxWidth: 1000, margin: "0 auto", width: "100%" }}>
+          <VolumeBasedPricingCreate isDark={isDark} />
+        </div>
+      </PageShell>
+    );
+  }
+
+  // §Tier-Based (Slab) Pricing — mirrors the Volume-Based branch above exactly: its own AI-prompt-driven
+  // creation surface plus an editable tier-rows form (see TierBasedPricingCreate.tsx), owning its own
+  // inline actions. Shares the same VolumeTier[] wire shape as Volume-Based but deploys a distinct
+  // VolumeTierDiscount BKM action type with its own AdjustmentMethod resolution rule.
+  if (isTierBasedForm) {
+    return (
+      <PageShell footer={<FooterBar isDark={isDark}>{backButton}</FooterBar>}>
+        <div style={{ padding: "28px clamp(16px, 4vw, 56px)", maxWidth: 1000, margin: "0 auto", width: "100%" }}>
+          <TierBasedPricingCreate isDark={isDark} />
         </div>
       </PageShell>
     );

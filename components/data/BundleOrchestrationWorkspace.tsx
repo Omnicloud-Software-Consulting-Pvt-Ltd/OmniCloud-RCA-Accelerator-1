@@ -168,19 +168,20 @@ function tokens(isDark: boolean) {
     bg:          isDark ? "rgba(2,6,20,0.97)"       : "rgba(240,246,255,0.99)",
     surface:     isDark ? "rgba(6,12,32,0.95)"      : "rgba(255,255,255,0.97)",
     surfaceAlt:  isDark ? "rgba(8,16,40,0.9)"       : "rgba(245,250,255,0.98)",
-    border:      isDark ? "rgba(0,112,214,0.22)"    : "rgba(0,71,171,0.15)",
-    borderBright:isDark ? "rgba(0,212,255,0.30)"    : "rgba(0,112,214,0.25)",
+    border:      isDark ? "rgba(0,112,214,0.22)"    : "rgba(0,71,171,0.22)",
+    borderBright:isDark ? "rgba(0,212,255,0.30)"    : "rgba(0,112,214,0.34)",
     heading:     isDark ? "rgba(220,235,255,0.97)"  : "rgba(0,15,60,0.92)",
     body:        isDark ? "rgba(170,200,235,0.88)"  : "rgba(0,25,80,0.82)",
-    dim:         isDark ? "rgba(90,130,170,0.65)"   : "rgba(0,50,130,0.52)",
-    accent:      "#00D4FF",
-    accentBlue:  "#1E90FF",
-    accentCyan:  "#3AABFF",
-    accentNavy:  "#0070D6",
+    dim:         isDark ? "rgba(90,130,170,0.65)"   : "rgba(15,45,100,0.72)",
+    accent:      isDark ? "#00D4FF" : "#0098CC",
+    accentBlue:  isDark ? "#1E90FF" : "#0968D3",
+    accentCyan:  isDark ? "#3AABFF" : "#1789B0",
+    accentNavy:  isDark ? "#0070D6" : "#0047AB",
     inputBg:     isDark ? "rgba(0,15,40,0.7)"       : "rgba(255,255,255,0.95)",
-    inputBorder: isDark ? "rgba(0,112,214,0.25)"    : "rgba(0,71,171,0.18)",
+    inputBorder: isDark ? "rgba(0,112,214,0.25)"    : "rgba(0,71,171,0.26)",
     error:       "#FF4066",
     warn:        "#F59E0B",
+    shadow:      isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)",
   };
 }
 
@@ -265,9 +266,11 @@ function Section({
   const [open, setOpen] = useState(defaultOpen);
   const tk = tokens(isDark);
   return (
-    <div className="rounded-2xl overflow-hidden" style={{ border: `1px solid ${tk.border}`, background: tk.surface }}>
-      <button
+    <div className="rounded-2xl overflow-hidden" style={{ border: `1px solid ${tk.border}`, background: tk.surface, boxShadow: tk.shadow }}>
+      <motion.button
         onClick={() => setOpen(o => !o)}
+        whileTap={{ scale: 0.99 }}
+        transition={{ duration: 0.12, ease: [0.22, 1, 0.36, 1] }}
         className="w-full flex items-center gap-3 px-5 py-4 cursor-pointer"
         style={{ background: isDark ? "rgba(0,112,214,0.08)" : "rgba(0,71,171,0.04)", borderBottom: open ? `1px solid ${tk.border}` : "none" }}
       >
@@ -285,7 +288,7 @@ function Section({
             <Ic n="chevron-down" s={14} />
           </motion.span>
         </div>
-      </button>
+      </motion.button>
       <AnimatePresence>
         {open && (
           <motion.div

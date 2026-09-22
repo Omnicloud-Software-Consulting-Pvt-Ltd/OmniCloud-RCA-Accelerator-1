@@ -297,6 +297,47 @@ export function removeTopLevelParameters(stepFullXml: string, shouldRemove: (par
   return result;
 }
 
+/**
+ * §Live-org fix — `<parameters>` blocks NESTED inside a `<customElement>` in `stepFullXml`: the exact
+ * complement of `getTopLevelParameterBlocks`. Exists because a donor-specific literal (e.g. a
+ * product/attribute-specific value, or a stale creation-time Id baked in by however the donor was
+ * originally configured) can live NESTED inside `<customElement>` — precisely where legitimate bindings
+ * like `PriceAdjustmentScheduleId` are ALSO required to live — so a check that only ever looked at
+ * top-level parameters could never see it. Offsets are into the ORIGINAL `stepFullXml`, not the
+ * customElement's own local text, so callers can splice directly.
+ */
+export function getNestedCustomElementParameterBlocks(stepFullXml: string): { block: string; start: number; end: number }[] {
+  const results: { block: string; start: number; end: number }[] = [];
+  const ceRe = /<customElement(?:\s[^>]*)?>[\s\S]*?<\/customElement>/g;
+  let ceMatch: RegExpExecArray | null;
+  while ((ceMatch = ceRe.exec(stepFullXml))) {
+    const ceStart = ceMatch.index;
+    const ceContent = ceMatch[0];
+    const pRe = /<parameters>[\s\S]*?<\/parameters>/g;
+    let pMatch: RegExpExecArray | null;
+    while ((pMatch = pRe.exec(ceContent))) {
+      results.push({ block: pMatch[0], start: ceStart + pMatch.index, end: ceStart + pMatch.index + pMatch[0].length });
+    }
+  }
+  return results;
+}
+
+/** Remove every customElement-NESTED `<parameters>` block in `stepFullXml` for which `shouldRemove`
+ * returns true — the exact complement of `removeTopLevelParameters`. Never removes the `<customElement>`
+ * wrapper itself, even if every parameter inside it is stripped — an empty (or now-emptier)
+ * `<customElement>` is left in place for a later patch to populate. */
+export function removeNestedCustomElementParameters(stepFullXml: string, shouldRemove: (paramBlock: string) => boolean): string {
+  const blocks = getNestedCustomElementParameterBlocks(stepFullXml);
+  let result = stepFullXml;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (shouldRemove(b.block)) {
+      result = result.slice(0, b.start) + result.slice(b.end);
+    }
+  }
+  return result;
+}
+
 /** Build a new `<parameters>` block in the canonical alphabetical field order Salesforce's own serializer uses. */
 export function buildParameterBlock(opts: { name: string; value: string; type?: string; input?: boolean; output?: boolean }): string {
   const fields: string[] = [];

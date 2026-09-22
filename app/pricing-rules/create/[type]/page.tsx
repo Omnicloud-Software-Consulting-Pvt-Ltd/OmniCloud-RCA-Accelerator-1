@@ -41,7 +41,13 @@ export default function CreatePricingRuleTypePage() {
     setAuthorized(true);
   }, [router]);
 
-  const goToDashboard = () => router.push("/data?module=pricing-rules");
+  // A hard navigation, not router.push — this page lives outside the /data
+  // SPA shell, and Next's client-side router cache can reuse a previously
+  // mounted /data instance (with whatever tile was selected before) instead
+  // of re-reading the ?module=pricing-rules query string, landing back on
+  // whatever tile was last open (e.g. Accounts) instead of Pricing Rules.
+  // A full reload guarantees /data mounts fresh and reads the URL correctly.
+  const goToDashboard = () => { window.location.href = "/data?module=pricing-rules"; };
 
   if (!mounted || !authorized) {
     return (

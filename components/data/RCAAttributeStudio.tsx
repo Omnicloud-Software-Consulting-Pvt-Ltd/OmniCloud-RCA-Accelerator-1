@@ -388,15 +388,16 @@ function ProductContextCard({ data, isDark }: { data: ParsedRCAData; isDark: boo
       style={{
         background: isDark ? "rgba(0,212,255,0.04)" : "rgba(0,212,255,0.04)",
         border: "1px solid rgba(0,212,255,0.18)",
+        boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)",
       }}
     >
       <div className="flex items-center gap-2 mb-2.5">
-        <span style={{ color: ACCENT }}><Ic n="package" s={12} /></span>
-        <span className="text-[10px] font-semibold tracking-widest uppercase" style={{ color: ACCENT }}>
+        <span style={{ color: isDark ? ACCENT : "#0098CC" }}><Ic n="package" s={12} /></span>
+        <span className="text-[10px] font-semibold tracking-widest uppercase" style={{ color: isDark ? ACCENT : "#0098CC" }}>
           Product Context Summary
         </span>
         <span className="ml-auto text-[9px] font-mono px-2 py-0.5 rounded-full"
-          style={{ background: "rgba(0,212,255,0.1)", color: ACCENT, border: "1px solid rgba(0,212,255,0.2)" }}>
+          style={{ background: "rgba(0,212,255,0.1)", color: isDark ? ACCENT : "#0098CC", border: "1px solid rgba(0,212,255,0.2)" }}>
           RCA DEPLOYMENT HEADER
         </span>
       </div>
@@ -404,7 +405,7 @@ function ProductContextCard({ data, isDark }: { data: ParsedRCAData; isDark: boo
         {fields.map(f => (
           <div key={f.label} className="flex flex-col gap-0.5 min-w-0">
             <span className="text-[9px] font-medium tracking-wider uppercase truncate"
-              style={{ color: isDark ? "rgba(0,212,255,0.45)" : "rgba(0,112,214,0.45)" }}>
+              style={{ color: isDark ? "rgba(0,212,255,0.45)" : "rgba(15,45,100,0.72)" }}>
               {f.label}
             </span>
             <span className="text-[11px] font-semibold truncate"
@@ -437,7 +438,7 @@ function ProductValidationPanel({ isDark, productName, state, onResolveNotFound,
   if (state.status === "idle" || state.status === "checking") {
     return (
       <div className="rounded-xl px-3.5 py-3 flex items-center gap-2.5" style={{ background: isDark ? "rgba(0,212,255,0.04)" : "rgba(0,212,255,0.03)", border: "1px solid rgba(0,212,255,0.15)" }}>
-        <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }} style={{ color: ACCENT }}>
+        <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }} style={{ color: isDark ? ACCENT : "#0098CC" }}>
           <Ic n="loader" s={14} />
         </motion.span>
         <span className="text-[12px] font-medium" style={{ color: isDark ? "rgba(0,212,255,0.85)" : "rgba(0,112,214,0.8)" }}>
@@ -465,7 +466,7 @@ function ProductValidationPanel({ isDark, productName, state, onResolveNotFound,
   if (state.status === "creating") {
     return (
       <div className="rounded-xl px-3.5 py-3 flex items-center gap-2.5" style={{ background: isDark ? "rgba(0,212,255,0.04)" : "rgba(0,212,255,0.03)", border: "1px solid rgba(0,212,255,0.15)" }}>
-        <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }} style={{ color: ACCENT }}>
+        <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }} style={{ color: isDark ? ACCENT : "#0098CC" }}>
           <Ic n="loader" s={14} />
         </motion.span>
         <span className="text-[12px] font-medium" style={{ color: isDark ? "rgba(0,212,255,0.85)" : "rgba(0,112,214,0.8)" }}>
@@ -524,8 +525,9 @@ function AttributeCard({ attr, idx, isDark }: { attr: ParsedAttribute; idx: numb
       className="rounded-xl p-3 flex flex-col gap-2"
       style={{
         background: isDark ? "rgba(6,12,28,0.65)" : "rgba(228,241,255,0.90)",
-        border: isDark ? "1px solid rgba(0,212,255,0.1)" : "1px solid rgba(0,112,214,0.1)",
+        border: isDark ? "1px solid rgba(0,212,255,0.1)" : "1px solid rgba(0,112,214,0.22)",
         backdropFilter: "blur(8px)",
+        boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)",
       }}
     >
       <div className="flex items-start justify-between gap-2">
@@ -542,7 +544,7 @@ function AttributeCard({ attr, idx, isDark }: { attr: ParsedAttribute; idx: numb
       <div className="flex flex-wrap gap-1.5 items-center">
         {attr.configurable && (
           <span className="text-[9px] px-1.5 py-0.5 rounded font-medium"
-            style={{ background: "rgba(30,144,255,0.12)", color: "#1E90FF" }}>
+            style={{ background: "rgba(30,144,255,0.12)", color: isDark ? "#1E90FF" : "#0968D3" }}>
             Configurable
           </span>
         )}
@@ -609,11 +611,11 @@ function BatchRow({
   const borderColor = state.status === "success" ? "rgba(0,212,255,0.28)"
     : state.status === "failed" ? "rgba(255,64,102,0.28)"
     : state.status === "running" ? "rgba(0,212,255,0.28)"
-    : isDark ? "rgba(0,212,255,0.08)" : "rgba(0,112,214,0.1)";
+    : isDark ? "rgba(0,212,255,0.08)" : "rgba(0,112,214,0.22)";
 
   return (
     <div className="rounded-xl overflow-hidden"
-      style={{ border: `1px solid ${borderColor}`, background: isDark ? "rgba(4,10,22,0.72)" : "rgba(255,255,255,0.68)", backdropFilter: "blur(8px)" }}>
+      style={{ border: `1px solid ${borderColor}`, background: isDark ? "rgba(4,10,22,0.72)" : "rgba(255,255,255,0.68)", backdropFilter: "blur(8px)", boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)" }}>
 
       {/* Main row */}
       <div className="flex items-center gap-3 px-4 py-3">
@@ -703,7 +705,7 @@ function BatchRow({
                 style={{ background: isDark ? "rgba(0,0,0,0.55)" : "rgba(236,246,255,0.85)", border: isDark ? "1px solid rgba(0,212,255,0.1)" : "1px solid rgba(0,112,214,0.1)" }}>
                 <div className="flex items-center justify-between px-3 py-2"
                   style={{ borderBottom: isDark ? "1px solid rgba(0,212,255,0.08)" : "1px solid rgba(0,112,214,0.07)" }}>
-                  <span className="text-[9px] font-mono font-bold uppercase tracking-widest" style={{ color: ACCENT }}>
+                  <span className="text-[9px] font-mono font-bold uppercase tracking-widest" style={{ color: isDark ? ACCENT : "#0098CC" }}>
                     Batch {def.id} · Salesforce JSON Payload
                   </span>
                   <motion.button onClick={handleCopy}
@@ -732,7 +734,7 @@ function BatchRow({
             <div className="px-4 pb-3 mx-4 mb-3">
               <div className="rounded-lg px-3 py-2"
                 style={{ background: isDark ? "rgba(0,0,0,0.4)" : "rgba(240,248,255,0.85)", border: isDark ? "1px solid rgba(0,212,255,0.1)" : "1px solid rgba(0,71,171,0.20)", maxHeight: 160, overflowY: "auto", scrollbarWidth: "thin" }}>
-                <span className="block text-[9px] font-mono font-bold uppercase tracking-widest mb-1.5" style={{ color: ACCENT_CYAN }}>
+                <span className="block text-[9px] font-mono font-bold uppercase tracking-widest mb-1.5" style={{ color: isDark ? ACCENT_CYAN : "#0098CC" }}>
                   Execution Log
                 </span>
                 {state.logs.map((log, i) => (
@@ -784,13 +786,13 @@ function AnalysisTable({ attrs, skipped, isDark }: {
   skipped: { name: string; reason: string }[];
   isDark: boolean;
 }) {
-  const headerColor = isDark ? "rgba(0,212,255,0.45)" : "rgba(0,112,214,0.45)";
+  const headerColor = isDark ? "rgba(0,212,255,0.45)" : "rgba(15,45,100,0.72)";
   const rowBg       = isDark ? "rgba(4,10,22,0.55)"   : "rgba(222,235,255,0.85)";
-  const borderColor = isDark ? "rgba(0,212,255,0.08)"  : "rgba(0,112,214,0.08)";
+  const borderColor = isDark ? "rgba(0,212,255,0.08)"  : "rgba(0,112,214,0.22)";
 
   const cols = ["#", "Attribute Name", "Detected Type", "DisplayType", "Configurable", "Decision", "Values"];
   return (
-    <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${borderColor}` }}>
+    <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${borderColor}`, boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)" }}>
       {/* Header row */}
       <div className="grid text-[9px] font-semibold tracking-widest uppercase px-3 py-2"
         style={{
@@ -828,7 +830,7 @@ function AnalysisTable({ attrs, skipped, isDark }: {
               <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${attr.configurable ? "" : ""}`}
                 style={{
                   background: attr.configurable ? "rgba(0,212,255,0.10)" : "rgba(90,122,154,0.08)",
-                  color: attr.configurable ? "#00D4FF" : isDark ? "rgba(150,170,190,0.7)" : "rgba(80,100,120,0.7)",
+                  color: attr.configurable ? (isDark ? "#00D4FF" : "#0098CC") : isDark ? "rgba(150,170,190,0.7)" : "rgba(80,100,120,0.7)",
                   border: `1px solid ${attr.configurable ? "rgba(0,212,255,0.25)" : "rgba(90,122,154,0.18)"}`,
                 }}>
                 {attr.configurable ? "Yes" : "No"}
@@ -896,13 +898,14 @@ function RCADependencyGraph({ batchStates, isDark }: { batchStates: BatchState[]
   return (
     <div className="rounded-xl p-4 mb-4"
       style={{ background: isDark ? "rgba(0,0,0,0.45)" : "rgba(236,246,255,0.85)",
-               border: isDark ? "1px solid rgba(0,212,255,0.12)" : "1px solid rgba(0,71,171,0.20)" }}>
+               border: isDark ? "1px solid rgba(0,212,255,0.12)" : "1px solid rgba(0,71,171,0.20)",
+               boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)" }}>
       <div className="flex items-center gap-2 mb-3">
-        <span className="text-[9px] font-mono font-bold uppercase tracking-widest" style={{ color: ACCENT_CYAN }}>
+        <span className="text-[9px] font-mono font-bold uppercase tracking-widest" style={{ color: isDark ? ACCENT_CYAN : "#0098CC" }}>
           RCA Object Dependency Graph
         </span>
         <span className="text-[8px] px-1.5 py-0.5 rounded font-mono"
-          style={{ background: "rgba(0,212,255,0.1)", color: ACCENT_CYAN, border: "1px solid rgba(0,212,255,0.2)" }}>
+          style={{ background: "rgba(0,212,255,0.1)", color: isDark ? ACCENT_CYAN : "#0098CC", border: "1px solid rgba(0,212,255,0.2)" }}>
           deployment order
         </span>
       </div>
@@ -1013,12 +1016,13 @@ function StorageHealthPanel({ health, isDark }: { health: StorageHealth; isDark:
         border: health.storageWarning
           ? "1px solid rgba(255,64,102,0.25)"
           : "1px solid rgba(0,212,255,0.18)",
+        boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)",
       }}
     >
       {/* Header */}
       <div className="flex items-center gap-2 mb-2.5 flex-wrap">
         <span className="text-[9px] font-mono font-bold uppercase tracking-widest"
-          style={{ color: health.storageWarning ? "#FF6080" : ACCENT_CYAN }}>
+          style={{ color: health.storageWarning ? "#FF6080" : isDark ? ACCENT_CYAN : "#0098CC" }}>
           Storage Health
         </span>
         {health.storageWarning && (
@@ -1032,8 +1036,8 @@ function StorageHealthPanel({ health, isDark }: { health: StorageHealth; isDark:
       {/* Counters */}
       <div className="grid grid-cols-3 gap-2 mb-2.5">
         {[
-          { label: "Reused",  value: health.reuseCount,    color: ACCENT_CYAN },
-          { label: "Created", value: health.createCount,   color: ACCENT },
+          { label: "Reused",  value: health.reuseCount,    color: isDark ? ACCENT_CYAN : "#0098CC" },
+          { label: "Created", value: health.createCount,   color: isDark ? ACCENT : "#0098CC" },
           { label: "Errors",  value: health.storageErrors, color: health.storageErrors > 0 ? "#FF6080" : isDark ? "rgba(90,120,160,0.5)" : "rgba(0,15,55,0.65)" },
         ].map(s => (
           <div key={s.label} className="rounded-lg px-2 py-1.5 text-center"
@@ -1052,7 +1056,7 @@ function StorageHealthPanel({ health, isDark }: { health: StorageHealth; isDark:
             <div key={`r-${obj}`} className="flex items-center justify-between">
               <span className="text-[9px] font-mono truncate" style={{ color: isDark ? "rgba(180,210,240,0.65)" : "rgba(0,15,55,0.78)" }}>{obj}</span>
               <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ml-2"
-                style={{ background: "rgba(0,212,255,0.1)", color: ACCENT_CYAN, border: "1px solid rgba(0,212,255,0.22)" }}>
+                style={{ background: "rgba(0,212,255,0.1)", color: isDark ? ACCENT_CYAN : "#0098CC", border: "1px solid rgba(0,212,255,0.22)" }}>
                 {count} reused
               </span>
             </div>
@@ -1430,7 +1434,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
       <div className="px-6 py-4 shrink-0" style={{ borderBottom: border }}>
         <div className="flex items-center gap-3 flex-wrap">
           <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
-            style={{ background: "linear-gradient(135deg, rgba(0,212,255,0.18) 0%, rgba(0,212,255,0.1) 100%)", border: "1px solid rgba(0,212,255,0.28)", color: ACCENT, boxShadow: "0 0 20px rgba(0,212,255,0.1)" }}>
+            style={{ background: "linear-gradient(135deg, rgba(0,212,255,0.18) 0%, rgba(0,212,255,0.1) 100%)", border: "1px solid rgba(0,212,255,0.28)", color: isDark ? ACCENT : "#0098CC", boxShadow: "0 0 20px rgba(0,212,255,0.1)" }}>
             <Ic n="layers" s={18} />
           </div>
           <div>
@@ -1444,7 +1448,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
           <div className="ml-auto hidden sm:flex items-center gap-2">
             {["ProductAttributeDefinition", "8-Batch Deploy", "RCA v62.0"].map(badge => (
               <span key={badge} className="text-[9px] font-mono px-2 py-0.5 rounded-full"
-                style={{ background: "rgba(0,212,255,0.07)", color: ACCENT, border: "1px solid rgba(0,212,255,0.18)" }}>
+                style={{ background: "rgba(0,212,255,0.07)", color: isDark ? ACCENT : "#0098CC", border: "1px solid rgba(0,212,255,0.18)" }}>
                 {badge}
               </span>
             ))}
@@ -1461,7 +1465,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
           <div className="text-center mb-7">
             <motion.div animate={{ opacity: [0.6, 1, 0.6] }} transition={{ duration: 2.8, repeat: Infinity }}
               className="inline-flex items-center gap-2 text-[10px] font-mono tracking-widest uppercase mb-4 px-3 py-1.5 rounded-full"
-              style={{ background: "rgba(0,212,255,0.07)", color: ACCENT, border: "1px solid rgba(0,212,255,0.18)" }}>
+              style={{ background: "rgba(0,212,255,0.07)", color: isDark ? ACCENT : "#0098CC", border: "1px solid rgba(0,212,255,0.18)" }}>
               <Ic n="sparkles" s={11} />
               AI Attribute Requirement Prompt
             </motion.div>
@@ -1477,7 +1481,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
           <div className="rounded-2xl overflow-hidden mb-5"
             style={{ background: isDark ? "rgba(4,10,22,0.82)" : "rgba(228,238,255,0.95)", border: isDark ? "1px solid rgba(0,212,255,0.18)" : "1px solid rgba(0,112,214,0.15)", boxShadow: isDark ? "0 0 40px rgba(0,212,255,0.05)" : "0 8px 32px rgba(0,112,214,0.06)", backdropFilter: "blur(16px)" }}>
             <div className="px-5 pt-4 pb-1 flex items-center gap-2">
-              <span style={{ color: ACCENT }}><Ic n="sparkles" s={13} /></span>
+              <span style={{ color: isDark ? ACCENT : "#0098CC" }}><Ic n="sparkles" s={13} /></span>
               <span className="text-[11px] font-semibold" style={{ color: isDark ? "rgba(0,212,255,0.8)" : "rgba(0,112,214,0.8)" }}>
                 AI Attribute Requirement Prompt
               </span>
@@ -1542,7 +1546,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
               ].map(f => (
                 <div key={f.label} className="px-3 py-2.5 rounded-xl"
                   style={{ background: isDark ? "rgba(0,212,255,0.04)" : "rgba(0,212,255,0.03)", border: "1px solid rgba(0,212,255,0.1)" }}>
-                  <div className="text-[10px] font-semibold mb-0.5" style={{ color: ACCENT }}>{f.label}</div>
+                  <div className="text-[10px] font-semibold mb-0.5" style={{ color: isDark ? ACCENT : "#0098CC" }}>{f.label}</div>
                   <div className="text-[9px]" style={{ color: isDark ? "rgba(90,120,160,0.6)" : "rgba(0,15,55,0.70)" }}>{f.desc}</div>
                 </div>
               ))}
@@ -1556,7 +1560,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
             className="max-w-2xl mx-auto mt-6 rounded-2xl p-6 flex flex-col items-center gap-4 text-center"
             style={{ background: isDark ? "rgba(0,212,255,0.04)" : "rgba(0,212,255,0.03)", border: "1px solid rgba(0,212,255,0.15)" }}>
             <motion.div animate={{ rotate: 360 }} transition={{ duration: 1.2, repeat: Infinity, ease: "linear" }}
-              style={{ color: ACCENT }}>
+              style={{ color: isDark ? ACCENT : "#0098CC" }}>
               <Ic n="loader" s={30} />
             </motion.div>
             <div>
@@ -1571,7 +1575,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
               {["Eligibility Filtering", "Datatype Inference", "Configurable vs Informational", "Picklist Detection"].map((s, i) => (
                 <motion.span key={s} animate={{ opacity: [0.4, 1, 0.4] }} transition={{ duration: 1.6, repeat: Infinity, delay: i * 0.25 }}
                   className="text-[9px] font-mono px-2 py-1 rounded-full"
-                  style={{ background: "rgba(0,212,255,0.06)", color: ACCENT, border: "1px solid rgba(0,212,255,0.15)" }}>
+                  style={{ background: "rgba(0,212,255,0.06)", color: isDark ? ACCENT : "#0098CC", border: "1px solid rgba(0,212,255,0.15)" }}>
                   {s}
                 </motion.span>
               ))}
@@ -1598,14 +1602,14 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
       <div className="shrink-0 px-5 pt-3 pb-0" style={{ borderBottom: border }}>
         <div className="flex items-center gap-2 mb-2.5 flex-wrap">
           <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0"
-            style={{ background: "linear-gradient(135deg, rgba(0,212,255,0.18), rgba(0,212,255,0.1))", border: "1px solid rgba(0,212,255,0.25)", color: ACCENT }}>
+            style={{ background: "linear-gradient(135deg, rgba(0,212,255,0.18), rgba(0,212,255,0.1))", border: "1px solid rgba(0,212,255,0.25)", color: isDark ? ACCENT : "#0098CC" }}>
             <Ic n="layers" s={14} />
           </div>
           <span className="text-[13px] font-bold" style={{ color: isDark ? "white" : "#001F5B", letterSpacing: "-0.02em" }}>
             RCA Attribute Creation Studio
           </span>
           <span className="text-[9px] font-mono px-2 py-0.5 rounded-full"
-            style={{ background: "rgba(0,212,255,0.1)", color: ACCENT, border: "1px solid rgba(0,212,255,0.2)" }}>
+            style={{ background: "rgba(0,212,255,0.1)", color: isDark ? ACCENT : "#0098CC", border: "1px solid rgba(0,212,255,0.2)" }}>
             {parsedData.attributes.length} ATTRS · {completedBatches}/9 BATCHES
           </span>
           <motion.button onClick={() => setShowPreview(true)}
@@ -1661,9 +1665,9 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
                 onClick={() => setActiveTab(tab.id)}
                 className="flex items-center gap-1.5 px-3 py-2 text-[11px] font-medium cursor-pointer rounded-t-lg"
                 style={{
-                  color: active ? ACCENT : isDark ? "rgba(90,120,160,0.65)" : "rgba(0,15,55,0.74)",
+                  color: active ? (isDark ? ACCENT : "#0098CC") : isDark ? "rgba(90,120,160,0.65)" : "rgba(0,15,55,0.74)",
                   background: active ? (isDark ? "rgba(0,212,255,0.08)" : "rgba(0,212,255,0.06)") : "transparent",
-                  borderBottom: active ? `2px solid ${ACCENT}` : "2px solid transparent",
+                  borderBottom: active ? `2px solid ${isDark ? ACCENT : "#0098CC"}` : "2px solid transparent",
                 }}
                 whileHover={!active ? { background: isDark ? "rgba(0,212,255,0.04)" : "rgba(0,212,255,0.03)" } : {}}
                 whileTap={{ scale: 0.97 }}>
@@ -1671,7 +1675,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
                 {tab.label}
                 {tab.count !== undefined && tab.count > 0 && (
                   <span className="text-[9px] px-1.5 py-0.5 rounded-full"
-                    style={{ background: active ? "rgba(0,212,255,0.18)" : isDark ? "rgba(90,120,160,0.14)" : "rgba(0,31,91,0.08)", color: active ? ACCENT : isDark ? "rgba(120,150,180,0.7)" : "rgba(0,15,55,0.74)" }}>
+                    style={{ background: active ? "rgba(0,212,255,0.18)" : isDark ? "rgba(90,120,160,0.14)" : "rgba(0,31,91,0.08)", color: active ? (isDark ? ACCENT : "#0098CC") : isDark ? "rgba(120,150,180,0.7)" : "rgba(0,15,55,0.74)" }}>
                     {tab.count}
                   </span>
                 )}
@@ -1692,7 +1696,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
               {/* Header row */}
               <div className="flex items-center gap-2 mb-3 flex-wrap">
                 <span className="text-[10px] font-semibold tracking-widest uppercase flex-1"
-                  style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(0,112,214,0.45)" }}>
+                  style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(15,45,100,0.72)" }}>
                   {attrView === "table" ? "AI Analysis Overview" : "Generated Attribute Definitions"}
                 </span>
                 {/* Datatype badges (cards view only) */}
@@ -1721,7 +1725,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
                         background: attrView === v
                           ? isDark ? "rgba(0,212,255,0.12)" : "rgba(0,212,255,0.1)"
                           : "transparent",
-                        color: attrView === v ? ACCENT : isDark ? "rgba(0,212,255,0.4)" : "rgba(0,112,214,0.45)",
+                        color: attrView === v ? (isDark ? ACCENT : "#0098CC") : isDark ? "rgba(0,212,255,0.4)" : "rgba(15,45,100,0.72)",
                       }}
                       whileTap={{ scale: 0.96 }}>
                       {v === "cards" ? "Cards" : "Analysis"}
@@ -1756,7 +1760,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
               exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.2 }}>
               <div className="flex items-center justify-between mb-3">
                 <span className="text-[10px] font-semibold tracking-widest uppercase"
-                  style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(0,112,214,0.45)" }}>
+                  style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(15,45,100,0.72)" }}>
                   Batch Execution Timeline
                 </span>
                 <span className="text-[10px] font-mono"
@@ -1787,8 +1791,8 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
               <div className="mb-4 rounded-xl p-3"
                 style={{ background: isDark ? "rgba(0,212,255,0.04)" : "rgba(0,212,255,0.03)", border: "1px solid rgba(0,212,255,0.12)" }}>
                 <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-[10px] font-medium" style={{ color: ACCENT }}>Overall Deployment Progress</span>
-                  <span className="text-[10px] font-mono font-bold" style={{ color: ACCENT }}>
+                  <span className="text-[10px] font-medium" style={{ color: isDark ? ACCENT : "#0098CC" }}>Overall Deployment Progress</span>
+                  <span className="text-[10px] font-mono font-bold" style={{ color: isDark ? ACCENT : "#0098CC" }}>
                     {Math.round((completedBatches / 9) * 100)}%
                   </span>
                 </div>
@@ -1830,7 +1834,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
               exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.2 }}>
               <div className="flex items-center gap-2 mb-3 flex-wrap">
                 <span className="text-[10px] font-semibold tracking-widest uppercase flex-1"
-                  style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(0,112,214,0.45)" }}>
+                  style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(15,45,100,0.72)" }}>
                   Deployment Console
                 </span>
                 <motion.button onClick={() => setShowGraph(v => !v)}
@@ -1904,19 +1908,19 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
             <motion.div key="product" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.2 }}>
               <span className="block text-[10px] font-semibold tracking-widest uppercase mb-3"
-                style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(0,112,214,0.45)" }}>
+                style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(15,45,100,0.72)" }}>
                 Product Preview &amp; Deployment Summary
               </span>
 
               {/* Product Info Card */}
               <div className="rounded-xl p-3 mb-3"
-                style={{ background: isDark ? "rgba(0,212,255,0.04)" : "rgba(0,212,255,0.03)", border: "1px solid rgba(0,212,255,0.18)" }}>
+                style={{ background: isDark ? "rgba(0,212,255,0.04)" : "rgba(0,212,255,0.03)", border: "1px solid rgba(0,212,255,0.18)", boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)" }}>
                 <div className="flex items-center gap-2 mb-2.5">
-                  <span style={{ color: ACCENT }}><Ic n="package" s={12} /></span>
-                  <span className="text-[10px] font-bold tracking-widest uppercase" style={{ color: ACCENT }}>Product Details</span>
+                  <span style={{ color: isDark ? ACCENT : "#0098CC" }}><Ic n="package" s={12} /></span>
+                  <span className="text-[10px] font-bold tracking-widest uppercase" style={{ color: isDark ? ACCENT : "#0098CC" }}>Product Details</span>
                   {batchCtx.productId && (
                     <span className="ml-auto text-[9px] font-mono px-2 py-0.5 rounded-full"
-                      style={{ background: "rgba(0,212,255,0.1)", color: ACCENT, border: "1px solid rgba(0,212,255,0.22)" }}>
+                      style={{ background: "rgba(0,212,255,0.1)", color: isDark ? ACCENT : "#0098CC", border: "1px solid rgba(0,212,255,0.22)" }}>
                       ID: {batchCtx.productId}
                     </span>
                   )}
@@ -1935,7 +1939,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
                   ].map(f => (
                     <div key={f.label} className="flex flex-col gap-0.5">
                       <span className="text-[9px] font-medium tracking-wider uppercase"
-                        style={{ color: isDark ? "rgba(0,212,255,0.4)" : "rgba(0,112,214,0.4)" }}>{f.label}</span>
+                        style={{ color: isDark ? "rgba(0,212,255,0.4)" : "rgba(15,45,100,0.72)" }}>{f.label}</span>
                       <span className="text-[11px] font-semibold truncate"
                         style={{ color: isDark ? "rgba(220,240,230,0.88)" : "#001F5B" }}>{f.value || "—"}</span>
                     </div>
@@ -1945,10 +1949,10 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
 
               {/* Attribute Mapping Summary */}
               <div className="rounded-xl overflow-hidden mb-3"
-                style={{ border: isDark ? "1px solid rgba(0,212,255,0.12)" : "1px solid rgba(0,71,171,0.20)" }}>
+                style={{ border: isDark ? "1px solid rgba(0,212,255,0.12)" : "1px solid rgba(0,71,171,0.20)", boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)" }}>
                 <div className="flex items-center gap-2 px-3 py-2"
                   style={{ background: isDark ? "rgba(0,212,255,0.05)" : "rgba(0,71,171,0.09)", borderBottom: isDark ? "1px solid rgba(0,212,255,0.1)" : "1px solid rgba(0,71,171,0.16)" }}>
-                  <span className="text-[9px] font-bold tracking-widest uppercase flex-1" style={{ color: ACCENT_CYAN }}>
+                  <span className="text-[9px] font-bold tracking-widest uppercase flex-1" style={{ color: isDark ? ACCENT_CYAN : "#0098CC" }}>
                     Attribute Mapping ({Object.keys(batchCtx.padIds ?? {}).length}/{parsedData.attributes.length} PADs deployed)
                   </span>
                 </div>
@@ -1968,7 +1972,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
                         </span>
                         {padId ? (
                           <span className="text-[9px] font-mono px-1.5 py-0.5 rounded shrink-0"
-                            style={{ background: "rgba(0,212,255,0.08)", color: ACCENT, border: "1px solid rgba(0,212,255,0.2)" }}>
+                            style={{ background: "rgba(0,212,255,0.08)", color: isDark ? ACCENT : "#0098CC", border: "1px solid rgba(0,212,255,0.2)" }}>
                             PAD ✓
                           </span>
                         ) : (
@@ -1979,7 +1983,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
                         )}
                         {pcaId && (
                           <span className="text-[9px] font-mono px-1.5 py-0.5 rounded shrink-0"
-                            style={{ background: "rgba(0,212,255,0.08)", color: ACCENT_CYAN, border: "1px solid rgba(0,212,255,0.18)" }}>
+                            style={{ background: "rgba(0,212,255,0.08)", color: isDark ? ACCENT_CYAN : "#0098CC", border: "1px solid rgba(0,212,255,0.18)" }}>
                             PCA ✓
                           </span>
                         )}
@@ -2051,7 +2055,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
               {!batchCtx.productId && (
                 <div className="rounded-xl p-8 text-center flex flex-col items-center gap-3"
                   style={{ background: isDark ? "rgba(0,212,255,0.03)" : "rgba(0,212,255,0.02)", border: "1px solid rgba(0,212,255,0.1)" }}>
-                  <span style={{ color: "rgba(0,212,255,0.4)" }}><Ic n="package" s={28} /></span>
+                  <span style={{ color: isDark ? "rgba(0,212,255,0.4)" : "rgba(0,112,214,0.45)" }}><Ic n="package" s={28} /></span>
                   <p className="text-[12px] font-medium" style={{ color: isDark ? "rgba(0,212,255,0.55)" : "rgba(0,112,214,0.55)" }}>
                     Product not yet deployed — run Batches 1–6 to create the product and see the preview here
                   </p>
@@ -2066,14 +2070,14 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
               exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.2 }}>
               <div className="mb-3">
                 <span className="text-[10px] font-semibold tracking-widest uppercase"
-                  style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(0,112,214,0.45)" }}>
+                  style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(15,45,100,0.72)" }}>
                   Skipped / Rejected Attributes
                 </span>
               </div>
               {(!parsedData.skipped || parsedData.skipped.length === 0) ? (
                 <div className="rounded-xl p-8 text-center flex flex-col items-center gap-3"
                   style={{ background: isDark ? "rgba(0,212,255,0.03)" : "rgba(0,212,255,0.02)", border: "1px solid rgba(0,212,255,0.1)" }}>
-                  <span style={{ color: ACCENT }}><Ic n="check-circle" s={28} /></span>
+                  <span style={{ color: isDark ? ACCENT : "#0098CC" }}><Ic n="check-circle" s={28} /></span>
                   <p className="text-[12px] font-medium" style={{ color: isDark ? "rgba(0,212,255,0.7)" : "rgba(0,112,214,0.7)" }}>
                     No fields rejected — all attributes passed eligibility filtering
                   </p>
@@ -2137,7 +2141,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
               <div className="flex items-center gap-3 px-5 py-4 shrink-0"
                 style={{ borderBottom: isDark ? "1px solid rgba(0,212,255,0.12)" : "1px solid rgba(0,112,214,0.1)" }}>
                 <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
-                  style={{ background: "linear-gradient(135deg, rgba(0,212,255,0.18), rgba(0,212,255,0.1))", border: "1px solid rgba(0,212,255,0.28)", color: ACCENT_CYAN }}>
+                  style={{ background: "linear-gradient(135deg, rgba(0,212,255,0.18), rgba(0,212,255,0.1))", border: "1px solid rgba(0,212,255,0.28)", color: isDark ? ACCENT_CYAN : "#0098CC" }}>
                   <Ic n="eye" s={15} />
                 </div>
                 <div className="flex-1 min-w-0">
@@ -2323,7 +2327,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
                       <div className="text-[12px] font-semibold truncate" style={{ color: isDark ? "rgba(220,235,255,0.92)" : "rgba(0,15,45,0.88)" }}>{p.name}</div>
                       <div className="text-[10.5px]" style={{ color: isDark ? "rgba(90,120,160,0.65)" : "rgba(0,31,91,0.58)" }}>{p.productCode ?? "—"}{p.family ? ` · ${p.family}` : ""}</div>
                     </div>
-                    <span className="text-[11px] font-mono shrink-0" style={{ color: ACCENT }}>${p.listPrice.toLocaleString()}</span>
+                    <span className="text-[11px] font-mono shrink-0" style={{ color: isDark ? ACCENT : "#0098CC" }}>${p.listPrice.toLocaleString()}</span>
                   </button>
                 ))}
               </div>

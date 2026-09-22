@@ -35,9 +35,15 @@ async function resolvePicklistValueCounts(client: SalesforceClient, schema: Attr
   const counts = new Map<string, number>();
   if (picklistIds.length === 0) return counts;
   const idList = picklistIds.map(id => `'${soqlEscape(id)}'`).join(",");
+  const plD = schema.attributePicklistValueDescribe;
+  const hasStatus = fieldExists(plD, "Status");
+  const hasIsActive = fieldExists(plD, "IsActive");
+  let where = `WHERE ${schema.plValueFKField} IN (${idList})`;
+  if (hasStatus) where += " AND Status != 'Inactive'";
+  else if (hasIsActive) where += " AND IsActive = true";
   try {
     const res = await client.query<{ [k: string]: unknown; cnt: number }>(
-      `SELECT ${schema.plValueFKField}, COUNT(Id) cnt FROM AttributePicklistValue WHERE ${schema.plValueFKField} IN (${idList}) GROUP BY ${schema.plValueFKField}`,
+      `SELECT ${schema.plValueFKField}, COUNT(Id) cnt FROM AttributePicklistValue ${where} GROUP BY ${schema.plValueFKField}`,
     );
     for (const r of res.records) {
       const key = r[schema.plValueFKField];
@@ -135,15 +141,24 @@ export async function loadAttributeDetail(client: SalesforceClient, id: string):
     const hasDisplayValue = fieldExists(plD, "DisplayValue");
     const hasSequence = fieldExists(plD, "Sequence");
     const hasStatus = fieldExists(plD, "Status");
+    const hasIsActive = fieldExists(plD, "IsActive");
     const fields = ["Id", "Name"];
     if (hasValue) fields.push("Value");
     if (hasDisplayValue) fields.push("DisplayValue");
     if (hasSequence) fields.push("Sequence");
     if (hasStatus) fields.push("Status");
+    if (hasIsActive) fields.push("IsActive");
+
+    // Removed values are soft-deactivated (Status/IsActive), never hard-deleted
+    // when the org supports a status field (see removePicklistValue) — this
+    // read MUST exclude them, or a "deleted" value reappears on next load.
+    let where = `WHERE ${schema.plValueFKField} = '${soqlEscape(picklistId)}'`;
+    if (hasStatus) where += " AND Status != 'Inactive'";
+    else if (hasIsActive) where += " AND IsActive = true";
 
     try {
       const res = await client.query<Record<string, unknown>>(
-        `SELECT ${fields.join(", ")} FROM AttributePicklistValue WHERE ${schema.plValueFKField} = '${soqlEscape(picklistId)}'` +
+        `SELECT ${fields.join(", ")} FROM AttributePicklistValue ${where}` +
         (hasSequence ? " ORDER BY Sequence" : ""),
       );
       picklistValueRows = res.records.map(v => ({
@@ -151,7 +166,7 @@ export async function loadAttributeDetail(client: SalesforceClient, id: string):
         value: (hasValue ? v.Value as string : null) ?? (v.Name as string),
         displayValue: (hasDisplayValue ? v.DisplayValue as string : null) ?? (v.Name as string),
         sequence: (hasSequence ? v.Sequence as number : null) ?? 0,
-        isActive: hasStatus ? v.Status !== "Inactive" : true,
+        isActive: hasStatus ? v.Status !== "Inactive" : (hasIsActive ? v.IsActive !== false : true),
       }));
     } catch { /* AttributePicklistValue not accessible — leave empty rather than guessing */ }
   }

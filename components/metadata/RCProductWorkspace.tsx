@@ -115,7 +115,7 @@ function VisualPreview({ product, isDark }: { product: ProductState; isDark: boo
 
   return (
     <div className="space-y-2.5">
-      {card("Product Information", "#1E90FF", rows([
+      {card("Product Information", isDark ? "#1E90FF" : "#0968D3", rows([
         ["Name", product.productName || "—"],
         ["Code", product.productCode || "—"],
         ["Family", product.family || "—"],
@@ -125,18 +125,18 @@ function VisualPreview({ product, isDark }: { product: ProductState; isDark: boo
         ["Active", product.isActive ? "Yes" : "No"],
         ["Unit", product.unitOfMeasure],
         ...(product.productOwner ? [["Owner", product.productOwner] as [string, string]] : []),
-      ], "#3AABFF"))}
+      ], isDark ? "#3AABFF" : "#1789B0"))}
 
-      {card("Revenue Cloud", "#00D4FF", rows([
+      {card("Revenue Cloud", isDark ? "#00D4FF" : "#0098CC", rows([
         ["Catalog", product.catalog || "—"],
         ["Selling Model", product.sellingModel || "—"],
         ["Classification", product.classification || "—"],
         ["Price Book", product.priceBook || "—"],
         ["Base Price", product.basePrice ? `$${product.basePrice}` : "—"],
         ["Tax", product.taxIncluded === null ? "—" : product.taxIncluded ? "Included" : "Excluded"],
-      ], "#00D4FF"))}
+      ], isDark ? "#00D4FF" : "#0098CC"))}
 
-      {product.description && card("Description", "#60B8FF", (
+      {product.description && card("Description", isDark ? "#60B8FF" : "#1C6DBF", (
         <p className="text-[11px] leading-relaxed" style={{ color: "var(--rc-text-primary)" }}>
           {product.description}
         </p>
@@ -541,7 +541,7 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-start gap-3 min-w-0">
             <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
-              style={{ background: "linear-gradient(135deg, rgba(30,144,255,0.18) 0%, rgba(0,212,255,0.12) 100%)", border: "1px solid rgba(30,144,255,0.22)", color: "#1E90FF" }}>
+              style={{ background: "linear-gradient(135deg, rgba(30,144,255,0.18) 0%, rgba(0,212,255,0.12) 100%)", border: "1px solid rgba(30,144,255,0.22)", color: isDark ? "#1E90FF" : "#0968D3" }}>
               <Ic n="package" s={18} />
             </div>
             <div className="min-w-0">
@@ -567,14 +567,14 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
                       {product.status}
                     </span>
                     <span className="text-[9px] font-mono px-2 py-0.5 rounded"
-                      style={{ background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.2)", color: "#00D4FF" }}>
+                      style={{ background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.2)", color: isDark ? "#00D4FF" : "#0098CC" }}>
                       EPC v62.0
                     </span>
                   </div>
                 )}
                 {!product.productName && (
                   <span className="text-[9px] font-mono px-2 py-0.5 rounded"
-                    style={{ background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.2)", color: "#00D4FF" }}>
+                    style={{ background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.2)", color: isDark ? "#00D4FF" : "#0098CC" }}>
                     AI · EPC v62.0
                   </span>
                 )}
@@ -669,7 +669,7 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
                         style={{
                           background: (product.isActive ? "Yes" : "No") === v ? "rgba(30,144,255,0.14)" : "var(--rc-field-bg)",
                           border: `1px solid ${(product.isActive ? "Yes" : "No") === v ? "rgba(30,144,255,0.35)" : "var(--rc-field-border)"}`,
-                          color: (product.isActive ? "Yes" : "No") === v ? "#1E90FF" : "var(--rc-text-muted)",
+                          color: (product.isActive ? "Yes" : "No") === v ? (isDark ? "#1E90FF" : "#0968D3") : "var(--rc-text-muted)",
                         }}
                         whileTap={{ scale: 0.96 }}>{v}</motion.button>
                     ))}
@@ -717,7 +717,7 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
                   {aiPhase === "done" && (
                     <motion.span initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }}
                       className="text-[9px] font-mono px-1.5 py-0.5 rounded"
-                      style={{ background: "rgba(0,212,255,0.1)", border: "1px solid rgba(0,212,255,0.25)", color: "#00D4FF" }}>
+                      style={{ background: "rgba(0,212,255,0.1)", border: "1px solid rgba(0,212,255,0.25)", color: isDark ? "#00D4FF" : "#0098CC" }}>
                       ✓ FIELDS FILLED
                     </motion.span>
                   )}
@@ -754,7 +754,7 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
                 />
                 {/* Cmd/Ctrl+Enter hint */}
                 <div className="absolute bottom-2.5 right-3 text-[9px] font-mono pointer-events-none"
-                  style={{ color: "rgba(30,144,255,0.4)" }}>
+                  style={{ color: isDark ? "rgba(30,144,255,0.4)" : "rgba(15,45,100,0.6)" }}>
                   ⌘↵ to generate
                 </div>
               </div>
@@ -890,7 +890,7 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
                         style={{
                           background: product.taxIncluded === v ? "rgba(30,144,255,0.14)" : "var(--rc-field-bg)",
                           border: `1px solid ${product.taxIncluded === v ? "rgba(30,144,255,0.35)" : "var(--rc-field-border)"}`,
-                          color: product.taxIncluded === v ? "#1E90FF" : "var(--rc-text-muted)",
+                          color: product.taxIncluded === v ? (isDark ? "#1E90FF" : "#0968D3") : "var(--rc-text-muted)",
                         }}
                         whileTap={{ scale: 0.96 }}>{label}</motion.button>
                     ))}
@@ -904,11 +904,11 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
               {/* RC Config summary cards */}
               {(product.catalog || product.category || product.sellingModel || product.classification) && (
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-2">
-                  {product.catalog        && <RCConfigCard icon="layers"       label="Catalog"         value={product.catalog}         color="#1E90FF" />}
-                  {product.category       && <RCConfigCard icon="tag"          label="Category"        value={product.category}        color="#3AABFF" sub={product.family} />}
-                  {product.sellingModel   && <RCConfigCard icon="zap"          label="Selling Model"   value={product.sellingModel}    color="#00D4FF" />}
-                  {product.classification && <RCConfigCard icon="package"      label="Classification"  value={product.classification}  color="#60B8FF" />}
-                  {product.priceBook      && <RCConfigCard icon="book-open"    label="Price Book"      value={product.priceBook}       color="#0070D6" sub={product.basePrice ? `$${product.basePrice}` : undefined} />}
+                  {product.catalog        && <RCConfigCard icon="layers"       label="Catalog"         value={product.catalog}         color={isDark ? "#1E90FF" : "#0968D3"} />}
+                  {product.category       && <RCConfigCard icon="tag"          label="Category"        value={product.category}        color={isDark ? "#3AABFF" : "#1789B0"} sub={product.family} />}
+                  {product.sellingModel   && <RCConfigCard icon="zap"          label="Selling Model"   value={product.sellingModel}    color={isDark ? "#00D4FF" : "#0098CC"} />}
+                  {product.classification && <RCConfigCard icon="package"      label="Classification"  value={product.classification}  color={isDark ? "#60B8FF" : "#1C6DBF"} />}
+                  {product.priceBook      && <RCConfigCard icon="book-open"    label="Price Book"      value={product.priceBook}       color={isDark ? "#0070D6" : "#0047AB"} sub={product.basePrice ? `$${product.basePrice}` : undefined} />}
                   {product.productOwner   && <RCConfigCard icon="user"         label="Owner"           value={product.productOwner}    color="#2563EB" />}
                 </div>
               )}
@@ -925,14 +925,14 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
 
             {/* Panel header */}
             <div className="flex items-center gap-2 mb-4">
-              <div style={{ color: "#1E90FF" }}><Ic n="rocket" s={14} /></div>
+              <div style={{ color: isDark ? "#1E90FF" : "#0968D3" }}><Ic n="rocket" s={14} /></div>
               <span className="text-[12px] font-bold" style={{ color: isDark ? "white" : "#001F5B", letterSpacing: "-0.01em" }}>
                 Deploy &amp; Preview
               </span>
               {deployPhase === "done" && deployResult && (
                 <motion.span initial={{ opacity: 0 }} animate={{ opacity: 1 }}
                   className="ml-auto text-[9px] font-mono px-1.5 py-0.5 rounded"
-                  style={{ background: "rgba(0,212,255,0.1)", border: "1px solid rgba(0,212,255,0.25)", color: "#00D4FF" }}>
+                  style={{ background: "rgba(0,212,255,0.1)", border: "1px solid rgba(0,212,255,0.25)", color: isDark ? "#00D4FF" : "#0098CC" }}>
                   ✓ LIVE
                 </motion.span>
               )}
@@ -945,17 +945,17 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
                   initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
                   className="mb-4 px-3 py-3 rounded-xl"
                   style={{ background: "rgba(30,144,255,0.07)", border: "1px solid rgba(30,144,255,0.20)" }}>
-                  <div className="text-[10px] font-semibold mb-2" style={{ color: "#1E90FF" }}>{isEditMode ? "Product Updated in Salesforce" : "Product Created in Salesforce"}</div>
+                  <div className="text-[10px] font-semibold mb-2" style={{ color: isDark ? "#1E90FF" : "#0968D3" }}>{isEditMode ? "Product Updated in Salesforce" : "Product Created in Salesforce"}</div>
                   <div className="flex items-center gap-2 mb-2.5">
-                    <span className="text-[9px] font-mono" style={{ color: "rgba(30,144,255,0.6)" }}>ID</span>
-                    <span className="text-[11px] font-mono font-semibold truncate flex-1" style={{ color: "#3AABFF" }}>{deployResult.salesforceId}</span>
+                    <span className="text-[9px] font-mono" style={{ color: isDark ? "rgba(30,144,255,0.6)" : "rgba(15,45,100,0.6)" }}>ID</span>
+                    <span className="text-[11px] font-mono font-semibold truncate flex-1" style={{ color: isDark ? "#3AABFF" : "#1789B0" }}>{deployResult.salesforceId}</span>
                     <motion.button onClick={() => {
                       navigator.clipboard.writeText(deployResult.salesforceId ?? "");
                       setCopied(true); setTimeout(() => setCopied(false), 1600);
-                    }} style={{ color: "rgba(0,212,255,0.6)", flexShrink: 0 }} whileTap={{ scale: 0.9 }}>
+                    }} style={{ color: isDark ? "rgba(0,212,255,0.6)" : "rgba(0,152,204,0.7)", flexShrink: 0 }} whileTap={{ scale: 0.9 }}>
                       <Ic n="copy" s={11} />
                     </motion.button>
-                    {copied && <span className="text-[9px]" style={{ color: "#00D4FF" }}>Copied!</span>}
+                    {copied && <span className="text-[9px]" style={{ color: isDark ? "#00D4FF" : "#0098CC" }}>Copied!</span>}
                   </div>
                   <div className="flex flex-col gap-0.5">
                     {[
@@ -1091,7 +1091,7 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
                 background: deployPhase === "deploying"
                   ? isDark ? "rgba(30,144,255,0.08)" : "rgba(30,144,255,0.06)"
                   : "linear-gradient(135deg, #0070D6 0%, #00D4FF 100%)",
-                color: deployPhase === "deploying" ? "#1E90FF" : "rgba(0,10,20,0.92)",
+                color: deployPhase === "deploying" ? (isDark ? "#1E90FF" : "#0968D3") : "rgba(0,10,20,0.92)",
                 border: deployPhase === "deploying" ? "1px solid rgba(30,144,255,0.3)" : "none",
                 opacity: deployPhase === "deploying" ? 0.7 : 1,
                 boxShadow: deployPhase !== "deploying" ? "0 4px 20px rgba(0,212,255,0.25)" : "none",
@@ -1128,13 +1128,13 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
                 <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
                   {product.family && (
                     <span className="text-[9px] px-1.5 py-0.5 rounded"
-                      style={{ background: "rgba(30,144,255,0.08)", border: "1px solid rgba(30,144,255,0.15)", color: "#3AABFF" }}>
+                      style={{ background: "rgba(30,144,255,0.08)", border: "1px solid rgba(30,144,255,0.15)", color: isDark ? "#3AABFF" : "#1789B0" }}>
                       {product.family}
                     </span>
                   )}
                   {product.sellingModel && (
                     <span className="text-[9px] px-1.5 py-0.5 rounded"
-                      style={{ background: "rgba(0,212,255,0.07)", border: "1px solid rgba(0,212,255,0.15)", color: "#00D4FF" }}>
+                      style={{ background: "rgba(0,212,255,0.07)", border: "1px solid rgba(0,212,255,0.15)", color: isDark ? "#00D4FF" : "#0098CC" }}>
                       {product.sellingModel}
                     </span>
                   )}

@@ -33,8 +33,8 @@ import assert from "node:assert/strict";
 import type { SalesforceClient, DescribeField, DescribeResult } from "@/lib/salesforce/client";
 import { SalesforceError } from "@/lib/salesforce/client";
 import {
-  createOrReuseAttributeBasedAdjRules, createAttributeBasedAdjustments,
-  type AttributeContext, type AttributeBasedPricingSchema, type AttributeBasedRulePlan,
+  createOrReuseAttributeBasedAdjRules, createAttributeBasedAdjustments, adjustmentDecisionKey,
+  type AttributeContext, type AttributeBasedPricingSchema, type AttributeBasedRulePlan, type AdjustmentDecisionOverride,
 } from "./nativeRecords";
 import type { PricingRulePlanRow } from "../types";
 
@@ -44,6 +44,11 @@ function todayISODate(): string {
 function oneYearFromTodayISODate(): string {
   const d = new Date();
   d.setFullYear(d.getFullYear() + 1);
+  return d.toISOString().slice(0, 10);
+}
+function daysOffsetISODate(offsetDays: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + offsetDays);
   return d.toISOString().slice(0, 10);
 }
 
@@ -116,10 +121,10 @@ function buildContexts(attrs: { name: string; padId: string; attrDefId: string }
   return contexts;
 }
 
-function buildRow(attributeName: string, value: string): PricingRulePlanRow {
+function buildRow(attributeName: string, value: string, adjustment = -10, adjustmentType = "fixed"): PricingRulePlanRow {
   return {
     attributeName, attributeLabel: attributeName, value, valueLabel: value,
-    isNewValue: false, adjustmentType: "fixed", adjustment: -10,
+    isNewValue: false, adjustmentType, adjustment,
   } as unknown as PricingRulePlanRow;
 }
 
@@ -165,12 +170,22 @@ function buildMockClient(store: MockStore): SalesforceClient {
       store.createdAdjustments.set(id, { Id: id, ...payload } as Record<string, unknown> & { Id: string });
       return { id };
     },
+    async updateRecord(objectName: string, id: string, fields: Record<string, unknown>) {
+      if (objectName !== "AttributeBasedAdjustment") throw new Error(`unexpected updateRecord: ${objectName}`);
+      const existing = store.createdAdjustments.get(id);
+      if (!existing) throw new Error(`updateRecord on unknown AttributeBasedAdjustment ${id}`);
+      store.createdAdjustments.set(id, { ...existing, ...fields });
+    },
     logDebug() { /* no-op */ },
   } as unknown as SalesforceClient;
 }
 function makePlan(store: MockStore, ruleId: string, attributeName: string, value: string, conditions: { pad: string; value: string }[]): AttributeBasedRulePlan {
   store.conditionsByRule.set(ruleId, conditions);
   return { row: buildRow(attributeName, value), ctx: {} as AttributeContext, ruleId, reusedExisting: false, conditionIds: conditions.map((_, i) => `cond-${ruleId}-${i}`), ruleProductId: null };
+}
+function makePlanWithAdjustment(store: MockStore, ruleId: string, attributeName: string, value: string, adjustment: number, conditions: { pad: string; value: string }[]): AttributeBasedRulePlan {
+  store.conditionsByRule.set(ruleId, conditions);
+  return { row: buildRow(attributeName, value, adjustment), ctx: {} as AttributeContext, ruleId, reusedExisting: false, conditionIds: conditions.map((_, i) => `cond-${ruleId}-${i}`), ruleProductId: null };
 }
 
 const MEMORY_CTX = { name: "Memory", padId: "pad-memory", attrDefId: "ad-memory" };
@@ -307,9 +322,13 @@ test("TEST — a pre-existing record matching EVERY identity field (including to
   const contexts = buildContexts([MEMORY_CTX, GRAPHICS_CTX]);
   const store = buildStore();
   store.conditionsByRule.set("rule-OTHER", BASELINE_CONDITIONS);
+  // §Phase 8 fix — the existing record's own AdjustmentType/AdjustmentValue must also be populated and
+  // agree with what `buildRow`'s default row resolves to ("Amount"/-10), or the new value-comparison
+  // layer correctly treats a value-less candidate as a genuine conflict, not a silent reuse.
   seedAdjustment(store, "adj-exists", {
     Product2Id: "prod-1", PriceAdjustmentScheduleId: "schedule-1", AttributeBasedAdjRuleId: "rule-OTHER",
     ProductSellingModelId: null, EffectiveFrom: todayISODate(), EffectiveTo: oneYearFromTodayISODate(),
+    AdjustmentType: "Amount", AdjustmentValue: -10,
   });
   const plans = [makePlan(store, "rule-A", "Memory", "RAM 8GB", BASELINE_CONDITIONS)];
   const client = buildMockClient(store);
@@ -321,6 +340,93 @@ test("TEST — a pre-existing record matching EVERY identity field (including to
   assert.equal(result.reusedAdjustmentIds[0], "adj-exists");
 });
 
+// ── §Step 5 fix (this turn) — `computeRuleConditionSignature`'s value normalization used to be
+// `.toLowerCase()` alone, with no trim/whitespace-collapse. A pre-existing condition whose stored value
+// differs from the requested one only by incidental whitespace must still be recognized as the exact
+// same configuration at the PREFLIGHT stage — before ever attempting a create that Salesforce would then
+// reject as a duplicate. ──
+test("TEST — Step 5 fix: a pre-existing condition value differing only by whitespace/case is still an exact match", async () => {
+  const schema = buildFullSchema();
+  const contexts = buildContexts([MEMORY_CTX, GRAPHICS_CTX]);
+  const store = buildStore();
+  store.conditionsByRule.set("rule-OTHER", [
+    { pad: "pad-memory", value: "  RAM   8GB " },
+    { pad: "pad-graphics", value: "INTEL IRIS XE GRAPHICS" },
+  ]);
+  seedAdjustment(store, "adj-exists", {
+    Product2Id: "prod-1", PriceAdjustmentScheduleId: "schedule-1", AttributeBasedAdjRuleId: "rule-OTHER",
+    ProductSellingModelId: null, EffectiveFrom: todayISODate(), EffectiveTo: oneYearFromTodayISODate(),
+    AdjustmentType: "Amount", AdjustmentValue: -10,
+  });
+  const plans = [makePlan(store, "rule-A", "Memory", "RAM 8GB", BASELINE_CONDITIONS)];
+  const client = buildMockClient(store);
+
+  const result = await createAttributeBasedAdjustments(client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: null }, contexts, "schedule-1", plans, []);
+
+  assert.equal(result.adjustmentIds.length, 0, "a whitespace/case-only difference must never be treated as a new configuration");
+  assert.equal(result.reusedAdjustmentIds.length, 1);
+  assert.equal(result.reusedAdjustmentIds[0], "adj-exists");
+});
+
+// ── §Step 6 fix (this turn) — the exact live bug: Salesforce rejects a create as a duplicate, but the
+// strict name-resolved re-query (`findExistingAttributeBasedAdjustment`) fails to find it — here because
+// the candidate Rule's own condition-signature query fails for a reason unrelated to whether it's a real
+// duplicate (simulating the kind of narrow-query-shape-specific failure a live org can produce). The new
+// `broadFindExistingAttributeBasedAdjustment` fallback (raw identity Id + normalized value, a simpler
+// query shape) must still find and reuse the genuine match instead of reporting a false conflict. ──
+test("TEST — Step 6 fix: when the narrow duplicate-reconciliation query fails, the broader raw-condition fallback still finds and reuses the genuine match", async () => {
+  const schema = buildFullSchema();
+  const contexts = buildContexts([MEMORY_CTX, GRAPHICS_CTX]);
+  let createCalls = 0;
+  const client = {
+    async query(soql: string) {
+      if (soql.includes("FROM AttributeAdjustmentCondition WHERE")) {
+        const m = soql.match(/AttributeBasedAdjRuleId = '([^']+)'/);
+        const ruleId = m?.[1];
+        if (ruleId === "rule-OTHER" && soql.includes("Product2Id")) {
+          // Simulates the narrow signature query (which selects Product2Id) failing for this specific
+          // candidate Rule for a reason unrelated to whether it's a real duplicate — e.g. a field-level
+          // security/validation quirk on that exact field combination. The broader fallback's query never
+          // selects Product2Id, so it is unaffected.
+          throw new Error("simulated query failure — narrow signature shape only");
+        }
+        if (ruleId === "rule-A" || ruleId === "rule-OTHER") {
+          return { totalSize: BASELINE_CONDITIONS.length, done: true, records: BASELINE_CONDITIONS.map((c, i) => ({ Id: `c-${ruleId}-${i}`, ProductAttributeDefinitionId: c.pad, StringValue: c.value })) };
+        }
+        return { totalSize: 0, done: true, records: [] };
+      }
+      if (soql.includes("FROM AttributeBasedAdjustment WHERE Id = ")) return { totalSize: 0, done: true, records: [] };
+      if (soql.includes("FROM AttributeBasedAdjustment")) {
+        return {
+          totalSize: 1, done: true,
+          records: [{ Id: "adj-broad-match", Product2Id: "prod-1", PriceAdjustmentScheduleId: "schedule-1", AttributeBasedAdjRuleId: "rule-OTHER", ProductSellingModelId: null, EffectiveFrom: todayISODate(), EffectiveTo: oneYearFromTodayISODate(), AdjustmentType: "Amount", AdjustmentValue: -10 }],
+        };
+      }
+      throw new Error(`unexpected query: ${soql}`);
+    },
+    async createRecord() {
+      createCalls++;
+      throw new SalesforceError(
+        "An attribute based adjustment with the selected Product, Product Selling Model, attribute conditions, Price Adjustment Schedule, effective from date, and effective to date already exists. Select different field values and try again.",
+        400,
+        [{ errorCode: "FIELD_INTEGRITY_EXCEPTION", message: "An attribute based adjustment with the selected Product, Product Selling Model, attribute conditions, Price Adjustment Schedule, effective from date, and effective to date already exists. Select different field values and try again." }],
+      );
+    },
+    logDebug() { /* no-op */ },
+  } as unknown as SalesforceClient;
+
+  const plans: AttributeBasedRulePlan[] = [
+    { row: buildRow("Memory", "RAM 8GB"), ctx: contexts.get("Memory")!, ruleId: "rule-A", reusedExisting: false, conditionIds: ["c0", "c1"], ruleProductId: null },
+  ];
+
+  const result = await createAttributeBasedAdjustments(client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: null }, contexts, "schedule-1", plans, []);
+
+  assert.equal(createCalls, 1, "the create must still be attempted (and rejected) exactly once");
+  assert.equal(result.adjustmentIds.length, 0, "must be reconciled via the broad fallback, never counted as a new create");
+  assert.equal(result.reusedAdjustmentIds.length, 1);
+  assert.equal(result.reusedAdjustmentIds[0], "adj-broad-match");
+});
+
 // ── Section 5 — Salesforce's own duplicate error is a safe reconciliation opportunity, not an
 // automatic fatal failure. ──
 test("TEST — Salesforce's duplicate-adjustment error triggers a re-query and reuses the exact existing match", async () => {
@@ -329,6 +435,7 @@ test("TEST — Salesforce's duplicate-adjustment error triggers a re-query and r
   const existingRecord = {
     Id: "adj-exists", Product2Id: "prod-1", PriceAdjustmentScheduleId: "schedule-1", AttributeBasedAdjRuleId: "rule-OTHER",
     ProductSellingModelId: null, EffectiveFrom: todayISODate(), EffectiveTo: oneYearFromTodayISODate(),
+    AdjustmentType: "Amount", AdjustmentValue: -10,
   };
   let broadScanCalls = 0;
   let createCalls = 0;
@@ -372,6 +479,180 @@ test("TEST — Salesforce's duplicate-adjustment error triggers a re-query and r
   assert.equal(result.adjustmentIds.length, 0, "the duplicate must be reconciled, never counted as a new create");
   assert.equal(result.reusedAdjustmentIds.length, 1);
   assert.equal(result.reusedAdjustmentIds[0], "adj-exists");
+});
+
+// ── §Root-cause investigation (this turn) — the live-reported symptom ("neither exact-identity re-query
+// nor broader raw-condition re-query found a logically equivalent match") persisted even after Step 5/6's
+// fixes. Hypothesis under test: this org's real Salesforce uniqueness check for effective dates may be an
+// OVERLAP constraint (a record from an earlier run, still within its one-year active window, conflicts
+// with today's freshly-computed EffectiveFrom/To even though the two don't match exactly) — never assumed
+// as fact, only exercised as a genuinely new, clearly-logged fallback tier that fires ONLY after
+// Salesforce's own duplicate rejection, never during the normal preflight. ──
+test("TEST — Root-cause fix: an existing record whose date range OVERLAPS (but doesn't exactly match) today's request is reused via the overlap fallback, only after Salesforce's own duplicate rejection", async () => {
+  const schema = buildFullSchema();
+  const contexts = buildContexts([MEMORY_CTX, GRAPHICS_CTX]);
+  // Created ~a month before today, one-year active window — still overlaps today's exact request window
+  // even though EffectiveFrom/To don't match exactly. Same Product/Schedule/SellingModel/conditions/value.
+  const existingRecord = {
+    Id: "adj-overlap", Product2Id: "prod-1", PriceAdjustmentScheduleId: "schedule-1", AttributeBasedAdjRuleId: "rule-OTHER",
+    ProductSellingModelId: null, EffectiveFrom: daysOffsetISODate(-30), EffectiveTo: daysOffsetISODate(395),
+    AdjustmentType: "Amount", AdjustmentValue: -10,
+  };
+  let createCalls = 0;
+  const client = {
+    async query(soql: string) {
+      if (soql.includes("FROM AttributeAdjustmentCondition WHERE")) {
+        const m = soql.match(/AttributeBasedAdjRuleId = '([^']+)'/);
+        if (m?.[1] === "rule-A" || m?.[1] === "rule-OTHER") {
+          return { totalSize: BASELINE_CONDITIONS.length, done: true, records: BASELINE_CONDITIONS.map((c, i) => ({ Id: `c${i}`, ProductAttributeDefinitionId: c.pad, StringValue: c.value })) };
+        }
+        return { totalSize: 0, done: true, records: [] };
+      }
+      if (soql.includes("FROM AttributeBasedAdjustment WHERE Id = ")) return { totalSize: 0, done: true, records: [] };
+      if (soql.includes("FROM AttributeBasedAdjustment")) return { totalSize: 1, done: true, records: [existingRecord] };
+      throw new Error(`unexpected query: ${soql}`);
+    },
+    async createRecord() {
+      createCalls++;
+      throw new SalesforceError(
+        "An attribute based adjustment with the selected Product, Product Selling Model, attribute conditions, Price Adjustment Schedule, effective from date, and effective to date already exists. Select different field values and try again.",
+        400,
+        [{ errorCode: "FIELD_INTEGRITY_EXCEPTION", message: "An attribute based adjustment with the selected Product, Product Selling Model, attribute conditions, Price Adjustment Schedule, effective from date, and effective to date already exists. Select different field values and try again." }],
+      );
+    },
+    logDebug() { /* no-op */ },
+  } as unknown as SalesforceClient;
+
+  const plans: AttributeBasedRulePlan[] = [
+    { row: buildRow("Memory", "RAM 8GB"), ctx: contexts.get("Memory")!, ruleId: "rule-A", reusedExisting: false, conditionIds: ["c0", "c1"], ruleProductId: null },
+  ];
+
+  const result = await createAttributeBasedAdjustments(client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: null }, contexts, "schedule-1", plans, []);
+
+  assert.equal(createCalls, 1, "the exact-date preflight and reconciliation must have genuinely failed to find it first — the create was still attempted");
+  assert.equal(result.adjustmentIds.length, 0);
+  assert.equal(result.reusedAdjustmentIds.length, 1);
+  assert.equal(result.reusedAdjustmentIds[0], "adj-overlap");
+});
+
+// ── §Root-cause fix (live-bug reproduction) — the EXACT reported failure: a record found via the
+// date-overlap reconciliation tier (its real EffectiveFrom/To predate today, which is WHY it needed that
+// tier), then a USE_NEW decision on it, previously threw "Effective From/To does not match" because the
+// post-update verification compared the record against TODAY's freshly-computed dates — even though
+// USE_NEW's own update payload never touches EffectiveFrom/To at all. Must now succeed cleanly: the
+// dates are correctly left untouched (never compared to today), and only AdjustmentType/AdjustmentValue
+// are confirmed changed. ──
+test("TEST — Root-cause fix (live-bug reproduction): USE_NEW on a date-overlap-reconciled record succeeds without a false 'Effective From/To does not match' error", async () => {
+  const schema = buildFullSchema();
+  const contexts = buildContexts([MEMORY_CTX, GRAPHICS_CTX]);
+  const staleEffectiveFrom = daysOffsetISODate(-30);
+  const staleEffectiveTo = daysOffsetISODate(395);
+  let current: Record<string, unknown> & { Id: string } = {
+    Id: "adj-overlap", Product2Id: "prod-1", PriceAdjustmentScheduleId: "schedule-1", AttributeBasedAdjRuleId: "rule-OTHER",
+    ProductSellingModelId: null, EffectiveFrom: staleEffectiveFrom, EffectiveTo: staleEffectiveTo,
+    AdjustmentType: "Amount", AdjustmentValue: -10,
+  };
+  let updateCalls = 0;
+  const client = {
+    async query(soql: string) {
+      if (soql.includes("FROM AttributeAdjustmentCondition WHERE")) {
+        const m = soql.match(/AttributeBasedAdjRuleId = '([^']+)'/);
+        if (m?.[1] === "rule-A" || m?.[1] === "rule-OTHER") {
+          return { totalSize: BASELINE_CONDITIONS.length, done: true, records: BASELINE_CONDITIONS.map((c, i) => ({ Id: `c${i}`, ProductAttributeDefinitionId: c.pad, StringValue: c.value })) };
+        }
+        return { totalSize: 0, done: true, records: [] };
+      }
+      if (soql.includes("FROM AttributeBasedAdjustment WHERE Id = ")) {
+        const m = soql.match(/WHERE Id = '([^']+)'/);
+        return m?.[1] === current.Id ? { totalSize: 1, done: true, records: [current] } : { totalSize: 0, done: true, records: [] };
+      }
+      if (soql.includes("FROM AttributeBasedAdjustment")) return { totalSize: 1, done: true, records: [current] };
+      throw new Error(`unexpected query: ${soql}`);
+    },
+    async createRecord() {
+      throw new SalesforceError(
+        "An attribute based adjustment with the selected Product, Product Selling Model, attribute conditions, Price Adjustment Schedule, effective from date, and effective to date already exists. Select different field values and try again.",
+        400,
+        [{ errorCode: "FIELD_INTEGRITY_EXCEPTION", message: "An attribute based adjustment with the selected Product, Product Selling Model, attribute conditions, Price Adjustment Schedule, effective from date, and effective to date already exists. Select different field values and try again." }],
+      );
+    },
+    async updateRecord(_objectName: string, id: string, fields: Record<string, unknown>) {
+      updateCalls++;
+      assert.equal(id, "adj-overlap");
+      assert.deepEqual(Object.keys(fields).sort(), ["AdjustmentType", "AdjustmentValue"], "USE_NEW must send ONLY AdjustmentType/AdjustmentValue — never EffectiveFrom/EffectiveTo");
+      current = { ...current, ...fields };
+    },
+    logDebug() { /* no-op */ },
+  } as unknown as SalesforceClient;
+
+  const decisionOverrides = new Map<string, AdjustmentDecisionOverride>([[adjustmentDecisionKey("Memory", "RAM 8GB"), "USE_NEW"]]);
+  const plans: AttributeBasedRulePlan[] = [
+    { row: buildRow("Memory", "RAM 8GB", -15), ctx: contexts.get("Memory")!, ruleId: "rule-A", reusedExisting: false, conditionIds: ["c0", "c1"], ruleProductId: null },
+  ];
+
+  const result = await createAttributeBasedAdjustments(
+    client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: null }, contexts, "schedule-1", plans, [], undefined, decisionOverrides,
+  );
+
+  assert.equal(updateCalls, 1);
+  assert.equal(result.pendingConflicts.length, 0, "must not still be reported as a conflict once USE_NEW is decided");
+  assert.equal(result.updatedAdjustmentIds.length, 1);
+  assert.equal(result.updatedAdjustmentIds[0], "adj-overlap");
+  assert.equal(current.AdjustmentValue, -15, "the value must actually have changed");
+  assert.equal(current.EffectiveFrom, staleEffectiveFrom, "EffectiveFrom must remain exactly what it was — never compared against, or overwritten to, today's date");
+  assert.equal(current.EffectiveTo, staleEffectiveTo, "EffectiveTo must remain exactly what it was — never compared against, or overwritten to, today's date");
+});
+
+test("TEST — Root-cause fix: an existing record whose date range does NOT overlap at all remains a genuine conflict, even with identical Product/Schedule/conditions", async () => {
+  const schema = buildFullSchema();
+  const contexts = buildContexts([MEMORY_CTX, GRAPHICS_CTX]);
+  // Fully expired over a year ago — no possible overlap with today's request window. Must never be
+  // guessed as a match just because everything else agrees.
+  const existingRecord = {
+    Id: "adj-expired", Product2Id: "prod-1", PriceAdjustmentScheduleId: "schedule-1", AttributeBasedAdjRuleId: "rule-OTHER",
+    ProductSellingModelId: null, EffectiveFrom: daysOffsetISODate(-800), EffectiveTo: daysOffsetISODate(-400),
+    AdjustmentType: "Amount", AdjustmentValue: -10,
+  };
+  const client = {
+    async query(soql: string) {
+      if (soql.includes("FROM AttributeAdjustmentCondition WHERE")) {
+        const m = soql.match(/AttributeBasedAdjRuleId = '([^']+)'/);
+        if (m?.[1] === "rule-A" || m?.[1] === "rule-OTHER") {
+          return { totalSize: BASELINE_CONDITIONS.length, done: true, records: BASELINE_CONDITIONS.map((c, i) => ({ Id: `c${i}`, ProductAttributeDefinitionId: c.pad, StringValue: c.value })) };
+        }
+        return { totalSize: 0, done: true, records: [] };
+      }
+      if (soql.includes("FROM AttributeBasedAdjustment WHERE Id = ")) return { totalSize: 0, done: true, records: [] };
+      if (soql.includes("FROM AttributeBasedAdjustment")) return { totalSize: 1, done: true, records: [existingRecord] };
+      throw new Error(`unexpected query: ${soql}`);
+    },
+    async createRecord() {
+      throw new SalesforceError(
+        "An attribute based adjustment with the selected Product, Product Selling Model, attribute conditions, Price Adjustment Schedule, effective from date, and effective to date already exists. Select different field values and try again.",
+        400,
+        [{ errorCode: "FIELD_INTEGRITY_EXCEPTION", message: "An attribute based adjustment with the selected Product, Product Selling Model, attribute conditions, Price Adjustment Schedule, effective from date, and effective to date already exists. Select different field values and try again." }],
+      );
+    },
+    logDebug() { /* no-op */ },
+  } as unknown as SalesforceClient;
+
+  const plans: AttributeBasedRulePlan[] = [
+    { row: buildRow("Memory", "RAM 8GB"), ctx: contexts.get("Memory")!, ruleId: "rule-A", reusedExisting: false, conditionIds: ["c0", "c1"], ruleProductId: null },
+  ];
+
+  await assert.rejects(
+    () => createAttributeBasedAdjustments(client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: null }, contexts, "schedule-1", plans, []),
+    (err: unknown) => {
+      assert.match((err as Error).message, /genuine configuration conflict/i);
+      // §Step 1/4-8 fix — the genuine-conflict error must carry the raw Salesforce evidence needed to
+      // determine the TRUE cause on the next live run, never just a bare "no match" statement.
+      assert.match((err as Error).message, /RAW SALESFORCE DIAGNOSTICS/);
+      assert.match((err as Error).message, /Zero-filter sanity query/);
+      assert.match((err as Error).message, /Product-ONLY re-scan/);
+      assert.match((err as Error).message, /adj-expired/, "the raw candidate's own Id must appear in the dump");
+      return true;
+    },
+  );
 });
 
 test("TEST — Salesforce's duplicate-adjustment error with a genuinely DIFFERENT existing configuration remains a hard failure", async () => {
@@ -440,4 +721,130 @@ test("TEST — re-processing the same configuration in a second call reuses the 
   assert.equal(secondResult.reusedAdjustmentIds.length, 1);
   assert.equal(secondResult.reusedAdjustmentIds[0], firstResult.adjustmentIds[0]);
   assert.equal(store.createdAdjustments.size, 1, "exactly one AttributeBasedAdjustment record must exist in Salesforce after both runs");
+});
+
+// ── §Phase 8/9/10 fix (this turn) — an identity match is NOT the same thing as a value match. Case B
+// of the fix spec: SAME condition identity, DIFFERENT requested adjustment value must never be silently
+// reused (discards the user's real request) or silently overwritten (discards Salesforce's existing
+// configuration) — it's a structured, reported conflict requiring an explicit decision. ──
+test("TEST — Phase 8 Case B: same identity, different adjustment value -> reported as a conflict, never auto-reused or auto-overwritten", async () => {
+  const schema = buildFullSchema();
+  const contexts = buildContexts([MEMORY_CTX, GRAPHICS_CTX]);
+  const store = buildStore();
+  const client = buildMockClient(store);
+
+  const firstPlans = [makePlanWithAdjustment(store, "rule-A", "Memory", "RAM 8GB", -10, BASELINE_CONDITIONS)];
+  const firstResult = await createAttributeBasedAdjustments(client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: null }, contexts, "schedule-1", firstPlans, []);
+  assert.equal(firstResult.adjustmentIds.length, 1);
+  const existingId = firstResult.adjustmentIds[0];
+
+  // Same exact condition identity (Memory=RAM 8GB, Graphics at baseline) — a DIFFERENT requested value.
+  const secondPlans = [makePlanWithAdjustment(store, "rule-A2", "Memory", "RAM 8GB", -15, BASELINE_CONDITIONS)];
+  const secondResult = await createAttributeBasedAdjustments(client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: null }, contexts, "schedule-1", secondPlans, []);
+
+  assert.equal(secondResult.adjustmentIds.length, 0, "never auto-created a duplicate for the same identity");
+  assert.equal(secondResult.reusedAdjustmentIds.length, 0, "never silently reused the OLD value");
+  assert.equal(secondResult.updatedAdjustmentIds.length, 0, "never silently overwrote with the NEW value");
+  assert.equal(secondResult.pendingConflicts.length, 1);
+  const conflict = secondResult.pendingConflicts[0];
+  assert.equal(conflict.existingAdjustmentId, existingId);
+  assert.equal(conflict.existingAdjustmentValue, -10);
+  assert.equal(conflict.requestedAdjustmentValue, -15);
+  assert.equal(conflict.attributeName, "Memory");
+  assert.equal(conflict.value, "RAM 8GB");
+  assert.equal(conflict.valueLabel, "RAM 8GB");
+  assert.equal(adjustmentDecisionKey(conflict.attributeName, conflict.value), "Memory::RAM 8GB", "the conflict's own value field must match the exact key a resubmit needs to use");
+  // The store must be completely untouched — no create, no update.
+  assert.equal(store.createdAdjustments.get(existingId)?.AdjustmentValue, -10);
+  assert.equal(store.createdAdjustments.size, 1);
+});
+
+test("TEST — Phase 9: USE_EXISTING decision keeps the old value, never writes to Salesforce", async () => {
+  const schema = buildFullSchema();
+  const contexts = buildContexts([MEMORY_CTX, GRAPHICS_CTX]);
+  const store = buildStore();
+  const client = buildMockClient(store);
+
+  const firstPlans = [makePlanWithAdjustment(store, "rule-A", "Memory", "RAM 8GB", -10, BASELINE_CONDITIONS)];
+  const firstResult = await createAttributeBasedAdjustments(client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: null }, contexts, "schedule-1", firstPlans, []);
+  const existingId = firstResult.adjustmentIds[0];
+
+  const decisionOverrides = new Map<string, AdjustmentDecisionOverride>([[adjustmentDecisionKey("Memory", "RAM 8GB"), "USE_EXISTING"]]);
+  const secondPlans = [makePlanWithAdjustment(store, "rule-A2", "Memory", "RAM 8GB", -15, BASELINE_CONDITIONS)];
+  const secondResult = await createAttributeBasedAdjustments(
+    client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: null }, contexts, "schedule-1", secondPlans, [], undefined, decisionOverrides,
+  );
+
+  assert.equal(secondResult.pendingConflicts.length, 0);
+  assert.equal(secondResult.reusedAdjustmentIds.length, 1);
+  assert.equal(secondResult.reusedAdjustmentIds[0], existingId);
+  assert.equal(secondResult.updatedAdjustmentIds.length, 0);
+  assert.equal(store.createdAdjustments.get(existingId)?.AdjustmentValue, -10, "USE_EXISTING must never change the stored value");
+});
+
+test("TEST — Phase 9: USE_NEW decision updates the existing Salesforce record in place, never creates a duplicate", async () => {
+  const schema = buildFullSchema();
+  const contexts = buildContexts([MEMORY_CTX, GRAPHICS_CTX]);
+  const store = buildStore();
+  const client = buildMockClient(store);
+
+  const firstPlans = [makePlanWithAdjustment(store, "rule-A", "Memory", "RAM 8GB", -10, BASELINE_CONDITIONS)];
+  const firstResult = await createAttributeBasedAdjustments(client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: null }, contexts, "schedule-1", firstPlans, []);
+  const existingId = firstResult.adjustmentIds[0];
+
+  const decisionOverrides = new Map<string, AdjustmentDecisionOverride>([[adjustmentDecisionKey("Memory", "RAM 8GB"), "USE_NEW"]]);
+  const secondPlans = [makePlanWithAdjustment(store, "rule-A2", "Memory", "RAM 8GB", -15, BASELINE_CONDITIONS)];
+  const secondResult = await createAttributeBasedAdjustments(
+    client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: null }, contexts, "schedule-1", secondPlans, [], undefined, decisionOverrides,
+  );
+
+  assert.equal(secondResult.pendingConflicts.length, 0);
+  assert.equal(secondResult.reusedAdjustmentIds.length, 0);
+  assert.equal(secondResult.adjustmentIds.length, 0, "USE_NEW must update, never create a second record");
+  assert.equal(secondResult.updatedAdjustmentIds.length, 1);
+  assert.equal(secondResult.updatedAdjustmentIds[0], existingId);
+  assert.equal(store.createdAdjustments.size, 1, "still exactly one AttributeBasedAdjustment record — updated in place, not duplicated");
+  assert.equal(store.createdAdjustments.get(existingId)?.AdjustmentValue, -15, "the existing record's value must now reflect the new decision");
+});
+
+// ── §Step 9 fix (root-cause investigation) — `createable` and `updateable` are distinct Salesforce
+// Describe flags; USE_NEW must never blindly attempt an update just because the same field is
+// createable — verified explicitly first. ──
+test("TEST — Step 9: USE_NEW refuses to attempt an update when AdjustmentValue is Describe-reported as NOT updateable", async () => {
+  const schema = buildFullSchema();
+  schema.abaValueField = { ...schema.abaValueField!, updateable: false };
+  const contexts = buildContexts([MEMORY_CTX, GRAPHICS_CTX]);
+  const store = buildStore();
+  const client = buildMockClient(store);
+
+  const firstPlans = [makePlanWithAdjustment(store, "rule-A", "Memory", "RAM 8GB", -10, BASELINE_CONDITIONS)];
+  const firstResult = await createAttributeBasedAdjustments(client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: null }, contexts, "schedule-1", firstPlans, []);
+  const existingId = firstResult.adjustmentIds[0];
+
+  const decisionOverrides = new Map<string, AdjustmentDecisionOverride>([[adjustmentDecisionKey("Memory", "RAM 8GB"), "USE_NEW"]]);
+  const secondPlans = [makePlanWithAdjustment(store, "rule-A2", "Memory", "RAM 8GB", -15, BASELINE_CONDITIONS)];
+
+  await assert.rejects(
+    () => createAttributeBasedAdjustments(
+      client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: null }, contexts, "schedule-1", secondPlans, [], undefined, decisionOverrides,
+    ),
+    /not updateable/i,
+  );
+  assert.equal(store.createdAdjustments.get(existingId)?.AdjustmentValue, -10, "must never have attempted the write");
+});
+
+test("TEST — Phase 8: identical requested value never triggers a conflict, even across two separate calls (idempotency preserved)", async () => {
+  const schema = buildFullSchema();
+  const contexts = buildContexts([MEMORY_CTX, GRAPHICS_CTX]);
+  const store = buildStore();
+  const client = buildMockClient(store);
+
+  const firstPlans = [makePlanWithAdjustment(store, "rule-A", "Memory", "RAM 8GB", -10, BASELINE_CONDITIONS)];
+  await createAttributeBasedAdjustments(client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: null }, contexts, "schedule-1", firstPlans, []);
+
+  const secondPlans = [makePlanWithAdjustment(store, "rule-A2", "Memory", "RAM 8GB", -10, BASELINE_CONDITIONS)];
+  const secondResult = await createAttributeBasedAdjustments(client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: null }, contexts, "schedule-1", secondPlans, []);
+
+  assert.equal(secondResult.pendingConflicts.length, 0, "the SAME requested value must never be flagged as a conflict");
+  assert.equal(secondResult.reusedAdjustmentIds.length, 1);
 });

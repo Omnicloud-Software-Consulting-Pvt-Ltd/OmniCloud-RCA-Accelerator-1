@@ -17,7 +17,13 @@ import type {
   ProductCandidate,
 } from "@/lib/pricing-rules/attribute-based/types";
 import type { CreateAttributePricingResult, CreateStreamEvent } from "@/lib/pricing-rules/attribute-based/create/types";
-import type { MissingAttributeConfigInfo } from "@/lib/pricing-rules/attribute-based/create/nativeRecords";
+import type { MissingAttributeConfigInfo, AdjustmentConflict, AdjustmentDecisionOverride } from "@/lib/pricing-rules/attribute-based/create/nativeRecords";
+
+/** Mirrors `adjustmentDecisionKey` from nativeRecords.ts (a server-only module — never imported as a
+ * runtime value here) byte-for-byte; must never drift from that server-side key convention. */
+function adjustmentDecisionKey(attributeName: string, value: string): string {
+  return `${attributeName}::${value}`;
+}
 
 /**
  * §Attribute-Based Pricing — Steps 1-3 (AI prompt, extraction, Salesforce
@@ -265,6 +271,12 @@ export default function AttributeBasedPricingCreate({ isDark }: { isDark: boolea
   const [createEvents, setCreateEvents] = useState<{ step: string; status: string; detail?: string }[]>([]);
   const [createResult, setCreateResult] = useState<CreateAttributePricingResult | null>(null);
   const [createRequestError, setCreateRequestError] = useState<string | null>(null);
+  /** §Phase 9/24 — decisions the user has already made for previously-reported adjustment-value
+   * conflicts, keyed by `adjustmentDecisionKey(attributeName, value)`. Accumulates across resubmits (a
+   * later run could surface a NEW conflict for a different attribute even after an earlier one was
+   * resolved) and is sent with every create call so the pipeline never re-asks about an already-decided
+   * pair. */
+  const [adjustmentDecisions, setAdjustmentDecisions] = useState<Record<string, AdjustmentDecisionOverride>>({});
 
   function resetAnalysis() {
     setResult(null);
@@ -274,6 +286,7 @@ export default function AttributeBasedPricingCreate({ isDark }: { isDark: boolea
     setCreateEvents([]);
     setCreateResult(null);
     setCreateRequestError(null);
+    setAdjustmentDecisions({});
   }
 
   function handleUseExample(example: string) {
@@ -321,6 +334,16 @@ export default function AttributeBasedPricingCreate({ isDark }: { isDark: boolea
     void runAnalysis({ extracted, overrides: next });
   }
 
+  /** §Phase 6 fix — the user's choice on the `price-conflict` stage (prompt's stated base price disagrees
+   * with Salesforce's real Standard Pricebook price). Re-runs the read-only analysis with the decision
+   * recorded — never writes to Salesforce either way; Attribute-Based Adjustments apply on top of
+   * whatever the real Salesforce price already is, regardless of which option is chosen. */
+  function handleResolveBasePriceDecision(decision: "USE_EXISTING" | "USE_NEW", extracted: ExtractedPricingRequirement) {
+    const next: AttributeBasedMappingOverrides = { ...mappings, basePriceDecision: decision };
+    setMappings(next);
+    void runAnalysis({ extracted, overrides: next });
+  }
+
   /** Part 6 — "Next" on the Attribute Mapping & Pricing Configuration screen: batches every dropdown
    * selection and adjustment type/value the user configured into one overrides submission (still a
    * read-only re-validation call, never a Salesforce write) instead of resubmitting per click. */
@@ -335,15 +358,22 @@ export default function AttributeBasedPricingCreate({ isDark }: { isDark: boolea
     void runAnalysis({ extracted, overrides: next });
   }
 
-  async function handleConfirmCreate(product: DiscoveredProduct, discoveredAttributes: DiscoveredAttribute[], rules: PricingRulePlanRow[], excludedAttributes: string[]) {
+  async function handleConfirmCreate(
+    product: DiscoveredProduct, discoveredAttributes: DiscoveredAttribute[], rules: PricingRulePlanRow[], excludedAttributes: string[],
+    decisionsOverride?: Record<string, AdjustmentDecisionOverride>,
+  ) {
     setCreating(true);
     setCreateRequestError(null);
     setCreateEvents([]);
     setCreateResult(null);
     try {
       const procedureName = `${product.name} Attribute-Based Pricing Procedure`;
+      const decisions = decisionsOverride ?? adjustmentDecisions;
       const res = await postCreateStream(
-        { product, discoveredAttributes, rules, excludedAttributes, procedureName, activate: true },
+        {
+          product, discoveredAttributes, rules, excludedAttributes, procedureName, activate: true,
+          ...(Object.keys(decisions).length > 0 ? { adjustmentDecisions: decisions } : {}),
+        },
         event => setCreateEvents(prev => [...prev, event]),
       );
       setCreateResult(res);
@@ -352,6 +382,17 @@ export default function AttributeBasedPricingCreate({ isDark }: { isDark: boolea
     } finally {
       setCreating(false);
     }
+  }
+
+  /** §Phase 9/24 — the user picked USE_EXISTING/USE_NEW for every reported conflict on the panel below;
+   * merge into the accumulated decision map and resubmit the SAME (still-in-scope) analysis result —
+   * every already-resolved Rule/Condition/Adjustment from the prior attempt is found and reused again
+   * automatically by the pipeline's own idempotency, never re-done. */
+  function handleResolveAdjustmentConflicts(decisions: Record<string, AdjustmentDecisionOverride>) {
+    if (!result || result.stage !== "ready-for-review") return;
+    const merged = { ...adjustmentDecisions, ...decisions };
+    setAdjustmentDecisions(merged);
+    void handleConfirmCreate(result.product, result.discoveredAttributes, result.rules, result.excludedAttributes, merged);
   }
 
   return (
@@ -497,6 +538,8 @@ export default function AttributeBasedPricingCreate({ isDark }: { isDark: boolea
           onIgnoreAttribute={handleIgnoreAttribute}
           onSubmitMapping={handleSubmitMapping}
           onConfirmCreate={handleConfirmCreate}
+          onResolveAdjustmentConflicts={handleResolveAdjustmentConflicts}
+          onResolveBasePriceDecision={handleResolveBasePriceDecision}
         />
       </div>
     </div>
@@ -649,6 +692,8 @@ interface AnalysisCallbacks {
   onIgnoreAttribute: (enteredName: string, extracted: ExtractedPricingRequirement) => void;
   onSubmitMapping: (overrides: AttributeMappingOverridesPayload, extracted: ExtractedPricingRequirement) => void;
   onConfirmCreate: (product: DiscoveredProduct, discoveredAttributes: DiscoveredAttribute[], rules: PricingRulePlanRow[], excludedAttributes: string[]) => void;
+  onResolveAdjustmentConflicts: (decisions: Record<string, AdjustmentDecisionOverride>) => void;
+  onResolveBasePriceDecision: (decision: "USE_EXISTING" | "USE_NEW", extracted: ExtractedPricingRequirement) => void;
 }
 
 function AnalysisResultArea({
@@ -711,7 +756,7 @@ function AnalysisResultArea({
 
 function ResultStage({
   isDark, result, creating, createEvents, createResult, createRequestError,
-  onSelectProduct, onAcceptAttributeMapping, onIgnoreAttribute, onSubmitMapping, onConfirmCreate,
+  onSelectProduct, onAcceptAttributeMapping, onIgnoreAttribute, onSubmitMapping, onConfirmCreate, onResolveAdjustmentConflicts, onResolveBasePriceDecision,
 }: AnalysisCallbacks & {
   isDark: boolean;
   result: AttributeBasedAnalysisResult;
@@ -731,7 +776,7 @@ function ResultStage({
     case "salesforce-error":
       return (
         <WarnPanel isDark={isDark} title={result.stage === "salesforce-error" ? "Salesforce Error" : "Couldn't Understand the Prompt"}>
-          <p style={{ fontSize: 12.5, color: t.body, margin: 0 }}>{result.error}</p>
+          <p style={{ fontSize: 12.5, color: t.body, margin: 0, whiteSpace: "pre-wrap" }}>{result.error}</p>
         </WarnPanel>
       );
 
@@ -766,6 +811,36 @@ function ResultStage({
               <SuggestionButton key={c.id} isDark={isDark} label={`${c.name}${c.productCode ? ` (${c.productCode})` : ""}`} onClick={() => onSelectProduct(c, result.extracted)} />
             ))}
           </div>
+        </WarnPanel>
+      );
+
+    case "price-conflict":
+      return (
+        <WarnPanel isDark={isDark} title="Base Price Conflict">
+          <p style={{ fontSize: 12.5, color: t.body, margin: 0 }}>
+            The prompt states a base price of <strong>{formatCurrency(result.requestedBasePrice)}</strong>, but Salesforce&rsquo;s
+            existing Standard Pricebook price for this product is <strong>{formatCurrency(result.existingBasePrice)}</strong>.
+            Attribute-Based Adjustments always apply on top of whichever price Salesforce actually has — this pipeline never
+            changes the product&rsquo;s own price. Choose which one to proceed with.
+          </p>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <GhostButton
+              label={`Use existing (${formatCurrency(result.existingBasePrice)})`}
+              icon="check-circle"
+              isDark={isDark}
+              onClick={() => onResolveBasePriceDecision("USE_EXISTING", result.extracted)}
+            />
+            <GhostButton
+              label={`Proceed with prompt's price (${formatCurrency(result.requestedBasePrice)})`}
+              icon="arrow-right"
+              isDark={isDark}
+              onClick={() => onResolveBasePriceDecision("USE_NEW", result.extracted)}
+            />
+          </div>
+          <p style={{ fontSize: 11, color: t.dim, margin: 0 }}>
+            To actually change the product&rsquo;s List Price in Salesforce, update it in Product Setup — this only affects
+            how this run proceeds, not the real Salesforce record.
+          </p>
         </WarnPanel>
       );
 
@@ -968,6 +1043,7 @@ function ResultStage({
             <CreationProgress
               isDark={isDark} analyzeSteps={result.steps} createEvents={createEvents} createResult={createResult} createRequestError={createRequestError}
               onRetry={() => onConfirmCreate(result.product, result.discoveredAttributes, result.rules, result.excludedAttributes)}
+              onResolveAdjustmentConflicts={onResolveAdjustmentConflicts}
             />
           )}
 
@@ -1004,7 +1080,7 @@ function SummaryRow({ label, items, icon, color, t }: { label: string; items: st
 /* ═══════════════════════ Part T — live 16-step creation progress + Part Q summary/Part R failure ═══════════════════════ */
 
 function CreationProgress({
-  isDark, analyzeSteps, createEvents, createResult, createRequestError, onRetry,
+  isDark, analyzeSteps, createEvents, createResult, createRequestError, onRetry, onResolveAdjustmentConflicts,
 }: {
   isDark: boolean;
   analyzeSteps: ProcedureStepLite[];
@@ -1014,6 +1090,9 @@ function CreationProgress({
   /** §Follow-on 42 — re-runs the exact same create call (idempotent — every phase reuses whatever
    * already exists) after the user has configured a missing attribute default. */
   onRetry: () => void;
+  /** §Phase 9/24 — the user's USE_EXISTING/USE_NEW decisions for every reported adjustment-value
+   * conflict; resubmits the create call with them applied. */
+  onResolveAdjustmentConflicts: (decisions: Record<string, AdjustmentDecisionOverride>) => void;
 }) {
   const t = tokens(isDark);
   const confirmed = true; // this component only ever renders once the user has confirmed
@@ -1042,7 +1121,7 @@ function CreationProgress({
                 <span style={{ width: 18, textAlign: "center", color, fontSize: 13 }}>{STATUS_GLYPH[rowStatus]}</span>
                 <span style={{ fontSize: 12.5, color: rowStatus === "not-started" ? t.dim : t.body }}>{row.label}</span>
               </div>
-              {latestDetail && <div style={{ marginLeft: 30, marginTop: 2, fontSize: 11, color: t.dim }}>{latestDetail}</div>}
+              {latestDetail && <div style={{ marginLeft: 30, marginTop: 2, fontSize: 11, color: t.dim, whiteSpace: "pre-wrap" }}>{latestDetail}</div>}
             </div>
           );
         })}
@@ -1050,11 +1129,13 @@ function CreationProgress({
 
       {createRequestError && (
         <WarnPanel isDark={isDark} title="Creation Failed">
-          <p style={{ fontSize: 12.5, color: t.body, margin: 0 }}>{createRequestError}</p>
+          <p style={{ fontSize: 12.5, color: t.body, margin: 0, whiteSpace: "pre-wrap" }}>{createRequestError}</p>
         </WarnPanel>
       )}
 
-      {createResult && !createResult.success && <CreationFailurePanel isDark={isDark} result={createResult} onRetry={onRetry} />}
+      {createResult && !createResult.success && (
+        <CreationFailurePanel isDark={isDark} result={createResult} onRetry={onRetry} onResolveAdjustmentConflicts={onResolveAdjustmentConflicts} />
+      )}
       {createResult?.success && <CreationSummary isDark={isDark} result={createResult} />}
 
       {/* §Parts 17-22 — collapsed by default, never cleared on failure (both driven entirely by
@@ -1109,15 +1190,30 @@ function ComponentStatusLine({
 }
 
 /** Part R — never say "created" unless read-back confirms it; always name exactly which stage failed and preserve every Id created so far for debugging. */
-function CreationFailurePanel({ isDark, result, onRetry }: { isDark: boolean; result: CreateAttributePricingResult; onRetry: () => void }) {
+function CreationFailurePanel({
+  isDark, result, onRetry, onResolveAdjustmentConflicts,
+}: {
+  isDark: boolean;
+  result: CreateAttributePricingResult;
+  onRetry: () => void;
+  onResolveAdjustmentConflicts: (decisions: Record<string, AdjustmentDecisionOverride>) => void;
+}) {
   const t = tokens(isDark);
+  const conflicts = result.pendingAdjustmentConflicts;
+  if (conflicts && conflicts.length > 0) {
+    return <AdjustmentConflictPanel isDark={isDark} conflicts={conflicts} onResolve={onResolveAdjustmentConflicts} />;
+  }
   const missing = result.failure?.missingAttributeConfig;
   if (missing && missing.length > 0) {
     return <MissingAttributeConfigPanel isDark={isDark} missing={missing} resolved={result.failure?.resolvedAttributeConfig ?? []} onRetry={onRetry} />;
   }
   return (
     <WarnPanel isDark={isDark} title="Creation Stopped">
-      <p style={{ fontSize: 12.5, color: t.body, margin: 0 }}>{result.error}</p>
+      {/* §Root-cause fix — a multi-line diagnostic (e.g. Salesforce componentFailures detail, raw
+       * deployed-XML evidence) previously collapsed into one unreadable run-on line under a plain <p>,
+       * which is indistinguishable from "the diagnostic never showed up" at a glance — whiteSpace:
+       * pre-wrap preserves the real line breaks this text already carries. */}
+      <p style={{ fontSize: 12.5, color: t.body, margin: 0, whiteSpace: "pre-wrap" }}>{result.error}</p>
       {result.failure?.resolutionHint && <p style={{ fontSize: 12, color: t.dim, margin: 0 }}>{result.failure.resolutionHint}</p>}
       {result.verification && (
         <div style={{ borderRadius: 10, border: `1px solid ${t.border}`, background: t.surfaceAlt, padding: "10px 12px", fontSize: 11.5, color: t.dim, display: "flex", flexDirection: "column", gap: 3 }}>
@@ -1137,6 +1233,73 @@ function CreationFailurePanel({ isDark, result, onRetry }: { isDark: boolean; re
           {result.expressionSetId && <span>Expression Set: {result.expressionSetId}</span>}
         </div>
       )}
+    </WarnPanel>
+  );
+}
+
+/**
+ * §Phase 8/9/10/24 fix — "ADJUSTMENT VALUE CONFLICT" panel: one row per reported `AdjustmentConflict`
+ * (same identity — Product+SellingModel+Schedule+EffectiveFrom/To+condition set — already exists in
+ * Salesforce, but with a DIFFERENT adjustment value than this prompt requests). Never auto-picks a side;
+ * the user chooses Keep Existing or Use New per row, and "Apply Decisions & Retry" is disabled until
+ * every row has a choice — one batched resubmit, never a resubmit-per-conflict cycle (mirrors
+ * `MissingAttributeConfigPanel`'s own "Retry Creation" convention below). Resubmitting is safe: every
+ * OTHER already-created/reused Rule/Condition/Adjustment from the prior attempt is found and reused
+ * again automatically by the pipeline's own idempotency — this never re-does completed work, and
+ * "Use New" updates Salesforce's existing record in place rather than creating a duplicate.
+ */
+function AdjustmentConflictPanel({
+  isDark, conflicts, onResolve,
+}: {
+  isDark: boolean;
+  conflicts: AdjustmentConflict[];
+  onResolve: (decisions: Record<string, AdjustmentDecisionOverride>) => void;
+}) {
+  const t = tokens(isDark);
+  const [choices, setChoices] = useState<Record<string, AdjustmentDecisionOverride>>({});
+  const allChosen = conflicts.every(c => !!choices[adjustmentDecisionKey(c.attributeName, c.value)]);
+
+  function choiceButtonStyle(active: boolean): CSSProperties {
+    return {
+      fontSize: 12, padding: "6px 12px", borderRadius: 8, cursor: "pointer",
+      border: `1px solid ${active ? t.accent : t.border}`,
+      background: active ? `${t.accent}1A` : t.surfaceAlt,
+      color: active ? t.accent : t.body, fontWeight: active ? 700 : 500,
+    };
+  }
+
+  return (
+    <WarnPanel isDark={isDark} title="Adjustment Value Conflict">
+      <p style={{ fontSize: 12.5, color: t.body, margin: 0 }}>
+        An Attribute-Based Adjustment already exists in Salesforce for {conflicts.length === 1 ? "this exact configuration" : `${conflicts.length} configurations below`} with
+        a different adjustment value than this prompt requests. Salesforce&rsquo;s own uniqueness rules mean a second
+        record for the same configuration can&rsquo;t be created — choose which value should apply for each one.
+      </p>
+
+      <div style={{ borderRadius: 10, border: `1px solid ${t.border}`, overflow: "hidden" }}>
+        {conflicts.map(c => {
+          const key = adjustmentDecisionKey(c.attributeName, c.value);
+          const choice = choices[key];
+          return (
+            <div key={key} style={{ padding: "10px 14px", borderBottom: `1px solid ${t.border}`, background: t.surface, display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: t.heading }}>{c.attributeLabel} = {c.valueLabel}</div>
+              <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
+                <button type="button" onClick={() => setChoices(prev => ({ ...prev, [key]: "USE_EXISTING" }))} style={choiceButtonStyle(choice === "USE_EXISTING")}>
+                  Keep existing ({c.existingAdjustmentValue ?? "none"}{c.existingAdjustmentType ? ` ${c.existingAdjustmentType}` : ""})
+                </button>
+                <button type="button" onClick={() => setChoices(prev => ({ ...prev, [key]: "USE_NEW" }))} style={choiceButtonStyle(choice === "USE_NEW")}>
+                  Use new ({c.requestedAdjustmentValue}{c.requestedAdjustmentType ? ` ${c.requestedAdjustmentType}` : ""})
+                </button>
+              </div>
+              <div style={{ fontSize: 10.5, color: t.dim }}>Existing AttributeBasedAdjustment: {c.existingAdjustmentId}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <PrimaryButton label="Apply Decisions & Retry" icon="refresh" isDark={isDark} disabled={!allChosen} onClick={() => onResolve(choices)} />
+      </div>
     </WarnPanel>
   );
 }

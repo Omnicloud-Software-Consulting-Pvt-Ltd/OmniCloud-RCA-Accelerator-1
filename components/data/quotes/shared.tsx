@@ -1,6 +1,9 @@
 "use client";
 
 import { useState, type ReactNode, type CSSProperties } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+
+const PRESS_TRANSITION = { duration: 0.12, ease: [0.22, 1, 0.36, 1] as const };
 
 /**
  * Layout note: every scrollable region in this module follows ONE pattern —
@@ -82,19 +85,20 @@ export function tokens(isDark: boolean) {
     bg:          isDark ? "rgba(2,6,20,0.97)"       : "rgba(240,246,255,0.99)",
     surface:     isDark ? "rgba(6,12,32,0.95)"      : "rgba(255,255,255,0.97)",
     surfaceAlt:  isDark ? "rgba(8,16,40,0.9)"       : "rgba(245,250,255,0.98)",
-    border:      isDark ? "rgba(0,112,214,0.22)"    : "rgba(0,71,171,0.15)",
-    borderBright:isDark ? "rgba(0,212,255,0.30)"    : "rgba(0,112,214,0.25)",
+    border:      isDark ? "rgba(0,112,214,0.22)"    : "rgba(0,71,171,0.22)",
+    borderBright:isDark ? "rgba(0,212,255,0.30)"    : "rgba(0,112,214,0.34)",
     heading:     isDark ? "rgba(220,235,255,0.97)"  : "rgba(0,15,60,0.92)",
     body:        isDark ? "rgba(170,200,235,0.88)"  : "rgba(0,25,80,0.82)",
-    dim:         isDark ? "rgba(90,130,170,0.65)"   : "rgba(0,50,130,0.52)",
-    accent:      "#00D4FF",
-    accentBlue:  "#1E90FF",
-    accentCyan:  "#3AABFF",
-    accentNavy:  "#0070D6",
+    dim:         isDark ? "rgba(90,130,170,0.65)"   : "rgba(15,45,100,0.72)",
+    accent:      isDark ? "#00D4FF" : "#0098CC",
+    accentBlue:  isDark ? "#1E90FF" : "#0968D3",
+    accentCyan:  isDark ? "#3AABFF" : "#1789B0",
+    accentNavy:  isDark ? "#0070D6" : "#0047AB",
     inputBg:     isDark ? "rgba(0,15,40,0.7)"       : "rgba(255,255,255,0.95)",
-    inputBorder: isDark ? "rgba(0,112,214,0.25)"    : "rgba(0,71,171,0.18)",
+    inputBorder: isDark ? "rgba(0,112,214,0.25)"    : "rgba(0,71,171,0.26)",
     error:       "#FF4066",
     warn:        "#F59E0B",
+    shadow:      isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)",
   };
 }
 
@@ -106,9 +110,11 @@ export function Section({ title, icon, isDark, defaultOpen = true, children, rig
   const t = tokens(isDark);
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, overflow: "hidden" }}>
-      <button
+    <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, overflow: "hidden", boxShadow: t.shadow }}>
+      <motion.button
         onClick={() => setOpen(v => !v)}
+        whileTap={{ scale: 0.99 }}
+        transition={PRESS_TRANSITION}
         style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", background: "transparent", border: "none", cursor: "pointer", color: t.heading }}
       >
         <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600 }}>
@@ -119,8 +125,20 @@ export function Section({ title, icon, isDark, defaultOpen = true, children, rig
           {right}
           <span style={{ color: t.dim }}><Ic n={open ? "chevron-down" : "chevron-right"} s={14} /></span>
         </span>
-      </button>
-      {open && <div style={{ padding: "0 16px 14px" }}>{children}</div>}
+      </motion.button>
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+            style={{ overflow: "hidden" }}
+          >
+            <div style={{ padding: "0 16px 14px" }}>{children}</div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -129,7 +147,7 @@ export function Pill({ label, color, isDark }: { label: string; color: string; i
   return (
     <span style={{
       display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600,
-      padding: "2px 8px", borderRadius: 999, color, background: isDark ? `${color}1c` : `${color}14`, border: `1px solid ${color}40`,
+      padding: "2px 8px", borderRadius: 999, color, background: isDark ? `${color}1c` : `${color}1f`, border: `1px solid ${color}40`,
     }}>
       {label}
     </span>
@@ -140,19 +158,27 @@ export function PrimaryButton({ label, icon, onClick, disabled, isDark, style }:
   label: string; icon?: string; onClick?: () => void; disabled?: boolean; isDark: boolean; style?: CSSProperties;
 }) {
   const t = tokens(isDark);
+  const [hovered, setHovered] = useState(false);
   return (
-    <button
+    <motion.button
       onClick={onClick}
       disabled={disabled}
+      onHoverStart={() => setHovered(true)}
+      onHoverEnd={() => setHovered(false)}
+      whileTap={disabled ? undefined : { scale: 0.98 }}
+      transition={PRESS_TRANSITION}
       style={{
         display: "inline-flex", alignItems: "center", gap: 8, padding: "9px 16px", borderRadius: 10,
         border: "none", cursor: disabled ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 600,
         color: "#04101F", background: disabled ? t.dim : `linear-gradient(135deg, ${t.accent}, ${t.accentBlue})`,
-        opacity: disabled ? 0.5 : 1, ...style,
+        opacity: disabled ? 0.5 : 1,
+        filter: hovered && !disabled ? "brightness(1.08)" : "brightness(1)",
+        boxShadow: hovered && !disabled ? `0 4px 18px ${t.accent}4d` : "0 0 0 transparent",
+        ...style,
       }}
     >
       {icon && <Ic n={icon} s={14} />} {label}
-    </button>
+    </motion.button>
   );
 }
 
@@ -161,18 +187,25 @@ export function GhostButton({ label, icon, onClick, isDark, danger, disabled }: 
 }) {
   const t = tokens(isDark);
   const color = danger ? t.error : t.body;
+  const [hovered, setHovered] = useState(false);
   return (
-    <button
+    <motion.button
       onClick={onClick}
       disabled={disabled}
+      onHoverStart={() => setHovered(true)}
+      onHoverEnd={() => setHovered(false)}
+      whileTap={disabled ? undefined : { scale: 0.98 }}
+      transition={PRESS_TRANSITION}
       style={{
         display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 10,
-        border: `1px solid ${danger ? t.error + "50" : t.border}`, background: "transparent", cursor: disabled ? "not-allowed" : "pointer",
+        border: `1px solid ${danger ? t.error + "50" : (hovered && !disabled ? t.borderBright : t.border)}`,
+        background: hovered && !disabled ? (danger ? `${t.error}14` : t.surfaceAlt) : "transparent",
+        cursor: disabled ? "not-allowed" : "pointer",
         fontSize: 12.5, fontWeight: 600, color, opacity: disabled ? 0.5 : 1,
       }}
     >
       {icon && <Ic n={icon} s={13} />} {label}
-    </button>
+    </motion.button>
   );
 }
 
@@ -235,25 +268,41 @@ export function Tabs({ isDark, tabs, active, onChange }: {
   const t = tokens(isDark);
   return (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-      {tabs.map(tb => (
-        <button
-          key={tb.id}
-          onClick={() => onChange(tb.id)}
-          style={{
-            display: "flex", alignItems: "center", gap: 6, padding: "7px 13px", borderRadius: 9, border: "none", cursor: "pointer",
-            fontSize: 12.5, fontWeight: 600,
-            background: active === tb.id ? `linear-gradient(135deg, ${t.accent}26, ${t.accentBlue}1a)` : "transparent",
-            color: active === tb.id ? t.accent : t.dim,
-          }}
-        >
-          <Ic n={tb.icon} s={13} /> {tb.label}
-          {!!tb.badge && (
-            <span style={{ fontSize: 10, fontWeight: 700, padding: "0 5px", borderRadius: 999, background: active === tb.id ? t.accent : t.dim, color: "#04101F" }}>
-              {tb.badge}
+      {tabs.map(tb => {
+        const isActive = active === tb.id;
+        return (
+          <motion.button
+            key={tb.id}
+            onClick={() => onChange(tb.id)}
+            whileTap={{ scale: 0.97 }}
+            transition={PRESS_TRANSITION}
+            style={{
+              position: "relative", display: "flex", alignItems: "center", gap: 6, padding: "7px 13px",
+              borderRadius: 9, border: "none", cursor: "pointer", fontSize: 12.5, fontWeight: 600,
+              color: isActive ? t.accent : t.dim,
+            }}
+          >
+            {isActive && (
+              <motion.span
+                layoutId="omni-tab-indicator"
+                transition={{ type: "spring", stiffness: 420, damping: 38 }}
+                style={{
+                  position: "absolute", inset: 0, borderRadius: 9, zIndex: 0,
+                  background: `linear-gradient(135deg, ${t.accent}26, ${t.accentBlue}1a)`,
+                }}
+              />
+            )}
+            <span style={{ position: "relative", zIndex: 1, display: "flex", alignItems: "center", gap: 6 }}>
+              <Ic n={tb.icon} s={13} /> {tb.label}
+              {!!tb.badge && (
+                <span style={{ fontSize: 10, fontWeight: 700, padding: "0 5px", borderRadius: 999, background: isActive ? t.accent : t.dim, color: "#04101F" }}>
+                  {tb.badge}
+                </span>
+              )}
             </span>
-          )}
-        </button>
-      ))}
+          </motion.button>
+        );
+      })}
     </div>
   );
 }
@@ -321,7 +370,7 @@ export function CodeBlock({ isDark, data, defaultExpanded = false, collapsedHeig
   const json = pretty ? JSON.stringify(data, null, 2) : JSON.stringify(data);
 
   return (
-    <div style={{ borderRadius: 10, border: `1px solid ${t.border}`, background: t.surfaceAlt, overflow: "hidden" }}>
+    <div style={{ borderRadius: 10, border: `1px solid ${t.border}`, background: t.surfaceAlt, overflow: "hidden", boxShadow: t.shadow }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", borderBottom: `1px solid ${t.border}` }}>
         <div style={{ display: "flex", gap: 6 }}>
           <button onClick={() => setPretty(true)} style={miniButtonStyle(t, pretty)}>Pretty</button>
@@ -363,8 +412,8 @@ export function ErrorPanel({ isDark, error, onViewLogs }: { isDark: boolean; err
   return (
     <div style={{
       borderRadius: 12, border: `1px solid ${t.error}55`,
-      background: isDark ? "rgba(255,64,102,0.08)" : "rgba(255,64,102,0.06)",
-      padding: 14, display: "flex", flexDirection: "column", gap: 8,
+      background: isDark ? "rgba(255,64,102,0.08)" : "rgba(255,64,102,0.07)",
+      padding: 14, display: "flex", flexDirection: "column", gap: 8, boxShadow: t.shadow,
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, color: t.error, fontWeight: 700, fontSize: 13.5 }}>
         <Ic n="alert" s={16} /> {error.title}

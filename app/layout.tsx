@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
 import { SalesforceSuccessProvider } from "@/components/notifications/SalesforceSuccessContext";
+import CustomCursor from "@/components/cursor/CustomCursor";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -50,6 +51,7 @@ export default function RootLayout({
           <SalesforceSuccessProvider>
             {children}
           </SalesforceSuccessProvider>
+          <CustomCursor />
         </ThemeProvider>
       </body>
     </html>
