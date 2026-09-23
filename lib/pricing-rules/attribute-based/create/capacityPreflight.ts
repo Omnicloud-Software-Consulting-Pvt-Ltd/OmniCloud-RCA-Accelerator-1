@@ -21,11 +21,12 @@
  */
 import type { SalesforceClient, OrgLimits } from "@/lib/salesforce/client";
 import {
-  discoverSingleAttributePricedOptions, computeAttributeCombinations, discoverExistingRuleContentIdentities,
+  discoverExistingRuleContentIdentities,
   matchExistingRulesToCombinations, estimateCombinationApiCost, resolveBaseProductConfiguration,
   buildAttributeIdentityReverseMap,
-  type AttributeBasedPricingSchema, type AttributeContext, type ExistingRuleContentIdentity,
+  type AttributeBasedPricingSchema, type AttributeContext, type AttributeCombinationMember, type ExistingRuleContentIdentity,
 } from "./nativeRecords";
+import type { CombinationRulePlanRow } from "../types";
 
 /** Salesforce's own documented Data Storage accounting rule: every record is billed as exactly 2 KB
  * against an org's Data Storage limit, regardless of how many fields it has or how large its values are.
@@ -138,25 +139,30 @@ export interface SalesforceCapacityPreflightResult {
 const REVIEW_MARGIN_FRACTION = 0.8;
 
 /**
- * The Phase 3/4/11 preflight: discovers the REAL combinatorial closure for `args.product` on the connected
- * org, classifies every planned combination by content (KEEP/COMPLETE/CREATE/AMBIGUOUS — the same,
- * already-proven mechanism `expandAttributeCombinationRules` itself uses), estimates the resulting
- * Salesforce writes without any naive multiplication, and compares that estimate against this SAME org's
- * REAL, live `/limits` response. Strictly read-only — the only Salesforce calls made are the existing
- * read-only discovery/describe/SOQL calls this pipeline already trusts, plus `client.validate()`.
+ * §Combination-expansion architecture fix — the Phase 3/4/11 preflight no longer discovers every
+ * historical single-attribute option for this product and computes the full Cartesian product of them
+ * (that WAS the storage-exhausting default this fix removes). It now estimates the cost of exactly the
+ * combinations `requestedCombinations` names — the SAME already-resolved, explicit set
+ * `expandAttributeCombinationRules` will materialize — classified by content (KEEP/COMPLETE/CREATE/
+ * AMBIGUOUS — the same, already-proven mechanism the real creation path uses), so the estimate can never
+ * disagree with what the run would actually do. An empty array (the default, when the prompt never used
+ * combination language) means the combination phase contributes ZERO estimated cost — never a naive
+ * "what if every possible combination were created" guess. Strictly read-only — the only Salesforce calls
+ * made are the existing read-only discovery/describe/SOQL calls this pipeline already trusts, plus
+ * `client.validate()`.
  */
 export async function checkAttributeBasedPricingCapacityPreflight(
   client: SalesforceClient,
   schema: AttributeBasedPricingSchema,
   args: { product: { id: string; name: string }; sellingModelId: string | null; scheduleId: string },
   contexts: Map<string, AttributeContext>,
+  requestedCombinations: CombinationRulePlanRow[] = [],
 ): Promise<SalesforceCapacityPreflightResult> {
   const priceImpactingEntries = [...contexts.entries()].filter(([, ctx]) => ctx.isPriceImpacting === true);
   const priceImpactingAttributeNames = priceImpactingEntries.map(([name]) => name);
   const attributeIdentityById = buildAttributeIdentityReverseMap(contexts);
 
-  const options = await discoverSingleAttributePricedOptions(client, schema, args, contexts);
-  const combinations = computeAttributeCombinations(options);
+  const combinations: AttributeCombinationMember[][] = requestedCombinations.map(r => r.members);
 
   const baseConfig = await resolveBaseProductConfiguration(client, args.product.id, priceImpactingEntries);
   const defaultValueByAttr = new Map<string, string | null>(priceImpactingEntries.map(([name]) => [name, baseConfig.attributes[name]?.value ?? null]));

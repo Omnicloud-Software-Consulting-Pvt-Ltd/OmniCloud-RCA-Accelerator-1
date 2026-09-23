@@ -10,7 +10,7 @@
  * function is untouched and still the only thing the real pipeline calls.
  */
 import type { SalesforceClient } from "@/lib/salesforce/client";
-import { retrieveExpressionSetDefinitionFiles } from "./templateExpressionSet";
+import { retrieveVersionScopedExpressionSetDefinitionFiles } from "./templateExpressionSet";
 import {
   extractStepGraph, type PhysicalStepNode,
   getTagValue,
@@ -645,7 +645,7 @@ export interface MinimalPricingFoundationDonor {
  * existing classification signals entirely; invents no new detection logic.
  */
 export async function selectMinimalPricingFoundationDonor(client: SalesforceClient): Promise<MinimalPricingFoundationDonor | null> {
-  const { files } = await retrieveExpressionSetDefinitionFiles(client, ["*"]);
+  const { files } = await retrieveVersionScopedExpressionSetDefinitionFiles(client, ["*"]);
   const candidates = files.map(f => ({ file: f, candidate: inspectDonorCandidate(f.fileName, f.content) }));
   const eligible = candidates.filter(c =>
     c.candidate.pricingSettingsOccurrences > 0
@@ -735,7 +735,7 @@ export interface AttributeBasedPricingDonorResolution {
 const MINIMUM_TRUSTED_DONOR_SCORE = 0;
 
 export async function resolveAttributeBasedPricingDonor(client: SalesforceClient): Promise<AttributeBasedPricingDonorResolution> {
-  const { files } = await retrieveExpressionSetDefinitionFiles(client, ["*"]);
+  const { files } = await retrieveVersionScopedExpressionSetDefinitionFiles(client, ["*"]);
   const inspected = files.map(f => ({ file: f, candidate: inspectDonorCandidate(f.fileName, f.content) }));
   const candidatesWithAttributeDiscount = inspected.filter(e => e.candidate.attributeDiscountOccurrences > 0).map(e => e.candidate);
 
@@ -893,7 +893,7 @@ export async function inspectAllExpressionSetDefinitionDonors(
   client: SalesforceClient,
   targetActionType: string,
 ): Promise<ExpressionSetDonorInspectionResult> {
-  const { files, warning } = await retrieveExpressionSetDefinitionFiles(client, ["*"]);
+  const { files, warning } = await retrieveVersionScopedExpressionSetDefinitionFiles(client, ["*"]);
   const candidates = files.map(f => inspectDonorCandidate(f.fileName, f.content));
 
   const selectedFile = files.find(f => extractStepGraph(f.content).some(n => n.actionType === targetActionType));

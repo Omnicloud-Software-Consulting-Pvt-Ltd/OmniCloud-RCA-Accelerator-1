@@ -135,7 +135,7 @@ function formatReport(args: {
     "update-existing-version": `UPDATE EXISTING VERSION — the generated version matches existing ExpressionSetVersion ${args.matchedVersionId} under this same ExpressionSet.`,
     "create-new-version": "CREATE NEW VERSION — the ExpressionSet already exists, but no existing Version matches the generated version; a new Version will be added to it.",
     "duplicate-version-conflict": "DUPLICATE — the generated version's identity matches an existing ExpressionSetVersion that belongs to a DIFFERENT ExpressionSet. Stopping before deployment.",
-    "version-identity-unknown": "UNKNOWN — this org's ExpressionSetVersion schema exposes no VersionNumber, ApiName, DeveloperName, or Name field to compare against; version identity could not be determined and was never guessed. Proceeding (never blocks deployment on an unverifiable comparison).",
+    "version-identity-unknown": "UNKNOWN — this org's ExpressionSetVersion schema exposes no VersionNumber, ApiName, DeveloperName, or Name field to compare against; version identity could not be determined and was never guessed. Stopping before deployment — an unverifiable identity is treated as ambiguous, never as an implicit pass.",
   };
   const confidenceExplanation: Record<VersionIdentityConfidence, string> = {
     HIGH: "VersionNumber exists on this org — real, Salesforce-reported version data corroborates the ApiName/Name match.",
@@ -648,7 +648,20 @@ export async function validateExpressionSetUniquenessAgainstOrg(
   if (!existingExpressionSetId) {
     decision = "create-new-expression-set";
   } else if (!evHasApiName && !evHasDeveloperName && !evHasName) {
+    // §Active ExpressionSetVersion identity collision investigation — requirement: "fail before deployment
+    // if identity resolution is ambiguous." An existing ExpressionSet was found, but this org's
+    // ExpressionSetVersion schema exposes no field this validator can compare a candidate identity
+    // against — there is no way to prove the version about to be deployed doesn't collide with an
+    // existing (possibly active) one. Previously this proceeded anyway ("never blocks on an unverifiable
+    // comparison"); now it fails closed instead, matching "never deploy using an identity that already
+    // belongs to another active ExpressionSetVersion" when that can't be proven false.
     decision = "version-identity-unknown";
+    conflicts.push({
+      identifier: "ExpressionSetVersion identity resolution ambiguous",
+      existingRecordId: existingExpressionSetId,
+      generatedValue: args.apiName,
+      conflictingMetadataType: "ExpressionSetVersion",
+    });
   } else if (generatedFullNames.length === 0) {
     decision = "create-new-version";
   } else {

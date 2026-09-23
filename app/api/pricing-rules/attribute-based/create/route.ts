@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { requireSFClient } from "@/lib/salesforce/serverSession";
 import { PRICING_RULES_API_VERSION } from "@/lib/pricing-rules/types";
 import { runCreateAttributePricingPipeline, generateExecutionId } from "@/lib/pricing-rules/attribute-based/create/createPipeline";
-import type { DiscoveredAttribute, DiscoveredProduct, PricingRulePlanRow } from "@/lib/pricing-rules/attribute-based/types";
+import type { CombinationRulePlanRow, DiscoveredAttribute, DiscoveredProduct, PricingRulePlanRow } from "@/lib/pricing-rules/attribute-based/types";
 import type { CreateStreamEvent } from "@/lib/pricing-rules/attribute-based/create/types";
 import type { AdjustmentDecisionOverride } from "@/lib/pricing-rules/attribute-based/create/nativeRecords";
 
@@ -31,6 +31,10 @@ export async function POST(req: NextRequest) {
     product: DiscoveredProduct;
     discoveredAttributes: DiscoveredAttribute[];
     rules: PricingRulePlanRow[];
+    /** §Combination-expansion architecture fix — explicit combination-specific pricing requests, already
+     * resolved against real Salesforce data by the analyze endpoint. Absent/empty (the default) means no
+     * combinatorial expansion happens at all. */
+    combinationRules?: CombinationRulePlanRow[];
     excludedAttributes: string[];
     procedureName: string;
     description?: string;
@@ -67,6 +71,7 @@ export async function POST(req: NextRequest) {
             product: body.product,
             discoveredAttributes: body.discoveredAttributes ?? [],
             rules: body.rules,
+            combinationRules: body.combinationRules ?? [],
             excludedAttributes: body.excludedAttributes ?? [],
             procedureName: body.procedureName,
             description: body.description,

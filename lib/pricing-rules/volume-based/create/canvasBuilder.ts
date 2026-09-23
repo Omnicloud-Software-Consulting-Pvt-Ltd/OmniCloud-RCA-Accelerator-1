@@ -14,60 +14,21 @@ import type { SalesforceClient } from "@/lib/salesforce/client";
 import {
   extractStepGraph, getTagValue, escapeXml,
   getTopLevelParameterBlocks, getNestedCustomElementParameterBlocks,
-  getParamName, getParamValue,
+  getParamName, getParamValue, type PhysicalStepNode,
 } from "@/lib/pricing-rules/attribute-based/create/xmlBlocks";
 import { computeRequiredOccurrenceIndexes, pruneXmlToRequiredOccurrences, findDanglingParentStepReferences } from "@/lib/pricing-rules/attribute-based/create/pricingCanvasPruning";
 import { compareExpressionSetSchema, compareStepStructure, type StepStructureReport } from "@/lib/pricing-rules/attribute-based/create/schemaDiff";
-import { injectVersionNumberAndRank } from "@/lib/pricing-rules/attribute-based/create/versionEnvelopeFields";
+import { injectVersionNumberAndRank, regenerateVersionedFullName } from "@/lib/pricing-rules/attribute-based/create/versionEnvelopeFields";
+import {
+  resolvePriceBookEntriesV2DecisionTable, resolveVolumeDiscountEntriesDecisionTable,
+  formatExactDecisionTableFailure, formatDecisionTableMappingDiagnostic,
+  PRICE_BOOK_DECISION_TABLE_LABEL, VOLUME_DISCOUNT_DECISION_TABLE_LABEL,
+} from "@/lib/pricing-rules/attribute-based/create/decisionTableExactResolver";
 import { resolveVolumeBasedPricingDonor, resolveConnectedAncestor, SHARED_SIGNAL_ACTION_TYPES, buildNoCoherentDonorDiagnostic } from "./donorInspection";
 
 const UNIT_PRICE_SEMANTIC_PRIORITY = ["UnitPrice", "NetUnitPrice", "ListPrice"];
 
 export interface DecisionTableLookup { id: string; name: string; apiName: string; }
-
-/** §Decision Table resolution — never a hardcoded Salesforce Id; queried fresh on every build via
- * Describe-confirmed fields, matched by DeveloperName candidates first, then SourceObject regex (the most
- * reliable purpose discriminator — labels/DeveloperNames vary per org, SourceObject does not). */
-export async function resolveDecisionTable(
-  client: SalesforceClient,
-  developerNameCandidates: string[],
-  sourceObjectPatterns: RegExp[],
-): Promise<DecisionTableLookup | null> {
-  let labelField = "MasterLabel";
-  try {
-    const describe = await client.describeObject("DecisionTable");
-    const fieldNames = new Set(describe.fields.map(f => f.name));
-    if (!fieldNames.has("MasterLabel") && fieldNames.has("Name")) labelField = "Name";
-  } catch {
-    // fall through with the default label field guess
-  }
-
-  let records: { Id: string; DeveloperName?: string; SourceObject?: string; [k: string]: unknown }[] = [];
-  try {
-    const res = await client.query<{ Id: string; DeveloperName?: string; SourceObject?: string; [k: string]: unknown }>(
-      `SELECT Id, ${labelField}, DeveloperName, SourceObject FROM DecisionTable LIMIT 500`,
-    );
-    records = res.records;
-  } catch {
-    return null;
-  }
-  if (records.length === 0) return null;
-
-  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
-  const exact = records.find(r => r.DeveloperName && developerNameCandidates.some(c => r.DeveloperName === c));
-  const caseInsensitive = records.find(r => r.DeveloperName && developerNameCandidates.some(c => r.DeveloperName!.toLowerCase() === c.toLowerCase()));
-  const normalizedDevName = records.find(r => r.DeveloperName && developerNameCandidates.some(c => normalize(r.DeveloperName!) === normalize(c)));
-  const normalizedLabel = records.find(r => {
-    const label = String(r[labelField] ?? "");
-    return label && developerNameCandidates.some(c => normalize(label) === normalize(c));
-  });
-  const bySourceObject = records.find(r => r.SourceObject && sourceObjectPatterns.some(p => p.test(r.SourceObject!)));
-
-  const match = exact ?? caseInsensitive ?? normalizedDevName ?? normalizedLabel ?? bySourceObject;
-  if (!match) return null;
-  const rawLabel = String(match[labelField] ?? "").trim();
-  return { id: match.Id, name: rawLabel && rawLabel !== "Decision Tables" ? rawLabel : (match.DeveloperName ?? rawLabel), apiName: match.DeveloperName ?? "" };
-}
 
 function collectFieldMap(xmlSlice: string): Map<string, string | null> {
   const map = new Map<string, string | null>();
@@ -96,21 +57,113 @@ function patchParamType(block: string, paramName: string, newType: string): stri
   );
 }
 
+/** Strips only stale donor-org record `<id>` tags — never touches `<parentStep>`. Used on its own for the
+ * VolumeDiscount fragment (see `stripIdsAndParentStep`'s own doc comment for why). */
+function stripIds(stepFullXml: string): string {
+  return stepFullXml.replace(/<id>[0-9A-Za-z]{15,18}<\/id>\s*/g, "");
+}
+
+/**
+ * §Live-org fix — mirrors lib/pricing-rules/tier-based/create/canvasBuilder.ts's own
+ * `stripIdsAndParentStep` doc comment exactly: `<parentStep>` removal is a PRUNING-INPUT concern (avoid the
+ * composed root-level PS/LP/VD steps carrying a canvas-placement reference into a UI-grouping container
+ * that isn't one of the 3 required steps), completely separate from `compareStepStructure`'s SCHEMA-
+ * COMPLETENESS check: that check only compares direct-child TAG NAMES/order against the donor's own step —
+ * a VolumeDiscount step that declares a real, non-empty `<parentStep>` as one of its required direct
+ * children (the same donor family already proven, in Tier-Based, to require this for its
+ * VolumeTierDiscount sibling) would fail that comparison whenever the tag itself is missing. Kept for
+ * PricingSettings/ListPrice (`psXml`/`lpXml` below) — evidenced, not assumed: their own structural reports
+ * pass even with this stripping. VolumeDiscount uses `stripIds` alone below, preserving its own
+ * `<parentStep>` (donor value, donor position) verbatim so `compareStepStructure` sees the same direct-
+ * child shape the donor has — never blindly assumed either way; the structural report
+ * (`compareStepStructure`) is the actual authority that would reject this choice if it were wrong.
+ */
 function stripIdsAndParentStep(stepFullXml: string): string {
-  return stepFullXml
-    .replace(/<parentStep>[^<]*<\/parentStep>\s*/g, "")
-    .replace(/<id>[0-9A-Za-z]{15,18}<\/id>\s*/g, "");
+  return stripIds(stepFullXml.replace(/<parentStep>[^<]*<\/parentStep>\s*/g, ""));
 }
 
 function renumberSequence(stepFullXml: string, seq: number): string {
   return stepFullXml.replace(/<sequenceNumber>\d+<\/sequenceNumber>/, `<sequenceNumber>${seq}</sequenceNumber>`);
 }
 
+/**
+ * §Live-org fix (real donor `Rev_Mgmt_Default_Pricing_Procedure2_V1`) — LAST-RESORT ListPrice pairing, used
+ * only when `resolveConnectedAncestor` finds no direct mechanism (parentStep chain, physical nesting,
+ * variable binding, or sequence order) connecting the selected VolumeDiscount branch to a specific ListPrice
+ * occurrence — the same real, confirmed live shape already fixed for Attribute-Based Pricing
+ * (donorInspection.ts's own `price-waterfall-variable` mechanism proves VolumeDiscount participates in the
+ * SAME pricing flow as PricingSettings via the shared NetUnitPrice variable, but that says nothing about
+ * WHICH of the donor's ListPrice branches — Price Book vs Contract Pricing — is the correct one). Mirrors
+ * lib/pricing-rules/attribute-based/create/canvasBuilder.ts's own `resolveListPriceByContractEnabledBinding`
+ * exactly (same discriminated outcome, same "conflict never falls through to a guess" discipline), adapted
+ * to VolumeDiscount's own field naming in diagnostics.
+ */
+export type ContractEnabledBindingOutcome =
+  | { status: "resolved"; node: PhysicalStepNode; reason: string }
+  | { status: "not-applicable"; reason: string }
+  | { status: "conflict"; reason: string };
+
+export function resolveListPriceByContractEnabledBinding(graph: PhysicalStepNode[], vdNode: PhysicalStepNode): ContractEnabledBindingOutcome {
+  const vdRaw = collectFieldMap(vdNode.full).get("IsContractEnabled") ?? null;
+  if (vdRaw === null) {
+    return { status: "not-applicable", reason: `VolumeDiscount [${vdNode.occurrenceIndex}] declares no IsContractEnabled parameter — this mechanism does not apply.` };
+  }
+  const vdNorm = vdRaw.trim().toLowerCase();
+  if (vdNorm !== "true" && vdNorm !== "false") {
+    return { status: "conflict", reason: `VolumeDiscount [${vdNode.occurrenceIndex}]'s IsContractEnabled value ("${vdRaw}") is not a literal true/false — refusing to guess.` };
+  }
+  const vdBool = vdNorm === "true";
+
+  const listPriceNodes = graph.filter(n => n.actionType === "ListPrice");
+  if (listPriceNodes.length === 0) {
+    return { status: "not-applicable", reason: "No ListPrice occurrence exists anywhere in this donor — this mechanism does not apply." };
+  }
+
+  const withValues = listPriceNodes.map(lp => ({ lp, raw: collectFieldMap(lp.full).get("IsContractEnabled") ?? null }));
+  const invalid = withValues.filter(v => v.raw === null || !["true", "false"].includes(v.raw.trim().toLowerCase()));
+  if (invalid.length > 0) {
+    return {
+      status: "conflict",
+      reason: `${invalid.length} of ${listPriceNodes.length} ListPrice occurrence(s) have a missing or non-literal IsContractEnabled value (${invalid.map(v => `[${v.lp.occurrenceIndex}]=${v.raw ?? "(none)"}`).join(", ")}) — insufficient evidence to trust this mechanism for any candidate; refusing to guess.`,
+    };
+  }
+
+  const matches = withValues.filter(v => (v.raw!.trim().toLowerCase() === "true") === vdBool);
+  if (matches.length === 0) {
+    return {
+      status: "conflict",
+      reason: `0 of ${listPriceNodes.length} ListPrice occurrence(s) declare IsContractEnabled=${vdBool} (all declare the opposite) — refusing to guess.`,
+    };
+  }
+  if (matches.length > 1) {
+    return {
+      status: "conflict",
+      reason: `ambiguous: ${matches.length} ListPrice occurrences share IsContractEnabled=${vdBool} ([${matches.map(m => m.lp.occurrenceIndex).join(", ")}]) — refusing to guess which one.`,
+    };
+  }
+  const winner = matches[0];
+  return {
+    status: "resolved",
+    node: winner.lp,
+    reason: `Matched ListPrice [${winner.lp.occurrenceIndex}] via the donor's own explicit IsContractEnabled=${vdBool} binding — a direct parameter declared on both VolumeDiscount [${vdNode.occurrenceIndex}] and this ListPrice occurrence, unambiguous among ${listPriceNodes.length} candidate(s).`,
+  };
+}
+
+/**
+ * §Live-org fix — mirrors lib/pricing-rules/tier-based/create/canvasBuilder.ts's own
+ * `resolveTargetInputUnitPriceValue` exactly. Resolution order:
+ *   1. Exactly one output published → use it (unambiguous by definition).
+ *   2. The donor's OWN existing InputUnitPrice binding already equals one of the real published outputs
+ *      → keep it, no guess needed.
+ *   3. Otherwise, the FIRST name from `UNIT_PRICE_SEMANTIC_PRIORITY` that IS one of the published outputs.
+ *   4. None of the above resolves (2+ outputs, none matching) → `null` — the caller must treat this as a
+ *      hard failure, never a guess. A prior version of this function fell back to `donorLpOutputValues[0]`
+ *      here — an array-order assumption Tier-Based's own proven copy never makes; removed.
+ */
 function resolveTargetInputUnitPriceValue(donorInputUnitPrice: string | null, donorLpOutputValues: string[]): string | null {
   if (donorLpOutputValues.length === 1) return donorLpOutputValues[0];
   if (donorInputUnitPrice && donorLpOutputValues.includes(donorInputUnitPrice)) return donorInputUnitPrice;
-  for (const name of UNIT_PRICE_SEMANTIC_PRIORITY) if (donorLpOutputValues.includes(name)) return name;
-  return donorLpOutputValues[0] ?? null;
+  return UNIT_PRICE_SEMANTIC_PRIORITY.find(name => donorLpOutputValues.includes(name)) ?? null;
 }
 
 export interface CanvasStepStats { actionType: string; parameterCount: number; }
@@ -166,12 +219,38 @@ export async function buildVolumeCanvas(
 
   const psResolution = resolveConnectedAncestor(donorGraph, vdNode, "PricingSettings");
   const lpResolution = resolveConnectedAncestor(donorGraph, vdNode, "ListPrice");
-  if (!psResolution.node || !lpResolution.node) {
-    fatalErrors.push(`Selected VolumeDiscount branch (occurrence ${vdNode.occurrenceIndex}) does not resolve to both a PricingSettings and a ListPrice ancestor.`);
+
+  // §Live-org fix — `lpResolution` can legitimately come back `none` even for a donor
+  // `resolveVolumeBasedPricingDonor` already accepted: donor eligibility now also accepts a VolumeDiscount
+  // branch proven connected to PricingSettings via the shared price-waterfall variable (NetUnitPrice)
+  // WITHOUT any ListPrice branch directly publishing that same value (see donorInspection.ts's own
+  // `price-waterfall-variable` mechanism doc comment) — real for `Rev_Mgmt_Default_Pricing_Procedure2_V1`,
+  // whose two ListPrice branches publish the Price Book / Contract Pricing outputs, never NetUnitPrice
+  // directly. In that case, WHICH ListPrice branch to clone is a separate question the price-waterfall
+  // proof does not answer — fall back to the donor's own explicit IsContractEnabled binding (the same
+  // highest-confidence, evidence-based mechanism lib/pricing-rules/attribute-based's canvasBuilder.ts uses
+  // for the identical real donor), never a guess.
+  let lpNode: PhysicalStepNode | null = lpResolution.node;
+  let lpMechanismLabel: string = lpResolution.mechanism;
+  if (!lpNode) {
+    const contractEnabledOutcome = resolveListPriceByContractEnabledBinding(donorGraph, vdNode);
+    if (contractEnabledOutcome.status !== "resolved") {
+      fatalErrors.push(
+        `Selected VolumeDiscount branch (occurrence ${vdNode.occurrenceIndex}) does not resolve to a ListPrice ancestor via any known mechanism` +
+        (psResolution.node ? ` (PricingSettings resolved via ${psResolution.mechanism}).` : ", nor to a PricingSettings ancestor.") +
+        ` The IsContractEnabled-based fallback also could not disambiguate: ${contractEnabledOutcome.reason}`,
+      );
+      return { success: false, fatalErrors, warnings };
+    }
+    lpNode = contractEnabledOutcome.node;
+    lpMechanismLabel = "explicit-contract-enabled-binding";
+    warnings.push(`ℹ ListPrice paired via the donor's explicit IsContractEnabled binding — no direct parentStep/physical-nesting/variable-binding/sequence-order connection existed: ${contractEnabledOutcome.reason}`);
+  }
+  if (!psResolution.node) {
+    fatalErrors.push(`Selected VolumeDiscount branch (occurrence ${vdNode.occurrenceIndex}) resolves to ListPrice (via ${lpMechanismLabel}) but does not resolve to a PricingSettings ancestor via any known mechanism.`);
     return { success: false, fatalErrors, warnings };
   }
   const psNode = psResolution.node;
-  let lpNode = lpResolution.node;
 
   // §Prefer a Price Book LP over a Contract Pricing one, mirroring VolumeDiscount's own two-block trap —
   // if the resolved LP ancestor's own lookup mentions "contract", search for a sibling ListPrice step that
@@ -189,93 +268,179 @@ export async function buildVolumeCanvas(
   const psXml = psNode.full;
   const lpXml = lpNode.full;
 
-  /* ── Resolve the Price Book Decision Table (for the LP step) ── */
-  const pbDt = await resolveDecisionTable(
-    client,
-    ["Price_Book_Entries_V2", "Price_Book_Entry_Decision_Table_V2", "Price_Book_Entry_Decision_Table"],
-    [/PricebookEntry/i, /Pricebook2/i, /Pricebook/i],
-  );
-  if (!pbDt) {
-    fatalErrors.push("Could not resolve a Price Book Decision Table on this org (checked DeveloperName candidates and SourceObject=PricebookEntry/Pricebook2) — there is no valid procedure without a resolved pricebook lookup.");
+  /* ── Resolve the EXACT "Price Book Entries V2" Decision Table (for the ListPrice step) ──
+   * §Live-org fix — deterministic resolution against MULTIPLE real identity fields (MasterLabel,
+   * DeveloperName, SetupName — see decisionTableExactResolver.ts's own file header for why a
+   * MasterLabel-only assumption is not safe on every org), never a fuzzy candidate-list/SourceObject-only
+   * search. This org has multiple similarly-shaped Decision Tables, so only an EXACT, verified-unique match
+   * against "Price Book Entries V2" is trusted. Never falls back to "Price Book Entries" (without "V2") or
+   * any other candidate. */
+  const pbDtResolution = await resolvePriceBookEntriesV2DecisionTable(client);
+  if (pbDtResolution.status !== "resolved") {
+    fatalErrors.push(`Could not resolve the exact "${PRICE_BOOK_DECISION_TABLE_LABEL}" Decision Table on this org — ${formatExactDecisionTableFailure(pbDtResolution)}`);
     return { success: false, fatalErrors, warnings };
   }
-
-  /* ── Resolve the Volume/Tier Adjustment Decision Table (for the VolumeDiscount step) ── */
-  let vtdLookup = await resolveDecisionTable(
-    client,
-    ["Price_Adjustment_Tier_Decision_Table", "Volume_Discount_Entries", "Volume_Discount"],
-    [/PriceAdjustmentTier/i],
-  );
-  if (!vtdLookup) {
-    // Template fallback — if the donor's OWN VolumeDiscount block carries a real (non-$DUMMY$) LookUpId,
-    // use that instead of failing outright. SOQL still takes priority when both are available.
-    const donorLookup = collectFieldMap(vdNode.full);
-    const donorLookUpId = donorLookup.get("LookUpId");
-    if (donorLookUpId && donorLookUpId !== "$DUMMY$") {
-      vtdLookup = { id: donorLookUpId, name: donorLookup.get("LookUpName") ?? "Volume Discount Entries", apiName: donorLookup.get("LookUpApiName") ?? "" };
-      warnings.push("Could not resolve the Volume/Tier Adjustment Decision Table via SOQL — falling back to the donor template's own (non-placeholder) LookUpId.");
-    }
-  }
-  if (!vtdLookup || !vtdLookup.id || vtdLookup.id === "$DUMMY$") {
-    fatalErrors.push(`VolumeDiscount Decision Table not resolved — LookUpId is "${vtdLookup?.id ?? "(undefined)"}". Aborting deployment.`);
+  /* ── Resolve the EXACT "Volume Discount Entries" Decision Table (for the VolumeDiscount step) ──
+   * §Live-org fix — the donor's own LookUpId is NEVER used as a fallback target: the donor supplies XML
+   * STRUCTURE only (see this module's own file header) — the Decision Table IDENTITY must always come
+   * from a fresh org lookup, never from a possibly stale/wrong-org donor literal. A prior version of this
+   * code fell back to the donor's own (non-`$DUMMY$`) LookUpId when discovery failed — removed entirely;
+   * discovery failure is now always fatal. */
+  const vtdResolution = await resolveVolumeDiscountEntriesDecisionTable(client);
+  if (vtdResolution.status !== "resolved") {
+    fatalErrors.push(`Could not resolve the exact "${VOLUME_DISCOUNT_DECISION_TABLE_LABEL}" Decision Table on this org — ${formatExactDecisionTableFailure(vtdResolution)}`);
     return { success: false, fatalErrors, warnings };
   }
+  // §Task 5 — the two semantic tables are resolved fully independently (two separate calls, two separate
+  // exported functions — see decisionTableExactResolver.ts's own file header for why there is no shared
+  // "candidate label" parameter a call site could confuse); this asserts that independence actually held:
+  // the SAME physical DecisionTable record must never be used for two different semantic pricing nodes.
+  if (pbDtResolution.table.id === vtdResolution.table.id) {
+    fatalErrors.push(
+      `DECISION_TABLE_CROSS_MAPPING: the SAME DecisionTable (Id ${pbDtResolution.table.id}) was resolved for BOTH "${PRICE_BOOK_DECISION_TABLE_LABEL}" (ListPrice) and "${VOLUME_DISCOUNT_DECISION_TABLE_LABEL}" (VolumeDiscount) — these must be two distinct records; refusing to bind two different pricing nodes to one table.`,
+    );
+    return { success: false, fatalErrors, warnings };
+  }
+  warnings.push(
+    "Decision Table resolution (independent, per semantic target):\n" +
+    `ListPrice:\n  requested = ${PRICE_BOOK_DECISION_TABLE_LABEL}\n  resolvedId = ${pbDtResolution.table.id}\n  resolvedIdentity = MasterLabel="${pbDtResolution.table.masterLabel ?? "(none)"}" DeveloperName="${pbDtResolution.table.developerName ?? "(none)"}" SetupName="${pbDtResolution.table.setupName ?? "(none)"}" (matched via ${pbDtResolution.mechanism})\n` +
+    `VolumeDiscount:\n  requested = ${VOLUME_DISCOUNT_DECISION_TABLE_LABEL}\n  resolvedId = ${vtdResolution.table.id}\n  resolvedIdentity = MasterLabel="${vtdResolution.table.masterLabel ?? "(none)"}" DeveloperName="${vtdResolution.table.developerName ?? "(none)"}" SetupName="${vtdResolution.table.setupName ?? "(none)"}" (matched via ${vtdResolution.mechanism})`,
+  );
+  // §Display-name fallback chain — MasterLabel is preferred (most human-readable) but is not guaranteed
+  // non-null (see decisionTableExactResolver.ts): falls back to DeveloperName, then SetupName, then the
+  // semantic target name itself as an absolute last resort — never null, so the patched LookUpName is
+  // always a real, meaningful value and the final-XML validation below can compare against this SAME
+  // computed value rather than re-deriving it (and risking a spurious null-vs-value mismatch).
+  const vtdResolvedName = vtdResolution.table.masterLabel ?? vtdResolution.table.developerName ?? vtdResolution.table.setupName ?? VOLUME_DISCOUNT_DECISION_TABLE_LABEL;
+  const vtdLookup: DecisionTableLookup = { id: vtdResolution.table.id, name: vtdResolvedName, apiName: vtdResolution.table.developerName ?? "" };
 
-  const lpBindings = collectFieldMap(lpXml);
-  const lpLookup = {
-    lookUpId: pbDt.id,
-    lookUpApiName: pbDt.apiName || lpBindings.get("LookUpApiName") || null,
-    lookUpName: pbDt.name || lpBindings.get("LookUpName") || null,
-  };
+  const lpBindingsBefore = collectFieldMap(lpXml);
+  // §Live-org fix — never falls back to the donor's OWN LookUpApiName/LookUpName as a display-value
+  // substitute (a prior version did `pbDt.apiName || lpBindings.get("LookUpApiName")`): the resolved
+  // table's own fields are used verbatim, even when DeveloperName is absent on this org, so the deployed
+  // step's LookUp* fields can never silently carry a donor-org literal forward.
+  const pbResolvedName = pbDtResolution.table.masterLabel ?? pbDtResolution.table.developerName ?? pbDtResolution.table.setupName ?? PRICE_BOOK_DECISION_TABLE_LABEL;
+  const lpLookup = { lookUpId: pbDtResolution.table.id, lookUpApiName: pbDtResolution.table.developerName ?? null, lookUpName: pbResolvedName };
+  warnings.push(formatDecisionTableMappingDiagnostic({
+    pricingTypeLabel: "VOLUME — LISTPRICE", actionType: "ListPrice", table: pbDtResolution.table, mechanism: pbDtResolution.mechanism,
+    before: { lookUpId: lpBindingsBefore.get("LookUpId") ?? null, lookUpApiName: lpBindingsBefore.get("LookUpApiName") ?? null, lookUpName: lpBindingsBefore.get("LookUpName") ?? null },
+    after: lpLookup,
+  }));
 
   const vdOwnBindingsMap = collectFieldMap(vdNode.content.indexOf("<steps") === -1 ? vdNode.content : vdNode.content.slice(0, vdNode.content.indexOf("<steps")));
   const donorInputUnitPrice = vdOwnBindingsMap.get("InputUnitPrice") ?? null;
-  const lpOwnBindings = getTopLevelParameterBlocks(lpXml).filter(b => getTagValue(b.block, "output") === "true");
-  const donorLpOutputValues = lpOwnBindings.map(b => getParamValue(b.block)).filter((v): v is string => !!v);
+  // §Live-org fix — mirrors lib/pricing-rules/tier-based/create/canvasBuilder.ts's own proven fix for this
+  // EXACT donor (Rev_Mgmt_Default_Pricing_Procedure2_V1): searched recursively through ListPrice's WHOLE
+  // subtree (top-level params AND params nested inside a <customElement>, exactly like `collectFieldMap`
+  // above) — a top-level-only scan silently missed this donor's real ListPrice output (it lives inside a
+  // <customElement>, the same standard Decision-Table-lookup shape every LookUpId/LookUpApiName/
+  // IsContractEnabled field on this step already lives in), making `donorLpOutputValues` wrongly empty and
+  // `targetInputUnitPriceValue` wrongly null even though the selected ListPrice genuinely publishes a real,
+  // usable output. Also requires `type="Parameter"` (excluding `Literal` outputs, which are not real
+  // bindable published variables).
+  const lpOutputDiscovery = [
+    ...getTopLevelParameterBlocks(lpXml).map(b => ({ b, scope: "top-level" as const })),
+    ...getNestedCustomElementParameterBlocks(lpXml).map(b => ({ b, scope: "customElement-nested" as const })),
+  ]
+    .filter(({ b }) => getTagValue(b.block, "output") === "true" && getTagValue(b.block, "type") === "Parameter")
+    .map(({ b, scope }) => ({ name: getParamName(b.block), value: getParamValue(b.block), scope }));
+  const donorLpOutputValues = lpOutputDiscovery.map(o => o.value).filter((v): v is string => !!v);
+  const lpOutputDiscoveryText = lpOutputDiscovery.length > 0
+    ? lpOutputDiscovery.map(o => `${o.name ?? "(unnamed)"}=${o.value ?? "(no value)"} [${o.scope}]`).join(", ")
+    : "(none discovered)";
   const targetInputUnitPriceValue = resolveTargetInputUnitPriceValue(donorInputUnitPrice, donorLpOutputValues);
   if (!targetInputUnitPriceValue) {
-    fatalErrors.push("Could not resolve a target InputUnitPrice value from the donor's ListPrice outputs — refusing to bind VolumeDiscount to an unpublished value.");
+    fatalErrors.push(
+      `Could not resolve a target InputUnitPrice value from the donor's ListPrice outputs — refusing to bind VolumeDiscount to an unpublished value. ` +
+      `Selected ListPrice [${lpNode.occurrenceIndex}] (${lpNode.pathLabel}) publishes ${donorLpOutputValues.length} output(s) of type="Parameter": ${lpOutputDiscoveryText}. ` +
+      `VolumeDiscount [${vdNode.occurrenceIndex}]'s own InputUnitPrice binding is "${donorInputUnitPrice ?? "(none)"}". ` +
+      (donorLpOutputValues.length === 0
+        ? "No output at all was found (checked both top-level and customElement-nested parameter blocks)."
+        : `${donorLpOutputValues.length} output(s) exist but none matches VolumeDiscount's InputUnitPrice or any known unit-price-semantic name (${UNIT_PRICE_SEMANTIC_PRIORITY.join(", ")}) — refusing to guess by array order.`),
+    );
     return { success: false, fatalErrors, warnings };
   }
+  warnings.push(`Selected ListPrice [${lpNode.occurrenceIndex}] (${lpNode.pathLabel}) real output(s) discovered: ${lpOutputDiscoveryText}. Target InputUnitPrice value resolved: "${targetInputUnitPriceValue}".`);
 
-  /* ── Patch the ListPrice step ── */
+  // §Live-org fix — mirrors lib/pricing-rules/tier-based & attribute-based's own, already-proven
+  // architecture exactly: PricingSettings and ListPrice are used 100% VERBATIM from the donor — ListPrice's
+  // own output parameter is NEVER rewritten to fabricate a "NetUnitPrice" output the real donor never
+  // declared (a prior version of this file did exactly that as a "waterfall bridge," which is precisely the
+  // kind of invented producer-side binding the architecture must avoid). Instead, VolumeDiscount's OWN
+  // `InputUnitPrice` binding (a step this pipeline already owns and patches) is aligned below to whatever
+  // ListPrice's REAL published output actually is (`targetInputUnitPriceValue`, resolved immediately above
+  // from ListPrice's own real bindings). This guarantees VolumeDiscount always consumes a value ListPrice
+  // genuinely publishes, never a value invented to make validation pass.
   let lpPatched = stripIdsAndParentStep(lpXml);
   lpPatched = patchParamValue(lpPatched, "LookUpId", lpLookup.lookUpId ?? "");
   if (lpLookup.lookUpApiName) lpPatched = patchParamValue(lpPatched, "LookUpApiName", lpLookup.lookUpApiName);
   if (lpLookup.lookUpName) lpPatched = patchParamValue(lpPatched, "LookUpName", lpLookup.lookUpName);
   lpPatched = patchParamValue(lpPatched, "IsContractEnabled", "false");
-  // Waterfall bridge — the LP step's own output parameter must publish NetUnitPrice, not ListPrice, or
-  // VolumeDiscount's InputUnitPrice (which reads NetUnitPrice) is always null.
-  lpPatched = lpPatched.replace(
-    /(<parameters>)([\s\S]*?)(<\/parameters>)/g,
-    (whole, open: string, inner: string, close: string) => {
-      if (inner.includes("<output>true</output>") && inner.includes("<type>Parameter</type>")
-        && inner.includes("<name>ListPrice</name>") && inner.includes("<value>ListPrice</value>")) {
-        return open + inner.replace("<value>ListPrice</value>", "<value>NetUnitPrice</value>") + close;
-      }
-      return whole;
-    },
-  );
 
-  /* ── Patch the VolumeDiscount step ── */
-  const closeIdx = vdNode.full.lastIndexOf("</steps>");
-  const customIdx = vdNode.full.indexOf("<customElement");
-  const splitAt = customIdx !== -1 ? customIdx : (closeIdx === -1 ? vdNode.full.length : closeIdx);
-  const vdOwnPart = vdNode.full.slice(0, splitAt);
-  const vdNestedAndClose = vdNode.full.slice(splitAt);
+  /* ── Patch the VolumeDiscount step ──
+   * §Live-org fix — mirrors lib/pricing-rules/tier-based/create/canvasBuilder.ts's own proven fix exactly: a
+   * prior version of this block split `vdNode.full` at its first `<customElement>` tag (`vdOwnPart` /
+   * `vdNestedAndClose`) and patched ONLY `vdOwnPart`, leaving everything from the first `<customElement>`
+   * onward byte-for-byte untouched. If this donor declares VolumeDiscount's own `LookUpId`/
+   * `PriceAdjustmentScheduleId`/`InputUnitPrice` parameters INSIDE that `<customElement>` (the same standard
+   * Decision-Table-lookup wrapper already proven for ListPrice above, and for VolumeTierDiscount in the
+   * sibling Tier-Based module against this SAME donor), every `patchParamValue`/`patchParamType` call below
+   * would silently match nothing (a no-op `.replace()`) and the untouched nested remainder would carry the
+   * donor's original values straight through graph construction, pruning, assembly, and reparse.
+   * `patchParamValue`/`patchParamType` are already plain text-regex operations with no customElement
+   * awareness of their own, so there is no correctness reason to split before patching — every patch below
+   * now runs over the step's WHOLE text, and nothing is reassembled afterward since nothing was split out.
+   *
+   * §Live-org fix — uses `stripIds` (id-only), NOT `stripIdsAndParentStep`: mirrors Tier-Based's own
+   * precedent for the twin action type in this SAME donor family — VolumeDiscount's own `<parentStep>` is
+   * preserved here verbatim, donor value and donor position, never stripped, invented, or moved (see
+   * `stripIdsAndParentStep`'s own doc comment above). None of the `patchParamValue`/`patchParamType` calls
+   * below can touch it either way — they only ever match text following a specific `<name>PARAM</name>`
+   * tag, never `<parentStep>`.
+   */
+  const inputUnitPriceNameIdx = vdNode.full.indexOf("<name>InputUnitPrice</name>");
+  const customElementIdx = vdNode.full.indexOf("<customElement");
+  const donorInputUnitPriceScope = inputUnitPriceNameIdx === -1
+    ? "(not found)"
+    : (customElementIdx !== -1 && inputUnitPriceNameIdx > customElementIdx ? "customElement-nested" : "top-level");
 
-  let vdOwnPatched = stripIdsAndParentStep(vdOwnPart);
-  vdOwnPatched = patchParamValue(vdOwnPatched, "LookUpId", vtdLookup.id);
-  if (vtdLookup.apiName) vdOwnPatched = patchParamValue(vdOwnPatched, "LookUpApiName", vtdLookup.apiName);
-  if (vtdLookup.name) vdOwnPatched = patchParamValue(vdOwnPatched, "LookUpName", vtdLookup.name);
+  const vdBindingsBefore = collectFieldMap(vdNode.full);
+  let vdPatched = stripIds(vdNode.full);
+  vdPatched = patchParamValue(vdPatched, "LookUpId", vtdLookup.id);
+  if (vtdLookup.apiName) vdPatched = patchParamValue(vdPatched, "LookUpApiName", vtdLookup.apiName);
+  if (vtdLookup.name) vdPatched = patchParamValue(vdPatched, "LookUpName", vtdLookup.name);
+  const vdBindingsAfterLookupPatch = collectFieldMap(vdPatched);
+  warnings.push(formatDecisionTableMappingDiagnostic({
+    pricingTypeLabel: "VOLUME", actionType: "VolumeDiscount", table: vtdResolution.table, mechanism: vtdResolution.mechanism,
+    before: { lookUpId: vdBindingsBefore.get("LookUpId") ?? null, lookUpApiName: vdBindingsBefore.get("LookUpApiName") ?? null, lookUpName: vdBindingsBefore.get("LookUpName") ?? null },
+    after: { lookUpId: vdBindingsAfterLookupPatch.get("LookUpId") ?? null, lookUpApiName: vdBindingsAfterLookupPatch.get("LookUpApiName") ?? null, lookUpName: vdBindingsAfterLookupPatch.get("LookUpName") ?? null },
+  }));
   // Every deployment creates a NEW PriceAdjustmentSchedule — a donor's hardcoded schedule Constant is
   // always wrong. Force it to a Parameter bound to the runtime context variable instead.
-  vdOwnPatched = patchParamType(vdOwnPatched, "PriceAdjustmentScheduleId", "Parameter");
-  vdOwnPatched = patchParamValue(vdOwnPatched, "PriceAdjustmentScheduleId", "PriceAdjustmentSchedule");
+  vdPatched = patchParamType(vdPatched, "PriceAdjustmentScheduleId", "Parameter");
+  vdPatched = patchParamValue(vdPatched, "PriceAdjustmentScheduleId", "PriceAdjustmentSchedule");
   if (donorInputUnitPrice !== targetInputUnitPriceValue) {
-    vdOwnPatched = patchParamValue(vdOwnPatched, "InputUnitPrice", targetInputUnitPriceValue);
+    // §Pricing-waterfall alignment (see the file-level fix note above) — VolumeDiscount's own InputUnitPrice
+    // binding, patched here to the exact value the (untouched, verbatim) ListPrice step already publishes,
+    // never the other way around.
+    warnings.push(`VolumeDiscount.InputUnitPrice patched from "${donorInputUnitPrice ?? "(none)"}" (${donorInputUnitPriceScope}) to "${targetInputUnitPriceValue}" to match the selected ListPrice [${lpNode.occurrenceIndex}]'s own real published output — ListPrice itself was not modified.`);
+    vdPatched = patchParamValue(vdPatched, "InputUnitPrice", targetInputUnitPriceValue);
   }
-  const vdXml = vdOwnPatched + vdNestedAndClose;
+  const vdXml = vdPatched;
+
+  // §Live-org fix — authoritative assertion, immediately after patching and before this fragment is used
+  // for anything else, so a future regression fails at the exact point the patch happened rather than
+  // resurfacing as a confusing mismatch after graph construction/pruning/assembly/reparse.
+  const vdXmlInputUnitPrice = collectFieldMap(vdXml).get("InputUnitPrice") ?? null;
+  if (donorInputUnitPrice !== targetInputUnitPriceValue && vdXmlInputUnitPrice !== targetInputUnitPriceValue) {
+    fatalErrors.push(
+      `VOLUME_DISCOUNT_PATCH_LOST_BEFORE_SERIALIZATION: the InputUnitPrice patch did not take effect on the selected VolumeDiscount fragment. ` +
+      `Original InputUnitPrice: "${donorInputUnitPrice ?? "(none)"}" (${donorInputUnitPriceScope}). Target value: "${targetInputUnitPriceValue}". ` +
+      `Patched fragment's InputUnitPrice reads: "${vdXmlInputUnitPrice ?? "(none)"}". Selected VolumeDiscount occurrence: ${vdNode.occurrenceIndex}. ` +
+      "This means patchParamValue found no matching <name>InputUnitPrice</name> parameter to rewrite in the patched text.",
+    );
+    return { success: false, fatalErrors, warnings };
+  }
 
   const requiredInputs = ["PriceAdjustmentScheduleId"];
   const vdFieldMap = collectFieldMap(vdXml);
@@ -355,17 +520,26 @@ export async function buildVolumeCanvas(
 
   const idFreeSteps = stepsRegion.replace(/<id>[\s\S]*?<\/id>/g, "");
 
-  const generatedIdentifiers: { tag: string; value: string }[] = [
-    { tag: "fullName", value: ctx.apiName }, { tag: "label", value: ctx.procedureName },
-    { tag: "developerName", value: ctx.apiName }, { tag: "name", value: ctx.apiName },
-    { tag: "expressionSetDefinition", value: ctx.apiName },
-  ];
-
+  /**
+   * §Active ExpressionSetVersion identity collision investigation (9QMak000000t6nxGAA) — mirrors
+   * lib/pricing-rules/tier-based/create/canvasBuilder.ts's own fix exactly: `<fullName>` is the
+   * ExpressionSetVersion's OWN per-version identity and carries a numeric version suffix in real
+   * Salesforce metadata — unlike `<developerName>`/`<name>`/`<expressionSetDefinition>`, which are the
+   * shared, version-INDEPENDENT parent identity and correctly stay as the bare `apiName` across every
+   * version. This function used to regenerate `<fullName>` as the bare apiName too (no suffix at all),
+   * meaning every version ever built for the same procedure carried the IDENTICAL `<fullName>` —
+   * Salesforce's real per-version differentiator was never produced. Downstream,
+   * `validateExpressionSetUniquenessAgainstOrg`'s collision search (which expects a version-suffixed
+   * identity — see its own tests) then matched ANY existing sibling version sharing that bare name,
+   * including an unrelated ACTIVE one, and reported a false "Active ExpressionSetVersion identity
+   * collision" — blocking every subsequent legitimate new-version build. Never invents a suffix when the
+   * donor's own fullName has none.
+   */
   function regenerate(envelope: string): string {
     let out = envelope;
     out = out.replace(/<label>[\s\S]*?<\/label>/, `<label>${escapeXml(ctx.procedureName)}</label>`);
     if (ctx.description) out = out.replace(/<description>[\s\S]*?<\/description>/, `<description>${escapeXml(ctx.description)}</description>`);
-    out = out.replace(/<fullName>[\s\S]*?<\/fullName>/g, `<fullName>${escapeXml(ctx.apiName)}</fullName>`);
+    out = out.replace(/<fullName>([\s\S]*?)<\/fullName>/g, (_m, donorValue: string) => `<fullName>${escapeXml(regenerateVersionedFullName(donorValue, ctx.apiName, ctx.versionNumber))}</fullName>`);
     out = out.replace(/<developerName>[\s\S]*?<\/developerName>/, `<developerName>${escapeXml(ctx.apiName)}</developerName>`);
     out = out.replace(/<name>[\s\S]*?<\/name>/, `<name>${escapeXml(ctx.apiName)}</name>`);
     out = out.replace(/<expressionSetDefinition>[\s\S]*?<\/expressionSetDefinition>/, `<expressionSetDefinition>${escapeXml(ctx.apiName)}</expressionSetDefinition>`);
@@ -408,12 +582,97 @@ export async function buildVolumeCanvas(
   const finalVdNode = finalVdNodes[0];
   const finalVdFields = collectFieldMap(finalVdNode.full);
   const finalInputUnitPrice = finalVdFields.get("InputUnitPrice") ?? null;
-  if (finalInputUnitPrice !== targetInputUnitPriceValue) {
-    fatalErrors.push(`Final composed canvas's VolumeDiscount InputUnitPrice ("${finalInputUnitPrice}") does not match the expected value ("${targetInputUnitPriceValue}").`);
+
+  // §Live-org fix — mirrors lib/pricing-rules/tier-based/create/canvasBuilder.ts's own proven identity-based
+  // re-verification against the FINAL, reparsed, post-prune/post-patch XML. occurrenceIndex is NOT a stable
+  // identity across pruning: `pruneXmlToRequiredOccurrences` physically removes entire unrelated root-branch
+  // <steps> spans, and `extractStepGraph` recomputes every occurrenceIndex fresh via a pre-order walk of
+  // whatever <steps> tags remain — so a step that fully survives pruning is still renumbered once its
+  // preceding unrelated siblings are gone. The strongest identity actually available here is
+  // `actionType === "ListPrice"` itself: the earlier `lpCount !== 1` gate (on `prunedGraph`, before
+  // serialization) and the `finalGraph.length !== prunedGraph.length` round-trip check below already
+  // GUARANTEE the final canvas contains exactly one ListPrice step, so filtering by actionType here is
+  // unambiguous BY CONSTRUCTION. Reinforced by a LookUpId cross-check against `lpLookup.lookUpId` (the value
+  // THIS build just patched in), confirming it's genuinely the patched clone, not a stray leftover.
+  const finalLpCandidates = finalGraph.filter(n => n.actionType === "ListPrice");
+  if (finalLpCandidates.length === 0) {
+    fatalErrors.push(
+      `LISTPRICE_NOT_PRESENT: final composed canvas contains no ListPrice step at all. Originally selected ListPrice: donor occurrence [${lpNode.occurrenceIndex}] (${lpNode.pathLabel}), outputs: ${donorLpOutputValues.join(", ") || "(none)"}.`,
+    );
     return { success: false, fatalErrors, warnings };
   }
+  if (finalLpCandidates.length > 1) {
+    fatalErrors.push(
+      `LISTPRICE_IDENTITY_MISMATCH: final composed canvas unexpectedly contains ${finalLpCandidates.length} ListPrice steps (final occurrences: ${finalLpCandidates.map(n => n.occurrenceIndex).join(", ")}) — expected exactly one; refusing to guess which is the selected one.`,
+    );
+    return { success: false, fatalErrors, warnings };
+  }
+  const finalLpNode = finalLpCandidates[0];
+  const finalLpFields = collectFieldMap(finalLpNode.full);
+  // §Task 8 — deterministic Decision Table mapping must hold all the way through to the FINAL, reparsed
+  // XML, not just the intermediate patched fragment. Checks LookUpId, LookUpApiName, AND LookUpName against
+  // the resolved "Price Book Entries V2" table under ONE fatal code, since any of them drifting from the
+  // resolved table is the SAME underlying failure: the final canvas no longer reflects the deterministic
+  // ListPrice -> Price Book Entries V2 mapping (this is the exact class of bug a live run surfaced as
+  // "List Price is currently mapped/displayed as 'Price Book Entries'").
+  const lpMappingMismatches: string[] = [];
+  if (finalLpFields.get("LookUpId") !== lpLookup.lookUpId) {
+    lpMappingMismatches.push(`LookUpId ("${finalLpFields.get("LookUpId") ?? "(none)"}") does not equal the resolved table's Id ("${lpLookup.lookUpId ?? "(none)"}")`);
+  }
+  if (pbDtResolution.table.developerName !== null && finalLpFields.get("LookUpApiName") !== pbDtResolution.table.developerName) {
+    lpMappingMismatches.push(`LookUpApiName ("${finalLpFields.get("LookUpApiName") ?? "(none)"}") does not equal the resolved table's DeveloperName ("${pbDtResolution.table.developerName}")`);
+  }
+  if (finalLpFields.get("LookUpName") !== lpLookup.lookUpName) {
+    lpMappingMismatches.push(`LookUpName ("${finalLpFields.get("LookUpName") ?? "(none)"}") does not equal the resolved table's name ("${lpLookup.lookUpName}")`);
+  }
+  if (lpMappingMismatches.length > 0) {
+    fatalErrors.push(`LISTPRICE_DECISION_TABLE_MAPPING_MISMATCH: final ListPrice does not reflect the resolved "${PRICE_BOOK_DECISION_TABLE_LABEL}" Decision Table (Id ${pbDtResolution.table.id}, matched via ${pbDtResolution.mechanism}): ${lpMappingMismatches.join("; ")}.`);
+    return { success: false, fatalErrors, warnings };
+  }
+  const finalLpOutputValues = [...getTopLevelParameterBlocks(finalLpNode.full), ...getNestedCustomElementParameterBlocks(finalLpNode.full)]
+    .filter(b => getTagValue(b.block, "output") === "true" && getTagValue(b.block, "type") === "Parameter")
+    .map(b => getParamValue(b.block))
+    .filter((v): v is string => !!v);
+  if (JSON.stringify([...finalLpOutputValues].sort()) !== JSON.stringify([...donorLpOutputValues].sort())) {
+    fatalErrors.push(
+      `LISTPRICE_OUTPUT_CHANGED: final ListPrice [final occurrence ${finalLpNode.occurrenceIndex}, originally donor occurrence ${lpNode.occurrenceIndex}] outputs (${finalLpOutputValues.join(", ") || "(none)"}) no longer match the originally-selected donor outputs (${donorLpOutputValues.join(", ") || "(none)"}) — ListPrice must remain verbatim; something rewrote it.`,
+    );
+    return { success: false, fatalErrors, warnings };
+  }
+  if (!finalLpOutputValues.includes(targetInputUnitPriceValue)) {
+    fatalErrors.push(
+      `LISTPRICE_OUTPUT_CHANGED: final ListPrice [final occurrence ${finalLpNode.occurrenceIndex}] does not actually publish the resolved target value "${targetInputUnitPriceValue}" among its final output(s) (${finalLpOutputValues.join(", ") || "(none)"}) — refusing to trust an unproven binding.`,
+    );
+    return { success: false, fatalErrors, warnings };
+  }
+  if (finalInputUnitPrice !== targetInputUnitPriceValue) {
+    fatalErrors.push(`VOLUME_DISCOUNT_INPUT_MISMATCH: final composed canvas's VolumeDiscount InputUnitPrice ("${finalInputUnitPrice}") does not match the expected value ("${targetInputUnitPriceValue}").`);
+    return { success: false, fatalErrors, warnings };
+  }
+  warnings.push(
+    `Final ListPrice identity verified: donor occurrence [${lpNode.occurrenceIndex}] (${lpNode.pathLabel}) -> final occurrence [${finalLpNode.occurrenceIndex}] (${finalLpNode.pathLabel})` +
+    `${finalLpNode.occurrenceIndex !== lpNode.occurrenceIndex ? " — occurrence renumbered by pruning, as expected; not a failure" : ""}. ` +
+    `ListPrice output(s): ${finalLpOutputValues.join(", ") || "(none)"}. VolumeDiscount InputUnitPrice: "${finalInputUnitPrice}". Validation: PASS.`,
+  );
   if (finalVdFields.get("PriceAdjustmentScheduleId") !== "PriceAdjustmentSchedule") {
     fatalErrors.push(`Final composed canvas's VolumeDiscount PriceAdjustmentScheduleId binding ("${finalVdFields.get("PriceAdjustmentScheduleId")}") is not bound to the runtime "PriceAdjustmentSchedule" context variable.`);
+    return { success: false, fatalErrors, warnings };
+  }
+  // §Task 8 — the deterministic "Volume Discount Entries" Decision Table mapping must hold in the FINAL,
+  // reparsed XML too, not just the intermediate patched fragment. Single fatal code covering LookUpId/
+  // LookUpApiName/LookUpName — any of them drifting is the SAME underlying mapping failure.
+  const vdMappingMismatches: string[] = [];
+  if (finalVdFields.get("LookUpId") !== vtdLookup.id) {
+    vdMappingMismatches.push(`LookUpId ("${finalVdFields.get("LookUpId") ?? "(none)"}") does not equal the resolved table's Id ("${vtdLookup.id}")`);
+  }
+  if (vtdResolution.table.developerName !== null && finalVdFields.get("LookUpApiName") !== vtdResolution.table.developerName) {
+    vdMappingMismatches.push(`LookUpApiName ("${finalVdFields.get("LookUpApiName") ?? "(none)"}") does not equal the resolved table's DeveloperName ("${vtdResolution.table.developerName}")`);
+  }
+  if (finalVdFields.get("LookUpName") !== vtdLookup.name) {
+    vdMappingMismatches.push(`LookUpName ("${finalVdFields.get("LookUpName") ?? "(none)"}") does not equal the resolved table's name ("${vtdLookup.name}")`);
+  }
+  if (vdMappingMismatches.length > 0) {
+    fatalErrors.push(`VOLUME_DISCOUNT_DECISION_TABLE_MAPPING_MISMATCH: final VolumeDiscount does not reflect the resolved "${VOLUME_DISCOUNT_DECISION_TABLE_LABEL}" Decision Table (Id ${vtdLookup.id}, matched via ${vtdResolution.mechanism}): ${vdMappingMismatches.join("; ")}.`);
     return { success: false, fatalErrors, warnings };
   }
   const finalDangling = findDanglingParentStepReferences(finalGraph);
@@ -431,6 +690,15 @@ export async function buildVolumeCanvas(
   const variableCount = (assembledFileXml.match(/<variables>/g) ?? []).length;
   const outboundFullNameMatch = (regeneratedBefore + regeneratedAfter).match(/<fullName>([\s\S]*?)<\/fullName>/);
   const outboundEsdMatch = (regeneratedBefore + regeneratedAfter).match(/<expressionSetDefinition>([\s\S]*?)<\/expressionSetDefinition>/);
+  // §Active ExpressionSetVersion identity collision investigation — `fullName`'s value is read back from
+  // the ACTUAL regenerated (version-suffixed) envelope text, never re-guessed as the bare `ctx.apiName`:
+  // this is what `createPipeline.ts` feeds into `validateExpressionSetUniquenessAgainstOrg`'s collision
+  // search, so it must reflect the real, per-version identity that will actually be deployed.
+  const generatedIdentifiers: { tag: string; value: string }[] = [
+    { tag: "fullName", value: outboundFullNameMatch ? outboundFullNameMatch[1] : ctx.apiName }, { tag: "label", value: ctx.procedureName },
+    { tag: "developerName", value: ctx.apiName }, { tag: "name", value: ctx.apiName },
+    { tag: "expressionSetDefinition", value: ctx.apiName },
+  ];
 
   return {
     success: true, fatalErrors: [], warnings,

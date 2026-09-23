@@ -9,6 +9,7 @@ import { buildAttributePricingSalesforceRecords, type SalesforceRecordLink } fro
 import type {
   AttributeBasedAnalysisResult,
   AttributeBasedMappingOverrides,
+  CombinationRulePlanRow,
   DiscoveredAttribute,
   DiscoveredProduct,
   ExtractedPricingRequirement,
@@ -359,7 +360,8 @@ export default function AttributeBasedPricingCreate({ isDark }: { isDark: boolea
   }
 
   async function handleConfirmCreate(
-    product: DiscoveredProduct, discoveredAttributes: DiscoveredAttribute[], rules: PricingRulePlanRow[], excludedAttributes: string[],
+    product: DiscoveredProduct, discoveredAttributes: DiscoveredAttribute[], rules: PricingRulePlanRow[],
+    combinationRules: CombinationRulePlanRow[], excludedAttributes: string[],
     decisionsOverride?: Record<string, AdjustmentDecisionOverride>,
   ) {
     setCreating(true);
@@ -371,7 +373,7 @@ export default function AttributeBasedPricingCreate({ isDark }: { isDark: boolea
       const decisions = decisionsOverride ?? adjustmentDecisions;
       const res = await postCreateStream(
         {
-          product, discoveredAttributes, rules, excludedAttributes, procedureName, activate: true,
+          product, discoveredAttributes, rules, combinationRules, excludedAttributes, procedureName, activate: true,
           ...(Object.keys(decisions).length > 0 ? { adjustmentDecisions: decisions } : {}),
         },
         event => setCreateEvents(prev => [...prev, event]),
@@ -392,7 +394,7 @@ export default function AttributeBasedPricingCreate({ isDark }: { isDark: boolea
     if (!result || result.stage !== "ready-for-review") return;
     const merged = { ...adjustmentDecisions, ...decisions };
     setAdjustmentDecisions(merged);
-    void handleConfirmCreate(result.product, result.discoveredAttributes, result.rules, result.excludedAttributes, merged);
+    void handleConfirmCreate(result.product, result.discoveredAttributes, result.rules, result.combinationRules, result.excludedAttributes, merged);
   }
 
   return (
@@ -691,7 +693,7 @@ interface AnalysisCallbacks {
   onAcceptAttributeMapping: (enteredName: string, mappedName: string, extracted: ExtractedPricingRequirement) => void;
   onIgnoreAttribute: (enteredName: string, extracted: ExtractedPricingRequirement) => void;
   onSubmitMapping: (overrides: AttributeMappingOverridesPayload, extracted: ExtractedPricingRequirement) => void;
-  onConfirmCreate: (product: DiscoveredProduct, discoveredAttributes: DiscoveredAttribute[], rules: PricingRulePlanRow[], excludedAttributes: string[]) => void;
+  onConfirmCreate: (product: DiscoveredProduct, discoveredAttributes: DiscoveredAttribute[], rules: PricingRulePlanRow[], combinationRules: CombinationRulePlanRow[], excludedAttributes: string[]) => void;
   onResolveAdjustmentConflicts: (decisions: Record<string, AdjustmentDecisionOverride>) => void;
   onResolveBasePriceDecision: (decision: "USE_EXISTING" | "USE_NEW", extracted: ExtractedPricingRequirement) => void;
 }
@@ -857,6 +859,25 @@ function ResultStage({
         </div>
       );
 
+    case "combination-unresolved":
+      return (
+        <WarnPanel isDark={isDark} title="Combination Pricing Could Not Be Resolved">
+          <p style={{ fontSize: 12.5, color: t.body, margin: 0 }}>
+            {result.problems.length} explicit combination-specific pricing requirement(s) in your prompt for {result.product.name} could not be safely matched against real Salesforce data. Restate the prompt so each combination names a real attribute/value with a clear adjustment amount, then resubmit.
+          </p>
+          <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 8 }}>
+            {result.problems.map((p, i) => (
+              <li key={i} style={{ fontSize: 12.5, color: t.warn }}>
+                <div className="flex items-start gap-2">
+                  <span style={{ flexShrink: 0, marginTop: 5, width: 4, height: 4, borderRadius: "50%", background: t.warn }} />
+                  <span>&ldquo;{p.rawText}&rdquo; — {p.reason}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </WarnPanel>
+      );
+
     case "attribute-mismatch":
       return (
         <WarnPanel isDark={isDark} title="Attribute Mismatch">
@@ -983,11 +1004,37 @@ function ResultStage({
             </table>
           </div>
 
-          {(result.extracted.conditions.length > 0 || result.extracted.combinations.length > 0 || result.extracted.otherNotes.length > 0) && (
+          {result.combinationRules.length > 0 && (
+            <div style={{ overflowX: "auto", borderRadius: 10, border: `1px solid ${t.border}` }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                <thead>
+                  <tr style={{ background: t.surfaceAlt }}>
+                    {["Combination (all attributes must match together)", "Adjustment Type", "Adjustment"].map(h => (
+                      <th key={h} style={{ textAlign: h === "Adjustment" ? "right" : "left", padding: "8px 12px", color: t.dim, fontWeight: 700, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.3, borderBottom: `1px solid ${t.border}` }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.combinationRules.map((c, i) => (
+                    <tr key={i} style={{ borderBottom: i < result.combinationRules.length - 1 ? `1px solid ${t.border}` : undefined }}>
+                      <td style={{ padding: "8px 12px", color: t.body }}>{c.members.map(m => `${m.attributeLabel} = ${m.valueLabel}`).join(" AND ")}</td>
+                      <td style={{ padding: "8px 12px", color: t.dim }}>{c.adjustmentType === "fixed" ? "Fixed" : c.adjustmentType === "percentage" ? "Percentage" : "Override Price"}</td>
+                      <td style={{ padding: "8px 12px", color: t.heading, textAlign: "right", fontWeight: 700 }}>{formatAdjustment(c.adjustmentType, c.adjustment)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p style={{ fontSize: 11, color: t.dim, margin: "6px 12px 8px" }}>
+                Explicit combination-specific pricing — each row requires ALL of its listed attribute values to match simultaneously; it does not apply if only some of them match.
+              </p>
+            </div>
+          )}
+
+          {(result.extracted.conditions.length > 0 || result.extracted.otherNotes.length > 0) && (
             <div style={{ borderRadius: 10, border: `1px solid ${t.border}`, background: t.surfaceAlt, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
               <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase", color: t.dim, margin: 0 }}>Noted for later — not yet applied</p>
               <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 3 }}>
-                {[...result.extracted.conditions, ...result.extracted.combinations, ...result.extracted.otherNotes].map((n, i) => (
+                {[...result.extracted.conditions, ...result.extracted.otherNotes].map((n, i) => (
                   <li key={i} className="flex items-start gap-2" style={{ fontSize: 11.5, color: t.body }}>
                     <span style={{ flexShrink: 0, marginTop: 5, width: 4, height: 4, borderRadius: "50%", background: t.accent }} />
                     <span>{n}</span>
@@ -1025,6 +1072,9 @@ function ResultStage({
               {newToCreate.length > 0 && <SummaryRow label="New values to create" t={t} items={newToCreate.map(r => r.valueLabel)} icon="plus" color={t.accent} />}
               {result.excludedAttributes.length > 0 && <SummaryRow label="Excluded" t={t} items={result.excludedAttributes} icon="x" color={t.dim} />}
               <div style={{ fontSize: 12.5, color: t.body }}><strong style={{ color: t.heading }}>Pricing Rules:</strong> {result.rules.length} rule{result.rules.length === 1 ? "" : "s"}</div>
+              {result.combinationRules.length > 0 && (
+                <div style={{ fontSize: 12.5, color: t.body }}><strong style={{ color: t.heading }}>Combination-Specific Rules:</strong> {result.combinationRules.length} rule{result.combinationRules.length === 1 ? "" : "s"}</div>
+              )}
 
               {!confirmed && (
                 <div style={{ paddingTop: 4 }}>
@@ -1032,7 +1082,7 @@ function ResultStage({
                     label="Create in Salesforce"
                     icon="zap"
                     isDark={isDark}
-                    onClick={() => onConfirmCreate(result.product, result.discoveredAttributes, result.rules, result.excludedAttributes)}
+                    onClick={() => onConfirmCreate(result.product, result.discoveredAttributes, result.rules, result.combinationRules, result.excludedAttributes)}
                   />
                 </div>
               )}
@@ -1042,7 +1092,7 @@ function ResultStage({
           {confirmed && (
             <CreationProgress
               isDark={isDark} analyzeSteps={result.steps} createEvents={createEvents} createResult={createResult} createRequestError={createRequestError}
-              onRetry={() => onConfirmCreate(result.product, result.discoveredAttributes, result.rules, result.excludedAttributes)}
+              onRetry={() => onConfirmCreate(result.product, result.discoveredAttributes, result.rules, result.combinationRules, result.excludedAttributes)}
               onResolveAdjustmentConflicts={onResolveAdjustmentConflicts}
             />
           )}

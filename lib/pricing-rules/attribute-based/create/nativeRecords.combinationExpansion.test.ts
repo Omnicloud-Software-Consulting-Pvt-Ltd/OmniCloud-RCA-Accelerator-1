@@ -27,7 +27,7 @@ import {
   detectCombinationNameCollisions, estimateCombinationApiCost, planAttributeCombinationExpansion,
   type AttributePricedOption, type AttributeBasedPricingSchema, type AttributeContext,
 } from "./nativeRecords";
-import type { ProcedureStepLite } from "../types";
+import type { CombinationRulePlanRow, ProcedureStepLite } from "../types";
 
 function opt(attributeName: string, value: string, adjustmentType: string | null, adjustmentValue: number | null, ruleId = `rule-${attributeName}-${value}`): AttributePricedOption {
   return { attributeName, attributeLabel: attributeName, value, valueLabel: value, ruleId, adjustmentId: `adj-${attributeName}-${value}`, adjustmentType, adjustmentValue };
@@ -241,7 +241,20 @@ function buildMockClient(opts: {
   return client;
 }
 
-test("TEST 13 — end to end: RAM=32GB(+100) and Storage=1TB(+500), both discovered, produce exactly one 2-way combination rule with combined value +600", async () => {
+/** §Combination-expansion architecture fix — `expandAttributeCombinationRules` now materializes ONLY the
+ * explicit combinations `requestedCombinations` names (already resolved against real Salesforce data by
+ * `analyze.ts`'s Step 8.5), never rediscovering every historical single-attribute option and cross-producting
+ * them. This is the exact shape `createPipeline.ts` builds from `input.combinationRules`. */
+function explicitCombo(members: { attributeName: string; value: string }[], adjustmentType: string, adjustment: number): CombinationRulePlanRow {
+  return {
+    members: members.map(m => ({ attributeName: m.attributeName, attributeLabel: m.attributeName, value: m.value, valueLabel: m.value })),
+    adjustmentType: adjustmentType as CombinationRulePlanRow["adjustmentType"],
+    adjustment,
+    rawText: members.map(m => `${m.attributeName}=${m.value}`).join(" AND "),
+  };
+}
+
+test("TEST 13 — an explicit RAM=32GB AND Storage=1TB combination request creates exactly one combination rule with the STATED adjustment (never summed from RAM/Storage's own individual adjustments)", async () => {
   const createdRules: Record<string, unknown>[] = [];
   const createdConditions: Record<string, unknown>[] = [];
   const createdAdjustments: Record<string, unknown>[] = [];
@@ -253,20 +266,21 @@ test("TEST 13 — end to end: RAM=32GB(+100) and Storage=1TB(+500), both discove
   const schema = buildSchema();
   const contexts = buildContexts();
   const steps: ProcedureStepLite[] = [];
+  const requested = [explicitCombo([{ attributeName: "RAM", value: "32GB" }, { attributeName: "Storage", value: "1TB" }], "fixed", 5000)];
 
   const result = await expandAttributeCombinationRules(
-    client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: "psm-1", scheduleId: "sched-1" }, contexts, steps,
+    client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: "psm-1", scheduleId: "sched-1" }, contexts, requested, steps,
   );
 
-  assert.equal(result.discoveredOptions.length, 2, `expected 2 discovered single-attribute options; got: ${JSON.stringify(result.discoveredOptions)}`);
-  assert.equal(result.plans.length, 1, "exactly one 2-way combination from 2 single-attribute options");
+  assert.equal(result.discoveredOptions.length, 0, "no discovery happens for the explicit path — nothing is rediscovered/cross-produced");
+  assert.equal(result.plans.length, 1, "exactly the one requested combination — never more, never a Cartesian product");
   assert.equal(result.plans[0].skippedReason, null);
   assert.equal(result.plans[0].combinedAdjustmentType, "Amount");
-  assert.equal(result.plans[0].combinedAdjustmentValue, 600);
+  assert.equal(result.plans[0].combinedAdjustmentValue, 5000, "the STATED combination adjustment, never summed from RAM's/Storage's own individual per-attribute adjustments");
   assert.equal(result.createdCount, 1);
   assert.equal(createdRules.length, 1, "exactly one new AttributeBasedAdjRule created for the combination");
   assert.equal(createdAdjustments.length, 1);
-  assert.equal(createdAdjustments[0].AdjustmentValue, 600);
+  assert.equal(createdAdjustments[0].AdjustmentValue, 5000);
   assert.ok(createdConditions.length >= 2, "the combination rule needs a condition for EVERY price-impacting attribute (RAM + Storage)");
 });
 
@@ -281,23 +295,21 @@ test("TEST 14 — the combination rule is REUSED BY CONTENT (never duplicated) w
   const schema = buildSchema();
   const contexts = buildContexts();
   const steps: ProcedureStepLite[] = [];
+  const requested = [explicitCombo([{ attributeName: "RAM", value: "32GB" }, { attributeName: "Storage", value: "1TB" }], "fixed", 5000)];
 
   const result = await expandAttributeCombinationRules(
-    client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: "psm-1", scheduleId: "sched-1" }, contexts, steps,
+    client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: "psm-1", scheduleId: "sched-1" }, contexts, requested, steps,
   );
 
   assert.equal(createdRules.length, 0, "must reuse the existing combination rule by content, never create a duplicate merely because its Name differs");
   assert.equal(result.plans[0].ruleId, "existing-combo-rule");
 });
 
-test("TEST 15 — fewer than 2 single-attribute options: reports 0 combinations, makes zero writes", async () => {
+test("TEST 15 — no explicit combination requested: zero discovery, zero Cartesian product, zero writes, immediate return", async () => {
   const createdRules: Record<string, unknown>[] = [];
   const client = {
-    async describeObject() { return { name: "x", label: "", labelPlural: "", recordTypeInfos: [], urls: {}, fields: [] } as unknown as DescribeResult; },
-    async query(soql: string) {
-      if (soql.includes("FROM AttributeBasedAdjRule WHERE Product2Id")) return { records: [] };
-      return { records: [] };
-    },
+    async describeObject() { throw new Error("must not describe anything when no combination was requested"); },
+    async query(soql: string) { throw new Error(`must not query anything when no combination was requested: ${soql}`); },
     async createRecord(objectName: string) { createdRules.push({ objectName }); return { id: "x" }; },
     logDebug() { /* no-op */ },
   } as unknown as SalesforceClient;
@@ -306,10 +318,31 @@ test("TEST 15 — fewer than 2 single-attribute options: reports 0 combinations,
   const steps: ProcedureStepLite[] = [];
 
   const result = await expandAttributeCombinationRules(
-    client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: "psm-1", scheduleId: "sched-1" }, contexts, steps,
+    client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: "psm-1", scheduleId: "sched-1" }, contexts, [], steps,
   );
   assert.equal(result.plans.length, 0);
+  assert.equal(result.discoveredOptions.length, 0);
   assert.equal(createdRules.length, 0);
+});
+
+test("TEST 15b — three explicit combinations create exactly three combination rules, never a Cartesian product of the underlying attribute values", async () => {
+  const createdRules: Record<string, unknown>[] = [];
+  const client = buildMockClient({ onCreateRule: p => createdRules.push(p) });
+  const schema = buildSchema();
+  const contexts = buildContexts();
+  const steps: ProcedureStepLite[] = [];
+  const requested = [
+    explicitCombo([{ attributeName: "RAM", value: "32GB" }, { attributeName: "Storage", value: "1TB" }], "fixed", 5000),
+    explicitCombo([{ attributeName: "RAM", value: "64GB" }, { attributeName: "Storage", value: "2TB" }], "fixed", 9000),
+    explicitCombo([{ attributeName: "RAM", value: "16GB" }, { attributeName: "Storage", value: "512GB" }], "percentage", 15),
+  ];
+
+  const result = await expandAttributeCombinationRules(
+    client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: "psm-1", scheduleId: "sched-1" }, contexts, requested, steps,
+  );
+
+  assert.equal(result.plans.length, 3, "exactly the 3 explicitly requested combinations — never a permutation of every attribute value");
+  assert.equal(createdRules.length, 3);
 });
 
 /* ── Offline forensic-analysis fix: name-collision detection + API-cost estimation (all pure, no Salesforce) ──

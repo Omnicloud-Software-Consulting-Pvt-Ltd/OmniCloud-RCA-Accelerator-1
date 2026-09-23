@@ -20,9 +20,12 @@ import type {
   AttributeBasedMappingOverrides,
   AttributeMismatchDetail,
   AttributeValueRow,
+  CombinationResolutionProblem,
+  CombinationRulePlanRow,
   DiscoveredAttribute,
   ExtractedAttribute,
   ExtractedAdjustmentType,
+  ExtractedCombination,
   ExtractedPricingRequirement,
   NameSuggestion,
   PricingRulePlanRow,
@@ -36,6 +39,87 @@ function normalizeForMatch(s: string): string {
 function findAttribute(attributes: DiscoveredAttribute[], name: string): DiscoveredAttribute | undefined {
   const key = normalizeForMatch(name);
   return attributes.find(a => normalizeForMatch(a.name) === key || normalizeForMatch(a.label) === key);
+}
+
+/**
+ * §Combination-expansion architecture fix (Step 8.5) — resolves every explicit combination requirement
+ * from the prompt (`extracted.combinations`) against REAL Salesforce data, using the SAME
+ * case/whitespace-insensitive normalization (`normalizeForMatch`) Step 6/7's own attribute-value matching
+ * already uses. Fails closed — reports a problem, never guesses/substitutes — for: an unknown attribute, an
+ * unknown value, an attribute referenced twice within one combination (a product can only hold one value
+ * per attribute at a time), a value ambiguous across 2+ real values, or a combination with no stated
+ * adjustment. Identical combinations (same resolved member set) are deduplicated silently when their
+ * adjustments agree; a disagreement between duplicates is itself a fail-closed problem, never guessed.
+ */
+/** Exported for direct unit testing (pure — no Salesforce/AI dependency). */
+export function resolveExplicitCombinations(
+  combinations: ExtractedCombination[],
+  discoveredAttributes: DiscoveredAttribute[],
+): { resolved: CombinationRulePlanRow[]; problems: CombinationResolutionProblem[] } {
+  const problems: CombinationResolutionProblem[] = [];
+  const bySignature = new Map<string, CombinationRulePlanRow>();
+
+  for (const combo of combinations) {
+    const memberPlans: CombinationRulePlanRow["members"] = [];
+    const seenAttrKeys = new Set<string>();
+    let failed = false;
+
+    for (const m of combo.members) {
+      const real = findAttribute(discoveredAttributes, m.attribute);
+      if (!real) {
+        problems.push({ rawText: combo.rawText, reason: `Attribute "${m.attribute}" does not exist for this product.` });
+        failed = true;
+        continue;
+      }
+      const attrKey = normalizeForMatch(real.name);
+      if (seenAttrKeys.has(attrKey)) {
+        problems.push({ rawText: combo.rawText, reason: `Attribute "${real.label}" is referenced more than once in the same combination — a product can only have one value per attribute at a time.` });
+        failed = true;
+        continue;
+      }
+      seenAttrKeys.add(attrKey);
+
+      const vkey = normalizeForMatch(m.value);
+      const valueMatches = real.values.filter(v => normalizeForMatch(v.value) === vkey || normalizeForMatch(v.label) === vkey);
+      if (valueMatches.length === 0) {
+        problems.push({ rawText: combo.rawText, reason: `Value "${m.value}" does not exist for attribute "${real.label}" on this product.` });
+        failed = true;
+        continue;
+      }
+      if (valueMatches.length > 1) {
+        problems.push({ rawText: combo.rawText, reason: `Value "${m.value}" for attribute "${real.label}" is ambiguous — it matches ${valueMatches.length} real values (${valueMatches.map(v => v.label).join(", ")}).` });
+        failed = true;
+        continue;
+      }
+      memberPlans.push({ attributeName: real.name, attributeLabel: real.label, value: valueMatches[0].value, valueLabel: valueMatches[0].label });
+    }
+
+    if (failed) continue;
+    if (memberPlans.length < 2) {
+      problems.push({ rawText: combo.rawText, reason: "This combination resolved to fewer than 2 distinct attributes — a combination needs 2 or more." });
+      continue;
+    }
+    if (combo.adjustmentType === null || combo.adjustment === null) {
+      problems.push({ rawText: combo.rawText, reason: "No price adjustment was stated for this combination — restate it with an explicit amount." });
+      continue;
+    }
+
+    const signature = memberPlans.map(m => `${normalizeForMatch(m.attributeName)}=${normalizeForMatch(m.value)}`).sort().join("|");
+    const existing = bySignature.get(signature);
+    if (existing) {
+      if (existing.adjustmentType !== combo.adjustmentType || existing.adjustment !== combo.adjustment) {
+        problems.push({
+          rawText: combo.rawText,
+          reason: `This combination was already stated elsewhere in the prompt ("${existing.rawText}") with a DIFFERENT adjustment (${existing.adjustmentType}/${existing.adjustment} vs ${combo.adjustmentType}/${combo.adjustment}) — never resolved by guessing which one is correct.`,
+        });
+      }
+      // Identical duplicate (same members, same adjustment) — deduplicated silently, nothing to report.
+      continue;
+    }
+    bySignature.set(signature, { members: memberPlans, adjustmentType: combo.adjustmentType, adjustment: combo.adjustment, rawText: combo.rawText });
+  }
+
+  return { resolved: [...bySignature.values()], problems };
 }
 
 export interface AnalyzeInput {
@@ -257,6 +341,21 @@ export async function analyzeAttributeBasedPrompt(client: SalesforceClient, apiK
   }
   push("validate-values", "success", "All attribute values matched Salesforce and every adjustment is configured.");
 
+  /* ── Step 8.5 — resolve any EXPLICIT combination-specific pricing requirement (Case B) against real
+   * Salesforce data. §Combination-expansion architecture fix — this is what lets `createPipeline.ts`
+   * materialize ONLY the combinations the user actually asked for, never a full Cartesian product of every
+   * attribute value the product happens to have. Independent of `matched`/`rows` above: a combination may
+   * reference an attribute already priced standalone in this SAME prompt, or one priced in an earlier run
+   * entirely — always resolved against the full real `discoveredAttributes`, never just this run's own list. ── */
+  const { resolved: combinationRules, problems: combinationProblems } = resolveExplicitCombinations(extracted.combinations, discoveredAttributes);
+  if (combinationProblems.length > 0) {
+    push("validate-combinations", "error", `${combinationProblems.length} explicit combination requirement(s) could not be resolved — see details.`);
+    return { stage: "combination-unresolved", product, extracted, problems: combinationProblems, steps };
+  }
+  if (extracted.combinations.length > 0) {
+    push("validate-combinations", "success", `${combinationRules.length} explicit combination-specific pricing rule(s) resolved against real Salesforce data.`);
+  }
+
   /* ── Step 8 — generate the rule plan ── */
   const rules: PricingRulePlanRow[] = [];
   for (const { real } of matched) {
@@ -293,5 +392,5 @@ export async function analyzeAttributeBasedPrompt(client: SalesforceClient, apiK
   }
   push("generate-rules", "success", `${rules.length} pricing rule row(s) generated across ${matched.length} attribute(s).`);
 
-  return { stage: "ready-for-review", product, extracted, discoveredAttributes, rules, excludedAttributes, warnings: discoveryWarnings, steps };
+  return { stage: "ready-for-review", product, extracted, discoveredAttributes, rules, combinationRules, excludedAttributes, warnings: discoveryWarnings, steps };
 }

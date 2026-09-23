@@ -56,7 +56,7 @@ import { inspectAllExpressionSetDefinitionDonors, resolveAttributeBasedPricingDo
 import { buildFailureDiagnostics, buildLogicalFailure, classifyComponentFailures, CATEGORY_LABELS } from "./errorDiagnostics";
 import { checkAttributeBasedPricingCapacityPreflight } from "./capacityPreflight";
 import { buildSanitizedAuditLog } from "@/lib/salesforce/auditLog";
-import type { DiscoveredAttribute, DiscoveredProduct, PricingRulePlanRow, ProcedureStepLite } from "../types";
+import type { CombinationRulePlanRow, DiscoveredAttribute, DiscoveredProduct, PricingRulePlanRow, ProcedureStepLite } from "../types";
 import type {
   CreateAttributePricingResult, GeneratedProcedureSnapshot, SalesforceVerificationSummary,
   AttributePricingLifecycleStatus, ExpressionSetVersionResolutionAudit, AttributePricingActivationAudit,
@@ -158,6 +158,11 @@ export interface CreatePipelineInput {
   product: DiscoveredProduct;
   discoveredAttributes: DiscoveredAttribute[];
   rules: PricingRulePlanRow[];
+  /** §Combination-expansion architecture fix — every explicit combination-specific pricing rule the
+   * prompt requested (Case B), already resolved against real Salesforce data by `analyze.ts`'s Step 8.5.
+   * Omitted or empty (the default) means no combination-specific pricing was requested — the combinatorial
+   * expansion phase below is skipped entirely, never a full Cartesian product of every attribute value. */
+  combinationRules?: CombinationRulePlanRow[];
   excludedAttributes: string[];
   procedureName: string;
   description?: string;
@@ -505,11 +510,13 @@ export async function runCreateAttributePricingPipeline(
    * product, org, or threshold. `status: "BLOCKED"` stops here, before a single combination write is
    * attempted — every single-attribute Rule/Condition/Adjustment already created above stays exactly as
    * it is (nothing here is undone), but nothing further is attempted until capacity is confirmed. */
+  const requestedCombinations = input.combinationRules ?? [];
   emit("capacity-preflight", "running");
   let capacityPreflight;
   try {
     capacityPreflight = await checkAttributeBasedPricingCapacityPreflight(
       client, schema, { product: { id: input.product.id, name: input.product.name }, sellingModelId, scheduleId }, contexts,
+      requestedCombinations,
     );
     step(
       steps, "capacity-preflight", capacityPreflight.status === "BLOCKED" ? "error" : capacityPreflight.status === "REQUIRES_REVIEW" ? "info" : "success",
@@ -547,41 +554,47 @@ export async function runCreateAttributePricingPipeline(
     };
   }
 
-  /* ── §Root-cause architecture fix (user-directed: "Full combinatorial closure") — Salesforce's
-   * AttributeDiscount Decision Table matches on ONE complete-combination hash per row (proven from real
-   * DecisionTableParameter metadata); every single-attribute rule above represents exactly one varying
-   * attribute with everything else at baseline. Selecting two price-impacting attributes away from default
-   * at once therefore needs its OWN Decision Table row, or Salesforce finds no match at all. This phase
-   * discovers every existing single-attribute priced option for this product and creates/reuses whichever
-   * 2+-attribute combination rows the closure still needs — additive, never fatal to the rest of this run:
-   * a failure here is a warning, since every single-attribute rule this run itself requested has already
-   * succeeded by this point. See `expandAttributeCombinationRules`'s own extensive doc comment for the full
-   * evidence chain and the deliberately-conservative combination arithmetic (same-type summing only; mixed
-   * types or an override involved are skipped, never guessed). */
+  /* ── §Combination-expansion architecture fix — DEFAULT behavior is to do NOTHING here: this pipeline
+   * never generates the full Cartesian product of a product's attribute values merely because the product
+   * has multiple attributes. Combination-specific pricing is created ONLY when the prompt explicitly
+   * requested it (Case B — "when RAM is 32GB AND Storage is 1TB, give an additional ₹5,000"), already
+   * resolved against real Salesforce data by `analyze.ts`'s Step 8.5 into `input.combinationRules`.
+   * Independent attribute/value pricing (Case A) is fully handled by the single-attribute phase above —
+   * this block never runs for a prompt that only names independent attributes. A failure here is a
+   * warning, never fatal to the rest of this run, since every single-attribute rule this run itself
+   * requested has already succeeded by this point. See `expandAttributeCombinationRules`'s own doc comment
+   * for why the combination's adjustment is taken exactly as stated, never summed from its members' own
+   * individual adjustments. */
   if (capacityPreflight?.status === "REQUIRES_REVIEW") {
     warnings.push(`Capacity preflight: ${capacityPreflight.reason} ${capacityPreflight.recommendedAction}`);
   }
-  try {
-    const combinationResult = await expandAttributeCombinationRules(
-      client, schema, { product: { id: input.product.id, name: input.product.name }, sellingModelId, scheduleId }, contexts, steps,
-      message => emit("create-combination-rules", "running", message),
-      executionId,
-    );
-    if (combinationResult.plans.length > 0) {
-      native.ruleIds.push(...combinationResult.plans.filter(p => p.ruleId).map(p => p.ruleId!));
-      native.adjustmentIds.push(...combinationResult.plans.filter(p => p.adjustmentId).map(p => p.adjustmentId!));
+  if (requestedCombinations.length === 0) {
+    step(steps, "create-combination-rules", "success", "No explicit combination pricing was requested in this prompt — skipping combinatorial expansion (default behavior: only individual attribute/value pricing is created).");
+    emit("create-combination-rules", "done", "0 combination(s) requested.");
+  } else {
+    try {
+      const combinationResult = await expandAttributeCombinationRules(
+        client, schema, { product: { id: input.product.id, name: input.product.name }, sellingModelId, scheduleId }, contexts,
+        requestedCombinations, steps,
+        message => emit("create-combination-rules", "running", message),
+        executionId,
+      );
+      if (combinationResult.plans.length > 0) {
+        native.ruleIds.push(...combinationResult.plans.filter(p => p.ruleId).map(p => p.ruleId!));
+        native.adjustmentIds.push(...combinationResult.plans.filter(p => p.adjustmentId).map(p => p.adjustmentId!));
+      }
+      emit(
+        "create-combination-rules", "done",
+        `${combinationResult.createdCount} explicit combination adjustment(s) created, ${combinationResult.reusedCount} reused, ${combinationResult.skippedCount} skipped, of ${requestedCombinations.length} explicitly requested combination(s).`,
+      );
+    } catch (err) {
+      const failure = buildFailureDiagnostics("create-combination-rules", err);
+      step(steps, "create-combination-rules", "error", failure.reason);
+      warnings.push(
+        `Explicit combination rule creation failed (non-fatal — every single-attribute rule this run requested has already succeeded): ${failure.reason}. ` +
+        `The explicitly requested combination-specific pricing may not apply until this is resolved on a future run.`,
+      );
     }
-    emit(
-      "create-combination-rules", "done",
-      `${combinationResult.createdCount} combination adjustment(s) created, ${combinationResult.reusedCount} reused, ${combinationResult.skippedCount} skipped, from ${combinationResult.discoveredOptions.length} discovered single-attribute option(s).`,
-    );
-  } catch (err) {
-    const failure = buildFailureDiagnostics("create-combination-rules", err);
-    step(steps, "create-combination-rules", "error", failure.reason);
-    warnings.push(
-      `Multi-attribute combination rule expansion failed (non-fatal — every single-attribute rule this run requested has already succeeded): ${failure.reason}. ` +
-      `Cumulative pricing across multiple simultaneously-selected attributes may not apply until this is resolved on a future run.`,
-    );
   }
 
   /* ── Step 7: Verify Adjustment Records (Part 9 step 9 + Parts 12/13/19) — read-back re-query before
@@ -635,15 +648,15 @@ export async function runCreateAttributePricingPipeline(
   const runtimeVerified = runtimeVerification.allResolved;
 
   const adjustmentVerified = adjustmentVerification.scheduleVerified
-    && adjustmentVerification.ruleCount === native.ruleIds.length
-    && adjustmentVerification.conditionCount === native.conditionIds.length
+    && adjustmentVerification.ruleCount === adjustmentVerification.expectedRuleCount
+    && adjustmentVerification.conditionCount === adjustmentVerification.expectedConditionCount
     && configVerification.allVerified
     && runtimeVerified;
   if (!adjustmentVerified) {
     const failure = buildLogicalFailure(
       "verify-adjustment-records",
       `Salesforce read-back could not confirm every Attribute-Based Pricing configuration: schedule verified=${adjustmentVerification.scheduleVerified}, ` +
-      `rules ${adjustmentVerification.ruleCount}/${native.ruleIds.length}, conditions ${adjustmentVerification.conditionCount}/${native.conditionIds.length}, ` +
+      `rules ${adjustmentVerification.ruleCount}/${adjustmentVerification.expectedRuleCount} (distinct), conditions ${adjustmentVerification.conditionCount}/${adjustmentVerification.expectedConditionCount} (distinct), ` +
       `adjustment configurations ${verifiedCount}/${configVerification.entries.length} logically verified, ` +
       `runtime resolutions ${runtimeVerifiedCount}/${runtimeVerification.entries.length} resolved (complete-configuration match, never single-attribute). ` +
       `Failed: ${[
@@ -1091,7 +1104,7 @@ export async function runCreateAttributePricingPipeline(
         ? `✕ This build's generated identity matches an EXISTING, ACTIVE version (${uniqueness.matchedVersionId}) — Salesforce would reject an update to it outright. See conflicts below.`
         : `ℹ This build's generated identity still matches an EXISTING (Draft) version (${uniqueness.matchedVersionId}) — that version will be updated in place, not a new one added. If a new version was intended, this usually means the version-number resolution above could not run (see warnings).`,
       "duplicate-version-conflict": "✕ Conflict — see below.",
-      "version-identity-unknown": "ℹ Version identity could not be determined on this org — proceeding without a version-collision check.",
+      "version-identity-unknown": "✕ Version identity could not be determined on this org (no comparable field on ExpressionSetVersion) — refusing to deploy an unverifiable identity. See conflicts below.",
     };
     step(steps, "deploy-pricing-procedure", uniqueness.decision === "update-existing-version" ? "info" : "success", `→ Expression Set Version lifecycle: ${decisionLabel[uniqueness.decision]}`);
   } catch (err) {

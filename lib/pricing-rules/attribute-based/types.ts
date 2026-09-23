@@ -80,14 +80,42 @@ export interface ExtractedAttribute {
   values: ExtractedAttributeValueAdjustment[];
 }
 
+/** §Combination-expansion architecture fix — a genuine EXPLICIT combination requirement (Case B: "when RAM
+ * is 32GB AND Storage is 1TB, give an additional ₹5,000"), never fabricated merely because a prompt names
+ * multiple independent attributes (Case A — "RAM 32GB adds ₹12,000 and Storage 1TB adds ₹8,000" produces
+ * NO entries here). Structured (never a free-text string) so `analyze.ts` can resolve it against real
+ * Salesforce data and `createPipeline.ts` can materialize exactly what was requested — never a full
+ * Cartesian product of every attribute value the product happens to have. */
+export interface ExtractedCombinationMember {
+  attribute: string;
+  value: string;
+}
+
+export interface ExtractedCombination {
+  /** 2+ distinct attributes required — a single-attribute "combination" isn't one; Phase A (independent
+   * attribute/value pricing) already covers that case, so the AI is instructed never to emit a 1-member entry. */
+  members: ExtractedCombinationMember[];
+  adjustmentType: ExtractedAdjustmentType | null;
+  /** Numeric magnitude only — null when the prompt named the combination but never stated an amount (Step
+   * 8.5 fails closed on this rather than defaulting to 0, since an un-priced combination isn't actionable). */
+  adjustment: number | null;
+  /** The original prompt phrase this combination was extracted from — verbatim or lightly cleaned up,
+   * preserved for diagnostics and fail-closed messages, never re-parsed. */
+  rawText: string;
+}
+
 export interface ExtractedPricingRequirement {
   pricingType: "attribute-based";
   product: string | null;
   attributes: ExtractedAttribute[];
   /** Free-text conditions the AI couldn't structure further (e.g. "only for orders over $500") — preserved for the user to see, never silently dropped. */
   conditions: string[];
-  /** Free-text attribute-combination requirements (e.g. "32GB RAM only combined with 1TB storage") — Step 8's rule plan doesn't model these yet, so they're surfaced as-is. */
-  combinations: string[];
+  /** Explicit combination-specific pricing requirements — ONLY populated when the prompt used genuine
+   * combination language ("when A and B", "if A and B", "combination of A and B", "A + B together",
+   * "special price for A and B", etc.), never merely because multiple attributes were mentioned. Resolved
+   * against real Salesforce data by `analyze.ts` (Step 8.5) into `CombinationRulePlanRow[]` before
+   * anything is created. */
+  combinations: ExtractedCombination[];
   currency: string | null;
   basePrice: number | null;
   effectiveFrom: string | null;
@@ -108,6 +136,34 @@ export interface PricingRulePlanRow {
   stated: boolean;
   /** True when this row's value doesn't exist in Salesforce yet and the user explicitly approved creating it (Part E/G) — false for every real, already-existing value. */
   isNewValue: boolean;
+}
+
+/* ── Step 8.5 — resolved, real-Salesforce-verified explicit combination request (Case B) ── */
+export interface CombinationMemberPlan {
+  attributeName: string;
+  attributeLabel: string;
+  value: string;
+  valueLabel: string;
+}
+
+/** One explicit, user-requested combination-specific pricing rule — every member is a REAL, Salesforce-
+ * verified attribute+value pair (never invented, never guessed) and the adjustment is exactly what the
+ * prompt stated for this combination (never summed from the members' own individual per-attribute
+ * adjustments — that's a different, automatic-closure concept this explicit path doesn't use). */
+export interface CombinationRulePlanRow {
+  /** 2+ members. */
+  members: CombinationMemberPlan[];
+  adjustmentType: ExtractedAdjustmentType;
+  adjustment: number;
+  /** The original prompt phrase this combination came from — carried through for display/audit. */
+  rawText: string;
+}
+
+/** A single explicit combination requirement that could not be safely resolved against real Salesforce
+ * data — fail-closed, never guessed or silently substituted (Step 8.5). */
+export interface CombinationResolutionProblem {
+  rawText: string;
+  reason: string;
 }
 
 /* ── Mismatch/mapping detail shapes (Steps 5-7) ── */
@@ -217,11 +273,28 @@ export type AttributeBasedAnalysisResult =
     }
   | { stage: "attributes-awaiting-pricing"; product: DiscoveredProduct; discoveredAttributes: DiscoveredAttribute[]; steps: ProcedureStepLite[] }
   | {
+      /** §Combination-expansion architecture fix (Step 8.5) — one or more explicit combination
+       * requirements in the prompt (`extracted.combinations`) could not be safely resolved against real
+       * Salesforce attributes/values (unknown attribute, unknown value, ambiguous match, conflicting
+       * duplicate combinations, or no adjustment amount stated). Never guessed, never silently dropped —
+       * the user must fix the prompt (or resubmit `extracted` with corrected combinations) and retry. */
+      stage: "combination-unresolved";
+      product: DiscoveredProduct;
+      extracted: ExtractedPricingRequirement;
+      problems: CombinationResolutionProblem[];
+      steps: ProcedureStepLite[];
+    }
+  | {
       stage: "ready-for-review";
       product: DiscoveredProduct;
       extracted: ExtractedPricingRequirement;
       discoveredAttributes: DiscoveredAttribute[];
       rules: PricingRulePlanRow[];
+      /** §Combination-expansion architecture fix — every explicit combination the prompt requested (Case
+       * B), already resolved/deduplicated/validated against real Salesforce data. Empty (the default) means
+       * no combination-specific pricing was requested, so `createPipeline.ts` skips combinatorial
+       * expansion entirely — it never runs a full Cartesian product merely because this array is empty. */
+      combinationRules: CombinationRulePlanRow[];
       /** Attribute names the user chose to Ignore (Part C) — shown on the Part F confirmation screen as "Excluded from pricing," never created. */
       excludedAttributes: string[];
       warnings: string[];

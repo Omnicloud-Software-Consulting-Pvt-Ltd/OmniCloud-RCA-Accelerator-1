@@ -216,7 +216,7 @@ test("TEST — an existing Rule's Adjustment with a MISMATCHED Schedule is never
   assert.equal(plans[0].existingAdjustmentId, undefined);
 });
 
-test("TEST (control) — an existing Rule's Adjustment whose full identity (Product+Schedule+SellingModel+EffectiveFrom/To) DOES match is correctly reused", async () => {
+test("TEST (control) — an existing Rule's Adjustment whose full identity (Product+Schedule+SellingModel+EffectiveFrom/To) AND requested value DOES match is correctly reused", async () => {
   const schema = buildFullSchema();
   const contexts = buildContexts([MEMORY_CTX]);
   const client = {
@@ -225,7 +225,11 @@ test("TEST (control) — an existing Rule's Adjustment whose full identity (Prod
       if (soql.includes("FROM AttributeBasedAdjustment WHERE")) {
         return {
           totalSize: 1, done: true,
-          records: [{ Id: "adj-1", Product2Id: "prod-1", PriceAdjustmentScheduleId: "schedule-NEW", ProductSellingModelId: null, EffectiveFrom: todayISODate(), EffectiveTo: oneYearFromTodayISODate() }],
+          // §Phase-A duplicate logical-state fix — an identity match alone is no longer sufficient; the
+          // mock's stored AdjustmentType/AdjustmentValue must also agree with what `buildRow("Memory",
+          // "RAM 8GB")` requests (adjustmentType "fixed" -> this schema's only AdjustmentType picklist
+          // value "Amount"; adjustment defaults to -10) for this to be a genuine "DOES match" control case.
+          records: [{ Id: "adj-1", Product2Id: "prod-1", PriceAdjustmentScheduleId: "schedule-NEW", ProductSellingModelId: null, EffectiveFrom: todayISODate(), EffectiveTo: oneYearFromTodayISODate(), AdjustmentType: "Amount", AdjustmentValue: -10 }],
         };
       }
       throw new Error(`unexpected query: ${soql}`);
@@ -239,6 +243,33 @@ test("TEST (control) — an existing Rule's Adjustment whose full identity (Prod
   );
   assert.equal(plans[0].reusedExisting, true);
   assert.equal(plans[0].existingAdjustmentId, "adj-1");
+});
+
+test("TEST — an existing Rule's Adjustment whose identity matches but whose VALUE differs from this row's request is NOT silently reused — falls through to the normal conflict-detection path instead", async () => {
+  const schema = buildFullSchema();
+  const contexts = buildContexts([MEMORY_CTX]);
+  const client = {
+    async query(soql: string) {
+      if (soql.includes("FROM AttributeBasedAdjRule WHERE")) return { totalSize: 1, done: true, records: [{ Id: "rule-1", Product2Id: "prod-1" }] };
+      if (soql.includes("FROM AttributeBasedAdjustment WHERE")) {
+        return {
+          totalSize: 1, done: true,
+          // Identity matches, but the stored value (-10) differs from what buildRow's default (-10) —
+          // use a genuinely different value (-99) to prove the mismatch is caught.
+          records: [{ Id: "adj-1", Product2Id: "prod-1", PriceAdjustmentScheduleId: "schedule-NEW", ProductSellingModelId: null, EffectiveFrom: todayISODate(), EffectiveTo: oneYearFromTodayISODate(), AdjustmentType: "Amount", AdjustmentValue: -99 }],
+        };
+      }
+      throw new Error(`unexpected query: ${soql}`);
+    },
+    logDebug() { /* no-op */ },
+  } as unknown as SalesforceClient;
+
+  const { plans } = await createOrReuseAttributeBasedAdjRules(
+    client, schema, { product: { id: "prod-1", name: "Laptop" }, sellingModelId: null, rules: [buildRow("Memory", "RAM 8GB")] },
+    contexts, "schedule-NEW", [],
+  );
+  assert.equal(plans[0].reusedExisting, false, "a value-mismatched existing Adjustment must never be silently reused — the normal conflict-detection path must run instead");
+  assert.equal(plans[0].existingAdjustmentId, undefined);
 });
 
 // ── This turn's root-cause fix — Salesforce's own duplicate-adjustment error proved that two different

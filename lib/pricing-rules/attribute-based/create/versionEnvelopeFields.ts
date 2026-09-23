@@ -13,6 +13,38 @@
  * fallback when a real resolved value exists.
  */
 
+/**
+ * §Active ExpressionSetVersion identity collision investigation (9QMak000000t6nxGAA) — shared by
+ * lib/pricing-rules/tier-based/create/canvasBuilder.ts and lib/pricing-rules/volume-based/create/
+ * canvasBuilder.ts, extracted here (mirroring `injectVersionNumberAndRank`'s own extraction reasoning) so
+ * the exact reported bug is directly unit-testable without a full donor-XML/SalesforceClient mock.
+ *
+ * `<fullName>` is the ExpressionSetVersion's OWN per-version identity and carries a numeric version suffix
+ * in real Salesforce metadata (e.g. "Rev_Mgmt_Default_Pricing_Procedure2_V1") — unlike `<developerName>`/
+ * `<name>`/`<expressionSetDefinition>`, which are the shared, version-INDEPENDENT parent identity and
+ * correctly stay as the bare `apiName` across every version (never routed through this function). Both
+ * Tier-Based and Volume-Based canvas builders previously regenerated `<fullName>` as the bare apiName too
+ * (no suffix at all), meaning every version ever built for the same procedure carried the IDENTICAL
+ * `<fullName>` — Salesforce's real per-version differentiator was never produced. Downstream,
+ * `validateExpressionSetUniquenessAgainstOrg`'s collision search (which expects a version-suffixed
+ * identity) then matched ANY existing sibling version sharing that bare name, including an unrelated
+ * ACTIVE one, and reported a false "Active ExpressionSetVersion identity collision" — blocking every
+ * subsequent legitimate new-version build.
+ *
+ * Preserves the donor's own separator style (e.g. "_V", "_v", "_", ".", "-") when a numeric suffix is
+ * found in the donor's own `fullName`; targets `versionNumber` (the caller's org-verified next-version
+ * resolution) rather than reproducing the donor's own suffix digits. Never invents a suffix when the
+ * donor's own fullName has none at all — matching the attribute-based canvas builder's own equivalent
+ * inline logic, never guessing a separator style that isn't evidenced.
+ */
+export function regenerateVersionedFullName(donorValue: string, apiName: string, versionNumber: number | undefined): string {
+  const suffixMatch = donorValue.match(/^(.*?)([._-][Vv]?)(\d+)$/);
+  if (!suffixMatch) return apiName;
+  const separator = suffixMatch[2];
+  const suffixDigits = versionNumber !== undefined ? String(versionNumber) : suffixMatch[3];
+  return `${apiName}${separator}${suffixDigits}`;
+}
+
 export interface VersionNumberAndRankCandidate {
   /** Undefined — never touch `<versionNumber>` at all (no resolution ran). */
   versionNumber?: number;

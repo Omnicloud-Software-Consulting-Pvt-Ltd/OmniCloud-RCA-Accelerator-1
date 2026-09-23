@@ -184,7 +184,12 @@ export async function runCreateVolumePricingPipeline(
     emit("preflight", "failed", failure.reason);
     return fail({ failure });
   }
-  step(steps, "preflight", "success", `✓ Expression Set donor validated: ${preflightDonorResolution.selection.fullName} (schedule-based VolumeDiscount → ListPrice connection proven).`);
+  const connectedBranch = preflightDonorResolution.selection.candidate.volumeDiscountBranches
+    .find(b => preflightDonorResolution.selection!.connectedScheduleBasedOccurrenceIndexes.includes(b.occurrenceIndex));
+  const connectionSummary = connectedBranch?.connectedToListPrice
+    ? `VolumeDiscount → ListPrice connection proven via ${connectedBranch.listPriceConnection}`
+    : `VolumeDiscount → PricingSettings connection proven via ${connectedBranch?.pricingSettingsConnection ?? "price-waterfall-variable"} (ListPrice pairing resolved separately during canvas composition)`;
+  step(steps, "preflight", "success", `✓ Expression Set donor validated: ${preflightDonorResolution.selection.fullName} (schedule-based ${connectionSummary}).`);
   step(steps, "preflight", "success", "PRE-FLIGHT PASSED — no Salesforce record has been created or modified yet.");
   emit("preflight", "done", "Pre-flight validation passed.");
 
@@ -300,10 +305,24 @@ export async function runCreateVolumePricingPipeline(
   /* ── Org-uniqueness pre-flight ── */
   const generatedFullNames = (canvas.generatedIdentifiers ?? []).filter(g => g.tag === "fullName").map(g => g.value);
   const generatedLabel = (canvas.generatedIdentifiers ?? []).find(g => g.tag === "label")?.value ?? null;
+  const targetIdentity = generatedFullNames[0] ?? apiName;
   let uniqueness: OrgUniquenessResult | null = null;
   try {
     uniqueness = await validateExpressionSetUniquenessAgainstOrg(client, { apiName, generatedFullNames, generatedLabel });
-    step(steps, "deploy-pricing-procedure", "info", `→ Expression Set Version lifecycle decision: ${uniqueness.decision}.`);
+    // §Active ExpressionSetVersion identity collision investigation — requirement 7: "Return the exact
+    // ExpressionSet and ExpressionSetVersion selected for deployment in the execution log." Mirrors
+    // lib/pricing-rules/tier-based/create/createPipeline.ts's own decision-labeled logging exactly.
+    const activeCollision = uniqueness.conflicts.some(c => c.identifier === "Active ExpressionSetVersion identity collision");
+    const decisionLabel: Record<OrgUniquenessResult["decision"], string> = {
+      "create-new-expression-set": `✓ No existing ExpressionSet found for ApiName "${apiName}" — a new ExpressionSet + Version ${nextVersionResolution?.versionNumber ?? 1} (identity "${targetIdentity}") will be created.`,
+      "create-new-version": `✓ Reusing existing ExpressionSet ${uniqueness.existingExpressionSetId} — new Version ${nextVersionResolution?.versionNumber ?? "(unresolved)"} (identity "${targetIdentity}") will be added; existing version(s) are NOT touched.`,
+      "update-existing-version": activeCollision
+        ? `✕ Target identity "${targetIdentity}" matches an EXISTING, ACTIVE ExpressionSetVersion ${uniqueness.matchedVersionId} under ExpressionSet ${uniqueness.existingExpressionSetId} — Salesforce would reject an update to it outright. See conflicts below.`
+        : `ℹ Target identity "${targetIdentity}" matches an existing (Draft) ExpressionSetVersion ${uniqueness.matchedVersionId} under ExpressionSet ${uniqueness.existingExpressionSetId} — that version will be updated in place, not a new one added.`,
+      "duplicate-version-conflict": `✕ Target identity "${targetIdentity}" collides with an ExpressionSetVersion belonging to a DIFFERENT ExpressionSet — see conflicts below.`,
+      "version-identity-unknown": "✕ Version identity could not be determined on this org (no comparable field on ExpressionSetVersion) — refusing to deploy an unverifiable identity. See conflicts below.",
+    };
+    step(steps, "deploy-pricing-procedure", uniqueness.decision === "update-existing-version" && !activeCollision ? "info" : "success", `→ Expression Set Version lifecycle: ${decisionLabel[uniqueness.decision]}`);
   } catch (err) {
     warnings.push(`Org-wide uniqueness pre-flight could not complete: ${err instanceof Error ? err.message : String(err)} — proceeding to deploy anyway.`);
   }
@@ -314,7 +333,6 @@ export async function runCreateVolumePricingPipeline(
   }
 
   /* ── Payload fingerprint check ── */
-  const targetIdentity = generatedFullNames[0] ?? apiName;
   const resolvedCandidate = { fullName: targetIdentity, versionNumber: nextVersionResolution?.versionNumber ?? null, expressionSetDefinition: apiName, rank: nextVersionResolution?.rank ?? null };
   const fieldMismatches: string[] = [];
   if (canvas.outboundVersionFields?.fullName !== resolvedCandidate.fullName) fieldMismatches.push(`fullName (resolved="${resolvedCandidate.fullName}", outbound="${canvas.outboundVersionFields?.fullName ?? "(not found)"}")`);

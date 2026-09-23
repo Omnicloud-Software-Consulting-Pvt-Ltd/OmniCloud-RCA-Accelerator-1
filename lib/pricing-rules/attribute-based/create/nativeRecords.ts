@@ -29,7 +29,7 @@ import { verifyRecordExists } from "./workflowRunner";
 import { beginRunSnapshot, recordRuleCreatedDuringRun, getRuleIdsCreatedDuringRun } from "./runBoundaryStore";
 import { resolveAttributePicklistId, createMissingAttributeValue } from "./valueCreation";
 import { resolveProductClassificationInheritance } from "../productClassificationInheritance";
-import type { PricingRulePlanRow, ProcedureStepLite } from "../types";
+import type { CombinationRulePlanRow, PricingRulePlanRow, ProcedureStepLite } from "../types";
 import type { CreatedValueRecord } from "./types";
 
 function step(steps: ProcedureStepLite[], name: string, status: ProcedureStepLite["status"], message: string) {
@@ -1139,6 +1139,81 @@ async function resolveProductConsistentRuleCandidate(
   return null;
 }
 
+/**
+ * §Phase-A content-identity fix — shared by both the Name-based candidate path (pre-existing behavior)
+ * and the complete-signature-based path in `createOrReuseAttributeBasedAdjRules` below: given a Rule this
+ * run found by SOME lookup mechanism, checks whether it already has an AttributeBasedAdjustment matching
+ * this run's own identity (Product + ProductSellingModel + Schedule + EffectiveFrom/To) AND whether that
+ * Adjustment's stored type/value agrees with what THIS row is requesting. Returns the existing Adjustment
+ * Id only when BOTH the identity and the requested value agree — a Rule with a matching identity but a
+ * DIFFERENT stored value deliberately comes back `undefined` ("no safely-reusable Adjustment") so the
+ * caller falls through to the normal per-plan path in `createAttributeBasedAdjustments`, which already has
+ * the full `classifyAdjustmentMatch`/`AdjustmentConflict` machinery — never silently keeps the old value,
+ * never silently overwrites it either.
+ */
+async function resolveExistingAdjustmentForRule(
+  client: SalesforceClient, schema: AttributeBasedPricingSchema, ruleId: string,
+  args: { productId: string; scheduleId: string; sellingModelId: string | null },
+  effectiveFrom: string, effectiveTo: string,
+  requestedType: string | null, requestedValue: number, hasValueTracking: boolean,
+): Promise<string | undefined> {
+  const abaSelect = ["Id",
+    ...(schema.abaProductField.field ? [schema.abaProductField.field.name] : []),
+    ...(schema.abaScheduleField.field ? [schema.abaScheduleField.field.name] : []),
+    ...(schema.abaSellingModelField.field ? [schema.abaSellingModelField.field.name] : []),
+    ...(schema.abaEffFromField ? [schema.abaEffFromField.name] : []),
+    ...(schema.abaEffToField ? [schema.abaEffToField.name] : []),
+    ...(schema.abaTypeField ? [schema.abaTypeField.name] : []),
+    ...(schema.abaValueField ? [schema.abaValueField.name] : []),
+  ];
+  const existingAba = await client.query<Record<string, unknown> & { Id: string }>(
+    `SELECT ${[...new Set(abaSelect)].join(", ")} FROM AttributeBasedAdjustment WHERE ${schema.abaRuleField.field!.name} = '${soqlEscape(ruleId)}' LIMIT 1`,
+  ).catch(() => ({ records: [] as (Record<string, unknown> & { Id: string })[] }));
+  const rec = existingAba.records[0];
+  if (!rec) return undefined;
+
+  // §Section 8/9 (Salesforce's own uniqueness key, confirmed via its own FIELD_INTEGRITY_EXCEPTION text)
+  // also includes Product Selling Model and Effective From/To; a Rule's already-attached Adjustment is
+  // only trustworthy here if ALL of these agree with this run's resolved values, not just Product+Schedule.
+  const productMatches = !schema.abaProductField.field || rec[schema.abaProductField.field.name] === args.productId;
+  const scheduleMatches = !schema.abaScheduleField.field || rec[schema.abaScheduleField.field.name] === args.scheduleId;
+  const sellingModelMatches = !schema.abaSellingModelField.field
+    || ((rec[schema.abaSellingModelField.field.name] as string | null | undefined) ?? null) === (args.sellingModelId ?? null);
+  const effFromMatches = !schema.abaEffFromField || normalizeDateValue(rec[schema.abaEffFromField.name]) === normalizeDateValue(effectiveFrom);
+  const effToMatches = !schema.abaEffToField || normalizeDateValue(rec[schema.abaEffToField.name]) === normalizeDateValue(effectiveTo);
+  if (!(productMatches && scheduleMatches && sellingModelMatches && effFromMatches && effToMatches)) {
+    client.logDebug(
+      "execution-trace",
+      `Rule ${ruleId} already has an AttributeBasedAdjustment (${rec.Id}), but it does NOT match this run's identity ` +
+      `(Product match=${productMatches}, Schedule match=${scheduleMatches}, SellingModel match=${sellingModelMatches}, EffectiveFrom match=${effFromMatches}, EffectiveTo match=${effToMatches}) — ` +
+      `treating as if no Adjustment exists yet; a fresh, correct one will be built. The stale record is left untouched, never deleted or overwritten.`,
+    );
+    return undefined;
+  }
+
+  // §Combination-expansion architecture fix (Phase-A duplicate logical-state fix) — an identity match
+  // alone is NOT sufficient: this Rule's existing Adjustment might belong to a DIFFERENT row's request
+  // (e.g. this Rule is "Display=1080p"'s Rule, already carrying Display's own $35 Adjustment, and THIS
+  // call is resolving "ScreenSize=24Inch"'s row, which collapsed onto the identical complete state but
+  // may have requested a DIFFERENT value). Never silently keep the old value nor silently overwrite it —
+  // report "no safely-reusable Adjustment" so the caller's normal per-plan path runs the real
+  // `classifyAdjustmentMatch`/`AdjustmentConflict` comparison instead.
+  if (hasValueTracking) {
+    const existingType = schema.abaTypeField ? ((rec[schema.abaTypeField.name] as string | null | undefined) ?? null) : null;
+    const existingValue = schema.abaValueField ? ((rec[schema.abaValueField.name] as number | null | undefined) ?? null) : null;
+    if (existingType !== requestedType || !adjustmentValuesEqual(existingValue, requestedValue)) {
+      client.logDebug(
+        "execution-trace",
+        `Rule ${ruleId}'s existing AttributeBasedAdjustment (${rec.Id}) matches this run's identity but NOT its requested value ` +
+        `(existing ${existingType}/${existingValue} vs requested ${requestedType}/${requestedValue}) — never silently kept; deferring to the normal create/conflict-detection path so this is reported, never swallowed.`,
+      );
+      return undefined;
+    }
+  }
+
+  return rec.Id;
+}
+
 export async function createOrReuseAttributeBasedAdjRules(
   client: SalesforceClient,
   schema: AttributeBasedPricingSchema,
@@ -1154,6 +1229,7 @@ export async function createOrReuseAttributeBasedAdjRules(
   // and the authoritative one in createAttributeBasedAdjustments never disagree.
   const effectiveFrom = todayISO();
   const effectiveTo = oneYearFromTodayISO();
+  const hasValueTracking = !!(schema.abaTypeField || schema.abaValueField);
   const ruleIds: string[] = [];
   const plans: AttributeBasedRulePlan[] = [];
   // §Part 11 fix — every resolved ruleId is now tracked (previously a rule that already existed by
@@ -1164,7 +1240,52 @@ export async function createOrReuseAttributeBasedAdjRules(
   let reusedWithAdjustment = 0;
   let reusedWithoutAdjustment = 0;
 
-  for (const row of args.rules) {
+  /**
+   * §Phase-A duplicate logical-state fix — the confirmed root cause of a real live failure: Phase-A Rule
+   * creation used to happen entirely by Name, before any Condition existed to content-match against, so
+   * two DIFFERENT rows (e.g. "Display=1080p" and "Screen Size=24 Inch") that both happen to sit at every
+   * OTHER price-impacting attribute's baseline collapse onto the IDENTICAL complete condition state —
+   * yet each got its own separate Rule, one holding the real Adjustment and the other a permanently
+   * Adjustment-less "shadow" Rule (verified live: `Screen_Size_24_Inch_Rule`, 2/2 conditions, 0
+   * Adjustments). This block makes Rule resolution CONTENT-aware — using the exact same canonical
+   * signature machinery the combinatorial-closure phase already relies on
+   * (`computeIntendedCombinationSignature`/`discoverExistingRuleContentIdentities`/
+   * `matchExistingRulesToCombinations`), never a second, parallel implementation — before falling back to
+   * the pre-existing Name-based path. Skipped entirely (falls straight through to the unchanged Name-based
+   * path for every row) whenever there are fewer than 2 price-impacting attributes, since a single
+   * price-impacting attribute can never produce two different complete-state collisions — this keeps every
+   * single-price-impacting-attribute product (the common case) on the exact, unmodified pre-existing path.
+   */
+  const priceImpactingEntries = [...contexts.entries()].filter(([, ctx]) => ctx.isPriceImpacting === true);
+  let signatureDedup: {
+    priceImpactingAttributeNames: string[];
+    defaultValueByAttr: Map<string, string | null>;
+    existingMatches: Map<number, CombinationRuleMatch>;
+    thisRunSignatureToRuleId: Map<string, string>;
+  } | null = null;
+  if (priceImpactingEntries.length >= 2) {
+    const attributeIdentityById = buildAttributeIdentityReverseMap(contexts);
+    const priceImpactingAttributeNames = priceImpactingEntries.map(([name]) => name);
+    const baseConfig = await resolveBaseProductConfiguration(client, args.product.id, priceImpactingEntries);
+    const defaultValueByAttr = new Map<string, string | null>(priceImpactingEntries.map(([name]) => [name, baseConfig.attributes[name]?.value ?? null]));
+    // A price-impacting attribute with no resolvable baseline can't have its complete state computed —
+    // rather than duplicate `createAttributeAdjustmentConditions`'s own hard-failure gate for this here
+    // too, simply skip the new content-aware optimization for this run (every row falls through to the
+    // unchanged Name-based path below; the real hard failure still happens, unchanged, later).
+    const baselineFullyResolved = priceImpactingEntries.every(([name]) => !!defaultValueByAttr.get(name));
+    if (baselineFullyResolved) {
+      const existingRuleIdentities = await discoverExistingRuleContentIdentities(
+        client, schema, attributeIdentityById, args.product.id, priceImpactingAttributeNames, defaultValueByAttr,
+      );
+      const rowCombos: AttributeCombinationMember[][] = args.rules.map(row => [
+        { attributeName: row.attributeName, attributeLabel: row.attributeLabel, value: row.value, valueLabel: row.valueLabel },
+      ]);
+      const existingMatches = matchExistingRulesToCombinations(rowCombos, existingRuleIdentities, args.product.id, priceImpactingAttributeNames, defaultValueByAttr);
+      signatureDedup = { priceImpactingAttributeNames, defaultValueByAttr, existingMatches, thisRunSignatureToRuleId: new Map() };
+    }
+  }
+
+  for (const [rowIndex, row] of args.rules.entries()) {
     const ctx = contexts.get(row.attributeName);
     if (!ctx) throw new Error(`Could not re-resolve attribute "${row.attributeName}" in Salesforce during rule creation.`);
     if (ctx.isPriceImpacting === false) {
@@ -1172,93 +1293,102 @@ export async function createOrReuseAttributeBasedAdjRules(
     }
 
     const ruleName = sanitizeRuleName(row.attributeName, row.value);
-    let ruleId: string;
+    let ruleId: string | undefined;
     let reusedExisting = false;
     let existingAdjustmentId: string | undefined;
     let ruleProductId: string | null = null;
+    const abaTypeValue = schema.abaTypeField ? resolveAdjustmentTypeValue(schema.abaTypeField, row.adjustmentType) : null;
 
-    // §Live-org fix (Org A) — Name is NOT a Salesforce-enforced-unique key on AttributeBasedAdjRule, so a
-    // same-named rule can legitimately exist for a COMPLETELY DIFFERENT product (e.g. two unrelated
-    // products both having a "Memory" attribute with a "RAM 16GB" value produce the identical sanitized
-    // rule name). Rather than trusting a single `LIMIT 1` lookup (and either reusing a wrong-product row
-    // or hard-failing the whole run when it disagrees), every same-named row is scanned and evaluated for
-    // full product consistency — its own Product2 AND every one of its existing conditions' Product2 —
-    // by `resolveProductConsistentRuleCandidate`; a contaminated candidate is skipped (never mutated,
-    // never attached to) in favor of another valid one, or a brand-new Rule if none qualifies.
-    if (!schema.ruleProductField.field) {
-      client.logDebug("execution-trace", `WARNING — this org's AttributeBasedAdjRule has no Product2 lookup field; rule candidate evaluation for "${ruleName}" relies entirely on Condition-level Product2 verification (and downstream Adjustment-level verification).`);
-    }
-    const candidate = await resolveProductConsistentRuleCandidate(client, schema, ruleName, args.product.id);
-    if (candidate) {
-      ruleId = candidate.ruleId;
-      ruleProductId = candidate.ruleProductId;
-      client.logDebug("execution-trace", `Rule ${ruleId}\nExpected Product ${args.product.id}\nRule's own resolved Product: ${ruleProductId ?? "(not exposed on this org's schema)"}`);
-      // §Root-cause fix (Follow-on 43) — an AttributeBasedAdjustment already attached to this Rule was
-      // previously trusted blindly, with NO verification that its OWN Product/Schedule actually match
-      // THIS run's — the exact gap that let a stale Adjustment from an org state predating this run's
-      // resolved PriceAdjustmentSchedule get silently "reused" (surfacing later, too late to fix, as
-      // verifyAttributeBasedAdjustmentConfigurations's "Price Adjustment Schedule does not match").
-      // Never deletes/overwrites the stale record (per "do not trust existing bad data, but do not
-      // destroy it either") — a mismatch simply means treat this Rule as if it has NO Adjustment yet,
-      // so the pipeline builds a genuinely correct one instead of skipping straight past it.
-      const abaSelect = ["Id",
-        ...(schema.abaProductField.field ? [schema.abaProductField.field.name] : []),
-        ...(schema.abaScheduleField.field ? [schema.abaScheduleField.field.name] : []),
-        ...(schema.abaSellingModelField.field ? [schema.abaSellingModelField.field.name] : []),
-        ...(schema.abaEffFromField ? [schema.abaEffFromField.name] : []),
-        ...(schema.abaEffToField ? [schema.abaEffToField.name] : []),
-      ];
-      const existingAba = await client.query<Record<string, unknown> & { Id: string }>(
-        `SELECT ${[...new Set(abaSelect)].join(", ")} FROM AttributeBasedAdjustment WHERE ${schema.abaRuleField.field!.name} = '${soqlEscape(ruleId)}' LIMIT 1`,
-      ).catch(() => ({ records: [] as (Record<string, unknown> & { Id: string })[] }));
-      const existingAdjustmentRecord = existingAba.records[0];
-      const productMatches = !schema.abaProductField.field || existingAdjustmentRecord?.[schema.abaProductField.field.name] === args.product.id;
-      const scheduleMatches = !schema.abaScheduleField.field || existingAdjustmentRecord?.[schema.abaScheduleField.field.name] === scheduleId;
-      // §Section 8/9 of this turn's fix — Salesforce's own uniqueness key (confirmed via its own
-      // FIELD_INTEGRITY_EXCEPTION text) also includes Product Selling Model and Effective From/To; a
-      // Rule's already-attached Adjustment is only trustworthy here if ALL of these agree with this
-      // run's resolved values, not just Product+Schedule.
-      const sellingModelMatches = !schema.abaSellingModelField.field
-        || ((existingAdjustmentRecord?.[schema.abaSellingModelField.field.name] as string | null | undefined) ?? null) === (args.sellingModelId ?? null);
-      const effFromMatches = !schema.abaEffFromField || normalizeDateValue(existingAdjustmentRecord?.[schema.abaEffFromField.name]) === normalizeDateValue(effectiveFrom);
-      const effToMatches = !schema.abaEffToField || normalizeDateValue(existingAdjustmentRecord?.[schema.abaEffToField.name]) === normalizeDateValue(effectiveTo);
-      if (existingAdjustmentRecord && productMatches && scheduleMatches && sellingModelMatches && effFromMatches && effToMatches) {
-        reusedExisting = true;
-        existingAdjustmentId = existingAdjustmentRecord.Id;
-        reusedWithAdjustment++;
-        onProgress?.(`✓ Reused existing AttributeBasedAdjRule "${ruleName}" (already has a verified Adjustment for this exact Product+SellingModel+Schedule+EffectiveFrom/To).`);
-      } else if (existingAdjustmentRecord) {
-        client.logDebug(
-          "execution-trace",
-          `Rule "${ruleName}" (${ruleId}) already has an AttributeBasedAdjustment (${existingAdjustmentRecord.Id}), but it does NOT match this run's identity ` +
-          `(Product match=${productMatches}, Schedule match=${scheduleMatches}, SellingModel match=${sellingModelMatches}, EffectiveFrom match=${effFromMatches}, EffectiveTo match=${effToMatches}` +
-          `${schema.abaScheduleField.field ? `; existing Schedule=${existingAdjustmentRecord[schema.abaScheduleField.field.name] ?? "(none)"}, requested Schedule=${scheduleId}` : ""}) — ` +
-          `treating as if no Adjustment exists yet; a fresh, correct one will be built. The stale record is left untouched, never deleted or overwritten.`,
+    // §Phase-A duplicate logical-state fix — content-identity resolution, tried BEFORE the Name-based
+    // path (RULE IDENTITY comes from the complete pricing configuration, never from a generated Name —
+    // Name is preserved only for genuinely new Rules, for collision-safe display purposes).
+    let rowSignature: string | null = null;
+    if (signatureDedup) {
+      rowSignature = computeIntendedCombinationSignature(
+        args.product.id, [{ attributeName: row.attributeName, value: row.value }],
+        signatureDedup.priceImpactingAttributeNames, signatureDedup.defaultValueByAttr,
+      );
+      const existingMatch = signatureDedup.existingMatches.get(rowIndex);
+      if (rowSignature && existingMatch && (existingMatch.status === "KEEP" || existingMatch.status === "COMPLETE") && existingMatch.ruleId) {
+        // EXISTING-ORG dedup — this row's complete pricing state already exists as a real Salesforce
+        // Rule, found by CONTENT (never by Name, and never assuming the newest record is correct).
+        ruleId = existingMatch.ruleId;
+        ruleProductId = args.product.id; // discoverExistingRuleContentIdentities is already product-scoped
+        existingAdjustmentId = await resolveExistingAdjustmentForRule(
+          client, schema, ruleId, { productId: args.product.id, scheduleId, sellingModelId: args.sellingModelId },
+          effectiveFrom, effectiveTo, abaTypeValue, row.adjustment, hasValueTracking,
         );
-        reusedWithoutAdjustment++;
-        onProgress?.(`Found existing AttributeBasedAdjRule "${ruleName}" with a stale/mismatched Adjustment — will build a correct Condition/Adjustment instead of reusing it.`);
+        reusedExisting = !!existingAdjustmentId;
+        if (reusedExisting) reusedWithAdjustment++; else reusedWithoutAdjustment++;
+        onProgress?.(
+          `✓ ${row.attributeLabel} = ${row.valueLabel} resolves to the SAME complete pricing state as an already-existing Rule (matched by content, not name) — reusing it instead of creating a duplicate.`,
+        );
+      } else if (rowSignature && signatureDedup.thisRunSignatureToRuleId.has(rowSignature)) {
+        // CURRENT-RUN dedup — an earlier row in THIS SAME batch already resolved/created a Rule for the
+        // identical complete state (e.g. "Display=1080p" processed first, then "Screen Size=24 Inch"
+        // recognizes the state already exists this run). Deliberately NOT marked `reusedExisting` — it
+        // must still flow through condition creation (safely idempotent — reuses the same rows the
+        // earlier row already created/will create) and adjustment creation (so a genuinely conflicting
+        // requested value is still caught, never silently dropped).
+        ruleId = signatureDedup.thisRunSignatureToRuleId.get(rowSignature)!;
+        ruleProductId = args.product.id;
+        onProgress?.(
+          `✓ ${row.attributeLabel} = ${row.valueLabel} resolves to the SAME complete pricing state already established earlier in this run — reusing that Rule instead of creating a duplicate ("shadow") Rule.`,
+        );
+      }
+      // AMBIGUOUS or CREATE (no existing/current-run match at all): fall through to the unchanged
+      // Name-based path below — never guessed.
+    }
+
+    if (ruleId === undefined) {
+      // §Live-org fix (Org A) — Name is NOT a Salesforce-enforced-unique key on AttributeBasedAdjRule, so a
+      // same-named rule can legitimately exist for a COMPLETELY DIFFERENT product (e.g. two unrelated
+      // products both having a "Memory" attribute with a "RAM 16GB" value produce the identical sanitized
+      // rule name). Rather than trusting a single `LIMIT 1` lookup (and either reusing a wrong-product row
+      // or hard-failing the whole run when it disagrees), every same-named row is scanned and evaluated for
+      // full product consistency — its own Product2 AND every one of its existing conditions' Product2 —
+      // by `resolveProductConsistentRuleCandidate`; a contaminated candidate is skipped (never mutated,
+      // never attached to) in favor of another valid one, or a brand-new Rule if none qualifies.
+      if (!schema.ruleProductField.field) {
+        client.logDebug("execution-trace", `WARNING — this org's AttributeBasedAdjRule has no Product2 lookup field; rule candidate evaluation for "${ruleName}" relies entirely on Condition-level Product2 verification (and downstream Adjustment-level verification).`);
+      }
+      const candidate = await resolveProductConsistentRuleCandidate(client, schema, ruleName, args.product.id);
+      if (candidate) {
+        ruleId = candidate.ruleId;
+        ruleProductId = candidate.ruleProductId;
+        client.logDebug("execution-trace", `Rule ${ruleId}\nExpected Product ${args.product.id}\nRule's own resolved Product: ${ruleProductId ?? "(not exposed on this org's schema)"}`);
+        existingAdjustmentId = await resolveExistingAdjustmentForRule(
+          client, schema, ruleId, { productId: args.product.id, scheduleId, sellingModelId: args.sellingModelId },
+          effectiveFrom, effectiveTo, abaTypeValue, row.adjustment, hasValueTracking,
+        );
+        if (existingAdjustmentId) {
+          reusedExisting = true;
+          reusedWithAdjustment++;
+          onProgress?.(`✓ Reused existing AttributeBasedAdjRule "${ruleName}" (already has a verified Adjustment for this exact Product+SellingModel+Schedule+EffectiveFrom/To+value).`);
+        } else {
+          reusedWithoutAdjustment++;
+          onProgress?.(`Found existing AttributeBasedAdjRule "${ruleName}" without a safely-reusable Adjustment yet — will build a correct Condition/Adjustment instead.`);
+        }
       } else {
-        reusedWithoutAdjustment++;
-        onProgress?.(`Found existing AttributeBasedAdjRule "${ruleName}" without an Adjustment yet — will create its Condition/Adjustment.`);
+        // Only set the direct Schedule lookup on Rule when this org's schema actually has one (see
+        // prepareAttributeBasedAdjustmentSchema's diagnostics) — the Schedule/Rule connection is
+        // always also established via AttributeBasedAdjustment below, which is the org-agnostic path.
+        const payload: Record<string, unknown> = { Name: ruleName };
+        const resolvedLookups: ResolvedLookup[] = [];
+        if (schema.ruleProductField.field) { payload[schema.ruleProductField.field.name] = args.product.id; resolvedLookups.push({ targetObject: "Product2", field: schema.ruleProductField.field, value: args.product.id }); }
+        if (schema.ruleScheduleField.field) {
+          payload[schema.ruleScheduleField.field.name] = scheduleId;
+          resolvedLookups.push({ targetObject: "PriceAdjustmentSchedule", field: schema.ruleScheduleField.field, value: scheduleId });
+        }
+        if (schema.ruleEffFromField) payload[schema.ruleEffFromField.name] = todayISO();
+        if (schema.ruleEffToField) payload[schema.ruleEffToField.name] = oneYearFromTodayISO();
+        if (schema.ruleActiveField) payload[schema.ruleActiveField.name] = true;
+        ruleId = await guardedCreate(client, "AttributeBasedAdjRule", schema.ruleDescribe, payload, resolvedLookups, "create-rule");
+        ruleProductId = schema.ruleProductField.field ? args.product.id : null;
+        newlyCreated++;
+        onProgress?.(`✓ Created AttributeBasedAdjRule "${ruleName}"${schema.ruleScheduleField.field ? "" : " (linked to the Schedule via AttributeBasedAdjustment — this org has no direct Rule→Schedule lookup)"}.`);
       }
-    } else {
-      // Only set the direct Schedule lookup on Rule when this org's schema actually has one (see
-      // prepareAttributeBasedAdjustmentSchema's diagnostics) — the Schedule/Rule connection is
-      // always also established via AttributeBasedAdjustment below, which is the org-agnostic path.
-      const payload: Record<string, unknown> = { Name: ruleName };
-      const resolvedLookups: ResolvedLookup[] = [];
-      if (schema.ruleProductField.field) { payload[schema.ruleProductField.field.name] = args.product.id; resolvedLookups.push({ targetObject: "Product2", field: schema.ruleProductField.field, value: args.product.id }); }
-      if (schema.ruleScheduleField.field) {
-        payload[schema.ruleScheduleField.field.name] = scheduleId;
-        resolvedLookups.push({ targetObject: "PriceAdjustmentSchedule", field: schema.ruleScheduleField.field, value: scheduleId });
-      }
-      if (schema.ruleEffFromField) payload[schema.ruleEffFromField.name] = todayISO();
-      if (schema.ruleEffToField) payload[schema.ruleEffToField.name] = oneYearFromTodayISO();
-      if (schema.ruleActiveField) payload[schema.ruleActiveField.name] = true;
-      ruleId = await guardedCreate(client, "AttributeBasedAdjRule", schema.ruleDescribe, payload, resolvedLookups, "create-rule");
-      ruleProductId = schema.ruleProductField.field ? args.product.id : null;
-      newlyCreated++;
-      onProgress?.(`✓ Created AttributeBasedAdjRule "${ruleName}"${schema.ruleScheduleField.field ? "" : " (linked to the Schedule via AttributeBasedAdjustment — this org has no direct Rule→Schedule lookup)"}.`);
+      if (signatureDedup && rowSignature) signatureDedup.thisRunSignatureToRuleId.set(rowSignature, ruleId);
     }
 
     ruleIds.push(ruleId);
@@ -3221,7 +3351,13 @@ export async function createAttributeBasedAdjustments(
   // without re-querying), but a cache MISS always still falls through to a live Salesforce query below
   // — this cache is never the sole source of truth. Keyed by the full canonical identity, never by
   // attribute name/value/Rule Id alone.
-  const identityCache = new Map<string, string>();
+  // §Phase-A duplicate logical-state fix — the cache now also carries the cached Adjustment's own
+  // type/value, not just its Id: a cache HIT used to be treated as an unconditional AUTO_REUSE,
+  // bypassing `classifyAdjustmentMatch` entirely — meaning two of this run's OWN rows sharing an
+  // identical complete-state signature but requesting DIFFERENT adjustment values would silently keep
+  // whichever one was processed first, never reporting the conflict. A cache hit now runs through the
+  // exact same conflict classification as a fresh Salesforce lookup.
+  const identityCache = new Map<string, { id: string; type: string | null; value: number | null }>();
 
   // §Step 9 fix — a diagnostic table of every pending rule's resolved identity, computed BEFORE any
   // AttributeBasedAdjustment create/reuse call below — never after the fact. Signatures are cached here
@@ -3317,11 +3453,12 @@ export async function createAttributeBasedAdjustments(
     const overrideKey = adjustmentDecisionKey(row.attributeName, row.value);
     const override = decisionOverrides?.get(overrideKey);
 
-    let existingId = identityCache.get(cacheKey) ?? null;
+    const cached = identityCache.get(cacheKey);
+    let existingId = cached?.id ?? null;
     let candidateCount = 0;
-    let existingType: string | null = null;
-    let existingValue: number | null = null;
-    const viaCache = !!existingId;
+    let existingType: string | null = cached?.type ?? null;
+    let existingValue: number | null = cached?.value ?? null;
+    const viaCache = !!cached;
     if (!existingId) {
       const found = await findExistingAttributeBasedAdjustment(client, schema, attributeIdentityById, requested);
       existingId = found.id;
@@ -3331,13 +3468,15 @@ export async function createAttributeBasedAdjustments(
     }
 
     // §Phase 8 — a matching identity does NOT by itself mean the requested ADJUSTMENT VALUE also
-    // agrees; classified separately (never conflated with condition-identity matching). A cache hit
-    // represents an already-fully-resolved outcome from earlier in THIS SAME run — never re-classified.
+    // agrees; classified separately (never conflated with condition-identity matching).
+    // §Phase-A duplicate logical-state fix — a cache hit is NO LONGER an automatic AUTO_REUSE: two of
+    // this run's OWN rows can share an identical complete-state identity (e.g. "Display=1080p" and
+    // "Screen Size=24 Inch" both pinning the other to baseline) while requesting DIFFERENT adjustment
+    // values — that must be classified (and, if genuinely conflicting, reported) exactly like a
+    // fresh-Salesforce-lookup match, never silently treated as "already resolved, nothing to check."
     const outcome: "AUTO_REUSE" | "USE_EXISTING" | "USE_NEW" | "CONFLICT" | "NONE" = !existingId
       ? "NONE"
-      : viaCache
-        ? "AUTO_REUSE"
-        : classifyAdjustmentMatch({ existingAdjustmentType: existingType, existingAdjustmentValue: existingValue }, { type: abaTypeValue, value: row.adjustment }, hasValueTracking, override);
+      : classifyAdjustmentMatch({ existingAdjustmentType: existingType, existingAdjustmentValue: existingValue }, { type: abaTypeValue, value: row.adjustment }, hasValueTracking, override);
 
     // §Part 13 — the pre-creation diagnostic block, logged for every rule before any create is attempted.
     client.logDebug("execution-trace", [
@@ -3384,7 +3523,7 @@ export async function createAttributeBasedAdjustments(
 
     if (outcome === "USE_NEW") {
       await applyUseNewAdjustmentValue(client, schema, existingId!, abaTypeValue, row.adjustment);
-      identityCache.set(cacheKey, existingId!);
+      identityCache.set(cacheKey, { id: existingId!, type: abaTypeValue, value: row.adjustment });
       updatedAdjustmentIds.push(existingId!);
       decisions.push({
         step: "attribute-based-adjustment", ruleId, requestedConfiguration, conditionSignature: requestedResult.signature,
@@ -3396,7 +3535,7 @@ export async function createAttributeBasedAdjustments(
     }
 
     if (outcome === "AUTO_REUSE" || outcome === "USE_EXISTING") {
-      if (!viaCache) identityCache.set(cacheKey, existingId!);
+      if (!viaCache) identityCache.set(cacheKey, { id: existingId!, type: existingType, value: existingValue });
       reusedAdjustmentIds.push(existingId!);
       decisions.push({
         step: "attribute-based-adjustment", ruleId, requestedConfiguration, conditionSignature: requestedResult.signature,
@@ -3492,6 +3631,8 @@ export async function createAttributeBasedAdjustments(
 
     let adjustmentId: string;
     let reconciledFromDuplicateError = false;
+    let reconciledAdjustmentType: string | null = null;
+    let reconciledAdjustmentValue: number | null = null;
     try {
       adjustmentId = await guardedCreate(client, "AttributeBasedAdjustment", schema.abaDescribe, payload, lookups, "create-adjustment");
       client.logDebug("execution-trace", [
@@ -3607,7 +3748,7 @@ export async function createAttributeBasedAdjustments(
       }
       if (reconciledOutcome === "USE_NEW") {
         await applyUseNewAdjustmentValue(client, schema, reconciled.id, abaTypeValue, row.adjustment);
-        identityCache.set(cacheKey, reconciled.id);
+        identityCache.set(cacheKey, { id: reconciled.id, type: abaTypeValue, value: row.adjustment });
         updatedAdjustmentIds.push(reconciled.id);
         decisions.push({
           step: "attribute-based-adjustment", ruleId, requestedConfiguration, conditionSignature: requestedResult.signature,
@@ -3621,6 +3762,8 @@ export async function createAttributeBasedAdjustments(
       client.logDebug("execution-trace", `[ABP] Reuse result — duplicate-error reconciliation found a logically equivalent match: ${reconciled.id}. Reusing it instead of creating a duplicate.`);
       adjustmentId = reconciled.id;
       candidateCount = reconciled.candidateCount;
+      reconciledAdjustmentType = reconciled.existingAdjustmentType;
+      reconciledAdjustmentValue = reconciled.existingAdjustmentValue;
       reconciledFromDuplicateError = true;
     }
 
@@ -3641,7 +3784,12 @@ export async function createAttributeBasedAdjustments(
       ].join("\n"));
     }
 
-    identityCache.set(cacheKey, adjustmentId);
+    identityCache.set(
+      cacheKey,
+      reconciledFromDuplicateError
+        ? { id: adjustmentId, type: reconciledAdjustmentType, value: reconciledAdjustmentValue }
+        : { id: adjustmentId, type: abaTypeValue, value: row.adjustment },
+    );
     if (reconciledFromDuplicateError) {
       reusedAdjustmentIds.push(adjustmentId);
       decisions.push({
@@ -3991,7 +4139,7 @@ export interface CombinationNameCollisionGroup {
  * real creation path uses, then grouped by name. A non-empty result means 2+ genuinely different
  * combinations would be silently merged onto one Rule (exactly the live-captured bug this fix closes) if
  * creation proceeded. Never calls Salesforce. */
-export function detectCombinationNameCollisions(combinations: AttributePricedOption[][]): CombinationNameCollisionGroup[] {
+export function detectCombinationNameCollisions(combinations: AttributeCombinationMember[][]): CombinationNameCollisionGroup[] {
   const byName = new Map<string, AttributeCombinationMember[][]>();
   for (const combo of combinations) {
     const members: AttributeCombinationMember[] = combo.map(o => ({ attributeName: o.attributeName, attributeLabel: o.attributeLabel, value: o.value, valueLabel: o.valueLabel }));
@@ -4239,7 +4387,7 @@ export interface CombinationRuleMatch {
  * used by offline/forensic tooling that has no run context at all, never by the real creation path.
  */
 export function matchExistingRulesToCombinations(
-  combinations: AttributePricedOption[][],
+  combinations: AttributeCombinationMember[][],
   existingRules: ExistingRuleContentIdentity[],
   productId: string,
   priceImpactingAttributeNames: string[],
@@ -4378,11 +4526,29 @@ async function seedAdjustmentSignatureCache(
   return cache;
 }
 
+/**
+ * §Combination-expansion architecture fix — a forensic investigation (real `DecisionTableParameter`
+ * metadata + Salesforce's own `FIELD_INTEGRITY_EXCEPTION`) proved every Rule needs a condition for EVERY
+ * price-impacting attribute, and confirmed no native mechanism exists for an arbitrary, unplanned
+ * combination of independently-priced attributes to accumulate at runtime without a materialized Rule for
+ * that exact combination. That does NOT mean every possible combination should be pre-generated, though:
+ * this function now materializes ONLY the combinations `requestedCombinations` explicitly names — already
+ * resolved against real Salesforce data by `analyze.ts`'s Step 8.5 — never rediscovering every historical
+ * single-attribute option for this product and cross-producting them. An empty array (the default when the
+ * prompt never used combination language) means this function does nothing at all: zero discovery queries,
+ * zero Cartesian product, zero writes.
+ *
+ * Each requested combination's adjustment (`type`/`value`) is exactly what the prompt stated for THAT
+ * combination — never summed from the individual members' own per-attribute adjustments (that would be a
+ * different, automatic-closure concept this explicit path deliberately doesn't use, since summing was never
+ * asked for and would silently invent a price the user never actually stated for this exact combination).
+ */
 export async function expandAttributeCombinationRules(
   client: SalesforceClient,
   schema: AttributeBasedPricingSchema,
   args: { product: { id: string; name: string }; sellingModelId: string | null; scheduleId: string },
   contexts: Map<string, AttributeContext>,
+  requestedCombinations: CombinationRulePlanRow[],
   steps: ProcedureStepLite[],
   onProgress?: (message: string) => void,
   // §Root-cause fix (deterministic run-boundary provenance) — the SAME Id `createPipeline.ts` already
@@ -4394,20 +4560,14 @@ export async function expandAttributeCombinationRules(
   // scope, it just can't be resumed by a later call unless that later call passes the SAME id back.
   executionId: string = randomUUID(),
 ): Promise<CombinationExpansionResult> {
-  step(steps, "create-combination-rules", "start", "Discovering existing single-attribute priced options to build the cumulative multi-attribute combination closure.");
-
-  const options = await discoverSingleAttributePricedOptions(client, schema, args, contexts);
-  if (options.length < 2) {
-    step(steps, "create-combination-rules", "info", `Only ${options.length} single-attribute priced option(s) found for this product — at least 2 (spanning different attributes) are needed before any combination is possible; nothing to do yet.`);
-    return { discoveredOptions: options, plans: [], createdCount: 0, reusedCount: 0, skippedCount: 0 };
+  if (requestedCombinations.length === 0) {
+    step(steps, "create-combination-rules", "info", "No explicit combination pricing was requested — skipping combinatorial expansion entirely (default behavior: only individual attribute/value pricing is created).");
+    return { discoveredOptions: [], plans: [], createdCount: 0, reusedCount: 0, skippedCount: 0 };
   }
 
-  const combinations = computeAttributeCombinations(options);
-  const distinctAttributeCount = new Set(options.map(o => o.attributeName)).size;
-  step(
-    steps, "create-combination-rules", "info",
-    `${combinations.length} multi-attribute combination(s) computed from ${options.length} discovered single-attribute option(s) across ${distinctAttributeCount} attribute(s).`,
-  );
+  step(steps, "create-combination-rules", "start", `Materializing ${requestedCombinations.length} explicitly requested combination(s) — no automatic discovery, no Cartesian product.`);
+
+  const combinations: AttributeCombinationMember[][] = requestedCombinations.map(r => r.members);
 
   // §Hard safety gate (offline forensic analysis) — a live run proved that without this check, 5
   // genuinely different combinations could sanitize to the identical 80-character Rule name and be
@@ -4418,10 +4578,9 @@ export async function expandAttributeCombinationRules(
   const nameCollisions = detectCombinationNameCollisions(combinations);
   if (nameCollisions.length > 0) {
     const detail = nameCollisions.map(c => `"${c.ruleName}" <- ${c.members.length} combinations: ${c.members.map(m => m.map(x => `${x.attributeName}=${x.value}`).join("+")).join(" | ")}`).join("; ");
-    throw new Error(`Refusing to create any combination records: ${nameCollisions.length} Rule-name collision(s) detected among ${combinations.length} planned combination(s) — ${detail}`);
+    throw new Error(`Refusing to create any combination records: ${nameCollisions.length} Rule-name collision(s) detected among ${combinations.length} requested combination(s) — ${detail}`);
   }
 
-  const overrideTypeValue = schema.abaTypeField ? resolveAdjustmentTypeValue(schema.abaTypeField, "override") : null;
   const attributeIdentityById = buildAttributeIdentityReverseMap(contexts);
   const priceImpactingEntries = [...contexts.entries()].filter(([, ctx]) => ctx.isPriceImpacting === true);
   const baseConfig = await resolveBaseProductConfiguration(client, args.product.id, priceImpactingEntries);
@@ -4464,16 +4623,21 @@ export async function expandAttributeCombinationRules(
   let reusedCount = 0;
   let skippedCount = 0;
 
-  for (const [comboIndex, combo] of combinations.entries()) {
-    const members: AttributeCombinationMember[] = combo.map(o => ({ attributeName: o.attributeName, attributeLabel: o.attributeLabel, value: o.value, valueLabel: o.valueLabel }));
+  for (const [comboIndex, requested] of requestedCombinations.entries()) {
+    const members = requested.members;
     const label = members.map(m => `${m.attributeName}=${m.valueLabel}`).join(" AND ");
-    const combined = combineAdjustmentValues(combo, overrideTypeValue);
-    if (combined.skippedReason) {
-      plans.push({ members, ruleId: null, reusedExisting: false, adjustmentId: null, combinedAdjustmentType: null, combinedAdjustmentValue: null, skippedReason: combined.skippedReason });
+
+    // The combination's adjustment is exactly what the prompt stated for it — never summed from the
+    // members' own individual per-attribute adjustments.
+    const resolvedType = schema.abaTypeField ? resolveAdjustmentTypeValue(schema.abaTypeField, requested.adjustmentType) : null;
+    if (schema.abaTypeField && !resolvedType) {
+      const skippedReason = `Could not resolve adjustment type "${requested.adjustmentType}" against this org's real AttributeBasedAdjustment picklist values.`;
+      plans.push({ members, ruleId: null, reusedExisting: false, adjustmentId: null, combinedAdjustmentType: null, combinedAdjustmentValue: null, skippedReason });
       skippedCount++;
-      client.logDebug("execution-trace", `Combination [${label}] skipped: ${combined.skippedReason}`);
+      client.logDebug("execution-trace", `Combination [${label}] skipped: ${skippedReason}`);
       continue;
     }
+    const combined = { type: resolvedType, value: requested.adjustment };
 
     const ruleName = sanitizeRuleName(members.map(m => m.attributeName).join("_"), members.map(m => m.value).join("_"));
     const match = ruleMatches.get(comboIndex)!;
@@ -4573,35 +4737,54 @@ export async function expandAttributeCombinationRules(
 
   step(
     steps, "create-combination-rules", "success",
-    `${createdCount} combination adjustment(s) created, ${reusedCount} reused, ${skippedCount} skipped (mixed-type or override) of ${combinations.length} combination(s) computed.`,
+    `${createdCount} explicit combination adjustment(s) created, ${reusedCount} reused, ${skippedCount} skipped, of ${requestedCombinations.length} explicitly requested combination(s).`,
   );
-  return { discoveredOptions: options, plans, createdCount, reusedCount, skippedCount };
+  return { discoveredOptions: [], plans, createdCount, reusedCount, skippedCount };
 }
 
-/** §Verify Adjustment Records (Part 9 step 9) — a dedicated read-back re-query of every Id this run
- * just created/reused, run immediately after creation and before anything downstream depends on them. */
+/**
+ * §Verify Adjustment Records (Part 9 step 9) — a dedicated read-back re-query of every Id this run just
+ * created/reused, run immediately after creation and before anything downstream depends on them.
+ *
+ * §Verification hardening (defensive only — the PRIMARY fix is preventing a duplicate/shadow Rule from
+ * ever being created in the first place, in `createOrReuseAttributeBasedAdjRules`) — a raw
+ * `records.length` vs `result.ruleIds.length` comparison is fragile against a duplicate VALUE in
+ * `ruleIds` (e.g. two Phase-A rows that legitimately share one real Rule after the content-identity fix
+ * both push that same ruleId): `WHERE Id IN (...)` naturally collapses a repeated Id to one returned row,
+ * so a raw length compare would report a false "N/M" shortfall even though every referenced record
+ * genuinely exists. `expectedRuleCount`/`expectedConditionCount`/`expectedAdjustmentCount` are computed
+ * from the DISTINCT input ids, so the caller compares distinct-vs-distinct, never distinct-vs-raw.
+ */
 export async function verifyAdjustmentRecordsReadBack(
   client: SalesforceClient,
   result: NativeCreationResult,
-): Promise<{ scheduleVerified: boolean; ruleCount: number; conditionCount: number; adjustmentCount: number }> {
+): Promise<{
+  scheduleVerified: boolean;
+  ruleCount: number; expectedRuleCount: number;
+  conditionCount: number; expectedConditionCount: number;
+  adjustmentCount: number; expectedAdjustmentCount: number;
+}> {
   const idList = (ids: string[]) => ids.map(id => `'${soqlEscape(id)}'`).join(",");
+  const uniqueRuleIds = [...new Set(result.ruleIds)];
+  const uniqueConditionIds = [...new Set(result.conditionIds)];
+  const uniqueAdjustmentIds = [...new Set(result.adjustmentIds)];
 
   const scheduleRes = await client.query<{ Id: string }>(`SELECT Id FROM PriceAdjustmentSchedule WHERE Id = '${soqlEscape(result.scheduleId)}' LIMIT 1`).catch(() => ({ records: [] as { Id: string }[] }));
-  const ruleRes = result.ruleIds.length
-    ? await client.query<{ Id: string }>(`SELECT Id FROM AttributeBasedAdjRule WHERE Id IN (${idList(result.ruleIds)})`).catch(() => ({ records: [] as { Id: string }[] }))
+  const ruleRes = uniqueRuleIds.length
+    ? await client.query<{ Id: string }>(`SELECT Id FROM AttributeBasedAdjRule WHERE Id IN (${idList(uniqueRuleIds)})`).catch(() => ({ records: [] as { Id: string }[] }))
     : { records: [] as { Id: string }[] };
-  const conditionRes = result.conditionIds.length
-    ? await client.query<{ Id: string }>(`SELECT Id FROM AttributeAdjustmentCondition WHERE Id IN (${idList(result.conditionIds)})`).catch(() => ({ records: [] as { Id: string }[] }))
+  const conditionRes = uniqueConditionIds.length
+    ? await client.query<{ Id: string }>(`SELECT Id FROM AttributeAdjustmentCondition WHERE Id IN (${idList(uniqueConditionIds)})`).catch(() => ({ records: [] as { Id: string }[] }))
     : { records: [] as { Id: string }[] };
-  const adjustmentRes = result.adjustmentIds.length
-    ? await client.query<{ Id: string }>(`SELECT Id FROM AttributeBasedAdjustment WHERE Id IN (${idList(result.adjustmentIds)})`).catch(() => ({ records: [] as { Id: string }[] }))
+  const adjustmentRes = uniqueAdjustmentIds.length
+    ? await client.query<{ Id: string }>(`SELECT Id FROM AttributeBasedAdjustment WHERE Id IN (${idList(uniqueAdjustmentIds)})`).catch(() => ({ records: [] as { Id: string }[] }))
     : { records: [] as { Id: string }[] };
 
   return {
     scheduleVerified: scheduleRes.records.length === 1,
-    ruleCount: ruleRes.records.length,
-    conditionCount: conditionRes.records.length,
-    adjustmentCount: adjustmentRes.records.length,
+    ruleCount: new Set(ruleRes.records.map(r => r.Id)).size, expectedRuleCount: uniqueRuleIds.length,
+    conditionCount: new Set(conditionRes.records.map(r => r.Id)).size, expectedConditionCount: uniqueConditionIds.length,
+    adjustmentCount: new Set(adjustmentRes.records.map(r => r.Id)).size, expectedAdjustmentCount: uniqueAdjustmentIds.length,
   };
 }
 
