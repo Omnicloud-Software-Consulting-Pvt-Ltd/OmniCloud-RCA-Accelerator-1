@@ -7,6 +7,8 @@
  * fetch.
  */
 
+import { createHash } from "node:crypto";
+
 export class DocuSignError extends Error {
   status: number;
   body: unknown;
@@ -203,6 +205,45 @@ export interface EnvelopeSignerInput {
    * assume is valid.
    */
   omitTabs?: boolean;
+  /**
+   * Per-signer email override — DocuSign uses this signer's own subject/body
+   * INSTEAD of the envelope-level `emailSubject`/`emailBlurb` for that one
+   * recipient specifically, when present. Not previously used anywhere in
+   * this codebase (verified: zero occurrences before this change, in
+   * production, Test A/B, or Test C) — added as a defensive, explicit
+   * per-recipient reinforcement of the SAME subject/body already sent at the
+   * envelope level, so the outgoing email content can never depend on
+   * whatever an account/plan's own per-recipient notification defaults
+   * might otherwise substitute.
+   */
+  emailNotification?: { emailSubject: string; emailBody: string };
+  /**
+   * NOT used by production Send-for-Signature or any of the shared test
+   * paths above — every one of them omits this entirely (see the class doc
+   * comment: "no `clientUserId` is ever set on a signer"). Exists ONLY for
+   * the separate "Send Signing Email" manual-delivery test flow
+   * (envelope.ts's sendEmbeddedSigningTestEnvelope), which needs DocuSign to
+   * treat that ONE recipient as a captive/embedded signer so a
+   * createRecipientView() URL can be generated for them. Setting this also
+   * means DocuSign will never itself email this recipient — intentional for
+   * that flow, since the sender delivers the link manually instead.
+   */
+  clientUserId?: string;
+}
+
+/**
+ * A DocuSign `carbonCopies` recipient — DocuSign's own documented, non-signing
+ * recipient type ("Receives a Copy"): takes no signing action, is not a
+ * signer, and is never counted toward envelope completion. Used here to give
+ * the connected DocuSign sender their own visible copy/notification of an
+ * envelope they just sent, without adding them as a second signer/signing
+ * requirement.
+ */
+export interface EnvelopeCarbonCopyInput {
+  name: string;
+  email: string;
+  recipientId: string;
+  routingOrder: number;
 }
 
 export interface CreateEnvelopeResult {
@@ -241,27 +282,53 @@ function maskEmailForLog(email: string): string {
  * from what's actually sent.
  */
 function logEnvelopeRequest(
-  opts: { emailSubject: string; emailBody: string; documentBase64: string; documentName: string; signers: EnvelopeSignerInput[] },
+  opts: { emailSubject: string; emailBody: string; documentBase64: string; documentName: string; documentExtension: string; signers: EnvelopeSignerInput[]; carbonCopy?: EnvelopeCarbonCopyInput },
   body: { documents: { documentId: string; fileExtension: string }[]; status: string },
 ): void {
+  // Sanity check, not a gate: if we're telling DocuSign this is a PDF, the
+  // bytes should actually start with the PDF magic header. A mismatch here
+  // (e.g. a DOCX document mislabeled as PDF) would corrupt DocuSign's
+  // document processing/tab placement even though the HTTP call itself may
+  // still return 201 — this makes that class of bug visible in logs instead
+  // of silently shipping a broken envelope.
+  const documentBuffer = Buffer.from(opts.documentBase64, "base64");
+  const declaredPdf = body.documents[0]?.fileExtension === "pdf";
+  const looksLikePdf = documentBuffer.subarray(0, 4).toString("latin1") === "%PDF";
+  // §Phase 1 — a real content hash, not just a byte length, so a control-test
+  // send and a real Contract send can be told apart (or confirmed identical)
+  // from logs alone without ever printing document bytes.
+  const documentSha256 = createHash("sha256").update(documentBuffer).digest("hex");
   const lines = [
     `documentCount = ${body.documents.length}`,
     `documentId = ${body.documents[0]?.documentId}`,
+    `documentName = ${opts.documentName}`,
     `fileExtension = ${body.documents[0]?.fileExtension}`,
-    `documentByteLength (pre-base64) = ${Math.floor((opts.documentBase64.length * 3) / 4)}`,
-    `documentBase64Length = ${opts.documentBase64.length}`,
+    `documentByteLength = ${documentBuffer.length}`,
+    `documentSha256 = ${documentSha256}`,
+    `pdfHeaderCheck = ${declaredPdf ? (looksLikePdf ? "ok" : "MISMATCH — declared pdf but bytes do not start with %PDF") : "skipped (not declared pdf)"}`,
     `emailSubject = ${opts.emailSubject}`,
-    `emailBlurbPresent = ${!!opts.emailBody}`,
+    `emailBlurb = ${opts.emailBody}`,
     `status = ${body.status}`,
     ...opts.signers.flatMap((s, i) => [
       `signer[${i}].recipientId = ${s.recipientId}`,
       `signer[${i}].name = ${s.name}`,
       `signer[${i}].emailMasked = ${maskEmailForLog(s.email)}`,
       `signer[${i}].routingOrder = ${s.routingOrder}`,
-      `signer[${i}].clientUserIdPresent = false`, // EnvelopeSignerInput has no clientUserId field at all — see its type def above.
+      `signer[${i}].clientUserIdPresent = ${!!s.clientUserId}`, // true only for the manual-delivery test flow's captive signer — every other caller never sets this.
       `signer[${i}].deliveryMethod = ${s.deliveryMethodOverride ?? "email"}`, // always explicit now — verified production fix, not a control-test-only value.
       `signer[${i}].signHereTabCount = ${s.omitTabs ? 0 : 1}`,
+      `signer[${i}].emailNotificationPresent = ${!!s.emailNotification}`,
+      ...(s.emailNotification ? [
+        `signer[${i}].emailNotification.emailSubject = ${s.emailNotification.emailSubject}`,
+        `signer[${i}].emailNotification.emailBody = ${s.emailNotification.emailBody}`,
+      ] : []),
     ]),
+    `carbonCopyPresent = ${!!opts.carbonCopy}`,
+    ...(opts.carbonCopy ? [
+      `carbonCopy.recipientId = ${opts.carbonCopy.recipientId}`,
+      `carbonCopy.routingOrder = ${opts.carbonCopy.routingOrder}`,
+      `carbonCopy.emailMasked = ${maskEmailForLog(opts.carbonCopy.email)}`,
+    ] : []),
   ];
   console.log(`[DOCUSIGN ENVELOPE REQUEST]\n${lines.join("\n")}`);
 }
@@ -274,13 +341,17 @@ export async function createAndSendEnvelope(opts: {
   emailBody: string;
   documentBase64: string;
   documentName: string;
+  /** The document's REAL file extension (e.g. from Salesforce ContentVersion.FileExtension) — never assumed to be "pdf". DocuSign natively accepts pdf/docx/doc/etc. and converts for signing, but the declared extension must match the actual bytes or DocuSign's document processing/tab placement breaks. */
+  documentExtension: string;
   signers: EnvelopeSignerInput[];
+  /** Optional — the connected DocuSign sender, added as a non-signing `carbonCopies` recipient so they get their own copy/notification of an envelope they just sent. Never added as a signer; never a second signing requirement. */
+  carbonCopy?: EnvelopeCarbonCopyInput;
 }): Promise<CreateEnvelopeResult> {
   const url = `${opts.baseUri}/restapi/v2.1/accounts/${opts.accountId}/envelopes`;
   const body = {
     emailSubject: opts.emailSubject,
     emailBlurb: opts.emailBody,
-    documents: [{ documentBase64: opts.documentBase64, name: opts.documentName, fileExtension: "pdf", documentId: "1" }],
+    documents: [{ documentBase64: opts.documentBase64, name: opts.documentName, fileExtension: opts.documentExtension, documentId: "1" }],
     recipients: {
       signers: opts.signers.map(s => ({
         email: s.email,
@@ -292,6 +363,11 @@ export async function createAndSendEnvelope(opts: {
         // only allowed value is already "email") — kept only so the Test A/B
         // control-test plumbing above doesn't need to change.
         deliveryMethod: s.deliveryMethodOverride ?? "email",
+        ...(s.emailNotification ? { emailNotification: { emailSubject: s.emailNotification.emailSubject, emailBody: s.emailNotification.emailBody } } : {}),
+        // Only present for the manual-delivery test flow's captive signer —
+        // every other caller leaves clientUserId undefined, so this key is
+        // simply absent from the JSON exactly as before this field existed.
+        ...(s.clientUserId ? { clientUserId: s.clientUserId } : {}),
         ...(s.omitTabs ? {} : {
           tabs: {
             signHereTabs: [
@@ -300,6 +376,18 @@ export async function createAndSendEnvelope(opts: {
           },
         }),
       })),
+      // DocuSign's documented "Receives a Copy" recipient type — a sibling
+      // array to `signers`, never itself a signer. Only present when a
+      // carbonCopy was actually supplied (i.e. the sender's email is known
+      // and distinct from every real signer's email).
+      ...(opts.carbonCopy ? {
+        carbonCopies: [{
+          email: opts.carbonCopy.email,
+          name: opts.carbonCopy.name,
+          recipientId: opts.carbonCopy.recipientId,
+          routingOrder: String(opts.carbonCopy.routingOrder),
+        }],
+      } : {}),
     },
     status: "sent",
   };
@@ -356,6 +444,9 @@ export interface EnvelopeRecipientSummary {
   /** DocuSign-reported (String "true"/"false"/null) — surfaced for the Compare/Control-Test tooling; NOT something production sending sets or relies on. */
   recipientSuppliesTabs: string | null;
   totalTabCount: number | null;
+  /** Only populated when DocuSign's recipient record actually included this key (e.g. status "autoresponded") — never fabricated. See emailDeliveryInspection.ts for how this is classified into a delivery verdict. */
+  autoRespondedReason: string | null;
+  declinedReason: string | null;
 }
 
 /** GET the envelope's actual recipient records — DocuSign's own view of each signer's delivery/status, not what we requested. */
@@ -380,7 +471,34 @@ export async function getEnvelopeRecipients(opts: { baseUri: string; accountId: 
     declinedDateTime: (s.declinedDateTime as string) ?? null,
     recipientSuppliesTabs: (s.recipientSuppliesTabs as string) ?? null,
     totalTabCount: s.totalTabCount != null ? Number(s.totalTabCount) : null,
+    autoRespondedReason: (s.autoRespondedReason as string) ?? (s.autoResponseReason as string) ?? null,
+    declinedReason: (s.declinedReason as string) ?? null,
   }));
+}
+
+/**
+ * "Correct and resend" — DocuSign's documented recipient-correction operation:
+ * `PUT .../envelopes/{envelopeId}/recipients?resend_envelope=true` updates an
+ * EXISTING signer's email/name on the SAME envelope (no new envelopeId is
+ * created) and forces DocuSign to generate a fresh invitation email for that
+ * recipient, even if nothing else about the recipient changed. This is the
+ * correct API-documented way to recover from a bounced/undeliverable
+ * recipient without creating a duplicate envelope. Only ever called from an
+ * explicit, single user action (the Signatures panel's "Correct & Resend"
+ * button) — never automatically or in a loop.
+ */
+export async function correctAndResendRecipient(opts: {
+  baseUri: string; accountId: string; accessToken: string; envelopeId: string;
+  recipientId: string; name: string; email: string;
+}): Promise<void> {
+  const url = `${opts.baseUri}/restapi/v2.1/accounts/${opts.accountId}/envelopes/${opts.envelopeId}/recipients?resend_envelope=true`;
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${opts.accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ signers: [{ recipientId: opts.recipientId, name: opts.name, email: opts.email }] }),
+  });
+  const json = await res.json().catch(() => null);
+  if (!res.ok) throw new DocuSignError((json?.message as string) ?? "Failed to correct and resend this recipient", res.status, json);
 }
 
 export interface EnvelopeAuditEvent {
@@ -412,7 +530,13 @@ export async function getEnvelopeAuditEvents(opts: { baseUri: string; accountId:
   return events.map(e => {
     const raw: Record<string, string> = {};
     for (const f of e.eventFields ?? []) raw[f.name] = f.value;
-    return { eventName: raw.EventName ?? null, eventDateTime: raw.LogTime ?? raw.EventDateTime ?? null, raw };
+    // This account/plan's actual field names are "Action" and "logTime" (verified
+    // against a real envelope's raw audit_events response — see [DOCUSIGN AUDIT
+    // RAW] log above) rather than the "EventName"/"LogTime" names originally
+    // assumed here, which silently produced eventName: null for every event.
+    // Both spellings are checked so this survives an account/plan that DOES use
+    // the originally-assumed names.
+    return { eventName: raw.Action ?? raw.EventName ?? null, eventDateTime: raw.logTime ?? raw.LogTime ?? raw.EventDateTime ?? null, raw };
   });
 }
 
@@ -455,13 +579,50 @@ export async function getEnvelopeRawDump(opts: { baseUri: string; accountId: str
   };
 
   const [envelope, recipients, notification, auditEvents] = await Promise.all([
-    fetchJson(`${base}?include=recipients,tabs`),
+    fetchJson(`${base}?include=recipients,tabs,documents`),
     fetchJson(`${base}/recipients?include_extended=true&include_tabs=true`),
     fetchJson(`${base}/notification`),
     fetchJson(`${base}/audit_events`),
   ]);
 
   return { envelope, recipients, notification, auditEvents };
+}
+
+/**
+ * "Send Signing Email" test flow ONLY — every other path in this
+ * file never calls this. `POST .../views/recipient` (DocuSign's documented
+ * embedded-signing / "recipient view" operation) is the ONLY DocuSign API
+ * that returns a directly-usable signing URL; it ONLY works for a recipient
+ * that was created on the envelope with a matching `clientUserId` (a
+ * "captive" recipient — see EnvelopeSignerInput.clientUserId). The returned
+ * URL is single-use and DocuSign-documented to expire ~5 minutes after
+ * generation — by design NEVER stored or emailed directly. Callers of this
+ * function must generate a FRESH url on every use (e.g. the public
+ * /sign/[token] redirect route calling this on each click), never cache or
+ * re-send a previously-returned url.
+ */
+export async function createRecipientView(opts: {
+  baseUri: string; accountId: string; accessToken: string; envelopeId: string;
+  recipientId: string; clientUserId: string; name: string; email: string;
+  /** Where DocuSign sends the browser after the recipient finishes signing/declines. */
+  returnUrl: string;
+}): Promise<{ url: string }> {
+  const url = `${opts.baseUri}/restapi/v2.1/accounts/${opts.accountId}/envelopes/${opts.envelopeId}/views/recipient`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${opts.accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      authenticationMethod: "none",
+      email: opts.email,
+      userName: opts.name,
+      clientUserId: opts.clientUserId,
+      recipientId: opts.recipientId,
+      returnUrl: opts.returnUrl,
+    }),
+  });
+  const json = await res.json().catch(() => null);
+  if (!res.ok || !json?.url) throw new DocuSignError((json?.message as string) ?? "Failed to create a DocuSign recipient signing view", res.status, json);
+  return { url: json.url as string };
 }
 
 /** §5.5: fetch the envelope's combined signed PDF + Certificate of Completion. */

@@ -64,6 +64,17 @@ export async function POST(req: NextRequest, { params }: Params) {
       ? await createNextContentVersion(client, { contentDocumentId, title, base64Data, pathOnClient, templateName })
       : await createFirstContentVersion(client, { contractId, title, base64Data, pathOnClient, templateName });
 
+    // Temporary sanitized trace (§Phase 1) — `result.id` is the REAL Id
+    // Salesforce's own create-record response returned, never derived or
+    // guessed (see createFirstContentVersion/createNextContentVersion).
+    console.log(
+      `[GENERATED DOCUMENT SOURCE]\n` +
+      `contractId=${contractId}\n` +
+      `contentVersionId=${result.id}\n` +
+      `instanceUrl=${client.instanceUrl}\n` +
+      `source=content-version-create`,
+    );
+
     return NextResponse.json({ success: true, contentVersionId: result.id, unrecognizedTags: findUnrecognizedTags(bodyHtml) });
   } catch (err) {
     return sfErrorResponse(err, "Failed to generate document");

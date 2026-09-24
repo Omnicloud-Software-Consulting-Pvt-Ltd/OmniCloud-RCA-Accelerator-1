@@ -7,16 +7,17 @@ import { quoteApiGet, quoteApiPost, toErrorPanelData, type ErrorPanelDataLike } 
 import { updateResponseSummary } from "@/lib/quotes/client/responseSummary";
 import { DEFAULT_EMAIL_SUBJECT, DEFAULT_EMAIL_BODY, substituteEmailTokens } from "@/lib/contracts/docusign/emailPreview";
 import * as signatureStore from "@/lib/contracts/docusign/localSignatureStore";
-import type { GeneratedDocument, SignatureRecipient, SignatureRequest } from "@/lib/contracts/types";
+import type { GeneratedDocument, SignatureRecipient, SignatureRequest, SignatureStage, SignatureTimelineEntry } from "@/lib/contracts/types";
 
 const RECIPIENT_TYPES = ["Customer", "Internal Approver", "Legal Team", "Finance", "Sales Representative", "Other"];
 
-/** The shape GET /api/contracts/docusign/envelopes/[envelopeId]/diagnostics returns — queried fresh from DocuSign on demand, never persisted into localSignatureStore. */
+/** The shape POST /api/contracts/docusign/envelopes/[envelopeId]/refresh returns — queried fresh from DocuSign on demand AND persisted (forward-only, deduplicated) into both the server-side tracking store and this browser's localSignatureStore. */
 interface EnvelopeStatusCheck {
   envelopeId: string;
   envelopeStatus: string;
   sentDateTime: string | null;
   recipients: {
+    recipientId: string;
     name: string;
     maskedEmail: string;
     status: string | null;
@@ -25,7 +26,13 @@ interface EnvelopeStatusCheck {
     deliveredDateTime: string | null;
     signedDateTime: string | null;
     declinedDateTime: string | null;
+    autoRespondedReason: string | null;
+    declinedReason: string | null;
   }[];
+  stage: SignatureStage;
+  timeline: SignatureTimelineEntry[];
+  signedContentVersionId: string | null;
+  salesforceWriteback: { attempted: boolean; companyDateWritten: boolean; customerDateWritten: boolean; notes: string[] };
 }
 
 function fmtDate(iso: string): string {
@@ -50,6 +57,13 @@ function recipientDeliveryState(r: EnvelopeStatusCheck["recipients"][number]): {
   if (status === "autoresponded" || status === "delivery_failure" || status === "delivered_failed") return { label: "Delivery Problem", color: "problem" };
   if (r.sentDateTime || status === "sent") return { label: "Email Invitation Sent", color: "sent" };
   return { label: "DocuSign Accepted", color: "accepted" };
+}
+
+/** Distinct from "Declined" (a deliberate recipient action) and "Signed" — this is specifically a bounce/auto-response DocuSign detected on its own, the one case "Correct & Resend" (§Phase 6) can actually fix by changing the recipient's email. */
+function isUndeliverable(r: EnvelopeStatusCheck["recipients"][number]): boolean {
+  if (r.signedDateTime || r.declinedDateTime) return false;
+  const status = (r.status ?? "").toLowerCase();
+  return status === "autoresponded" || status === "delivery_failure" || status === "delivered_failed";
 }
 
 /**
@@ -93,9 +107,22 @@ export default function SignaturePanel({ isDark, contractId, contractLabel, init
   const [savingRecipients, setSavingRecipients] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
   const [sending, setSending] = useState(false);
+  /** "Send Signing Email" — a SEPARATE test/delivery option from Send for Signature above; never touches signatureStore/request.envelopeId. */
+  const [sendingTestLink, setSendingTestLink] = useState(false);
+  const [testLinkResult, setTestLinkResult] = useState<{
+    envelopeId: string; signingLink: string; isLocalhost: boolean;
+    senderName: string | null; senderEmail: string | null;
+    recipientName: string; recipientEmail: string; documentName: string;
+  } | null>(null);
+  const [emailDraftOpened, setEmailDraftOpened] = useState(false);
   const [error, setError] = useState<ErrorPanelDataLike | null>(null);
   const [checkingStatus, setCheckingStatus] = useState(false);
   const [docuSignStatus, setDocuSignStatus] = useState<EnvelopeStatusCheck | null>(null);
+  const [retrievingDocument, setRetrievingDocument] = useState(false);
+  /** recipientId currently being corrected, if the "Correct & Resend" inline field is open for it — null means no correction UI is showing. */
+  const [correctingRecipientId, setCorrectingRecipientId] = useState<string | null>(null);
+  const [correctedEmailInput, setCorrectedEmailInput] = useState("");
+  const [correcting, setCorrecting] = useState(false);
 
   const request = selectedDocId ? statesByDoc[selectedDocId] ?? null : null;
 
@@ -208,7 +235,11 @@ export default function SignaturePanel({ isDark, contractId, contractLabel, init
     try {
       await signatureStore.assertReadyToSend(contractId, selectedDocId);
       await persistDraft();
-      const res = await quoteApiPost<{ envelopeId: string; envelopeStatus: string; sentDateTime: string | null }>(
+      const res = await quoteApiPost<{
+        envelopeId: string; envelopeStatus: string; sentDateTime: string | null;
+        senderName: string | null; senderEmail: string | null; senderUserId: string | null; senderCopyRequested: boolean;
+        recipients: { recipientId: string; status: string | null }[];
+      }>(
         "Send for signature", `/api/contracts/${contractId}/signature/send`,
         {
           recipients,
@@ -220,7 +251,16 @@ export default function SignaturePanel({ isDark, contractId, contractLabel, init
           emailBody: previewBody,
         },
       );
-      const saved = await signatureStore.recordSent(contractId, selectedDocId, res.envelopeId, res.envelopeStatus, res.sentDateTime);
+      const saved = await signatureStore.recordSent(contractId, selectedDocId, {
+        envelopeId: res.envelopeId,
+        envelopeStatus: res.envelopeStatus,
+        sentDateTime: res.sentDateTime,
+        senderName: res.senderName,
+        senderEmail: res.senderEmail,
+        senderUserId: res.senderUserId,
+        senderCopyRequested: res.senderCopyRequested,
+        recipientStatuses: res.recipients.map(r => ({ recipientId: r.recipientId, status: r.status })),
+      });
       applyWorkingState(saved);
       setEditingIndex(null);
       updateResponseSummary({ contractSignature: saved });
@@ -231,24 +271,162 @@ export default function SignaturePanel({ isDark, contractId, contractLabel, init
     }
   }
 
+  /**
+   * "Send Signing Email" — a separate delivery option, alongside (not
+   * instead of) Send for Signature above. Phase 1 of 2: creates its OWN new
+   * DocuSign envelope with a single captive recipient against the SAME
+   * selected document (see sendEmbeddedSigningTestEnvelope — it downloads
+   * the identical contentVersionId, never a regenerated document), and gets
+   * back this app's own stable /sign/[token] link. Deliberately does NOT
+   * call signatureStore.recordSent — this envelope is invisible to the
+   * normal Draft/Ready to Send/Sent lock on this document, so it can never
+   * block or collide with a real Send for Signature on the same document.
+   * Stops here and shows a From/To/Document/Contract confirmation panel —
+   * the actual mailto: compose window only opens on the sender's explicit
+   * next click (handleOpenEmailDraft below).
+   */
+  async function handleCreateSigningEmail() {
+    const recipient = recipients[0];
+    if (!recipient?.name.trim() || !recipient?.email.trim() || !selectedDocId) return;
+    setSendingTestLink(true);
+    setError(null);
+    setTestLinkResult(null);
+    setEmailDraftOpened(false);
+    try {
+      const res = await quoteApiPost<{
+        envelopeId: string; signingLink: string; senderName: string | null; senderEmail: string | null;
+        recipientName: string; recipientEmail: string; documentName: string; isLocalhostSigningLink: boolean;
+      }>(
+        "Create signing email", `/api/contracts/${contractId}/signature/send-test-link`,
+        {
+          contentVersionId: selectedDocId,
+          contractNumber: contractLabel,
+          recipientName: recipient.name,
+          recipientEmail: recipient.email,
+        },
+      );
+      setTestLinkResult({
+        envelopeId: res.envelopeId, signingLink: res.signingLink, isLocalhost: res.isLocalhostSigningLink,
+        senderName: res.senderName, senderEmail: res.senderEmail,
+        recipientName: res.recipientName, recipientEmail: res.recipientEmail, documentName: res.documentName,
+      });
+    } catch (err) {
+      setError(toErrorPanelData(err, "Could not create a signing email"));
+    } finally {
+      setSendingTestLink(false);
+    }
+  }
+
+  /**
+   * Phase 2 of 2 — the sender's explicit click, after reviewing the From/To/
+   * Document/Contract confirmation panel, to actually open their default
+   * mail client's compose window. `mailto:` can only ever open a draft — it
+   * has no mechanism to send automatically, attach the Contract PDF (RFC
+   * 6068 defines no attachment mechanism at all), or render a real HTML
+   * button (the body is plain text; any HTML would show as literal tags).
+   * The "REVIEW & SIGN DOCUMENT" line is plain-text emphasis immediately
+   * above the link, the closest a mailto: body can get to a button.
+   */
+  function handleOpenEmailDraft() {
+    if (!testLinkResult) return;
+    const subject = `Review and Sign Contract ${contractLabel}`;
+    const body =
+      `${testLinkResult.senderName ?? "The sender"} has sent you a document to review and sign.\n\n` +
+      `Contract: ${contractLabel}\n` +
+      `Document: ${testLinkResult.documentName}\n\n` +
+      `REVIEW & SIGN DOCUMENT:\n` +
+      `${testLinkResult.signingLink}`;
+    const mailto = `mailto:${encodeURIComponent(testLinkResult.recipientEmail)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    window.location.href = mailto;
+    setEmailDraftOpened(true);
+  }
+
   function handleCancel() {
     if (request) applyWorkingState(request);
     setEditingIndex(null);
     setError(null);
   }
 
-  /** Queries the REAL envelope from DocuSign on demand — never reads/writes localSignatureStore, so this can never be confused with (or silently promoted into) our own "Sent" bookkeeping. No webhook — manual refresh only, for now. */
+  /**
+   * Manual "Refresh DocuSign Status" fallback (§Phase 8) — needed whenever a
+   * DocuSign Connect webhook can't reach this server (e.g. localhost with no
+   * public HTTPS tunnel). Queries the real envelope from DocuSign, then
+   * persists the result (forward-only, deduplicated — same shared mapping
+   * logic the webhook itself uses) into both the server-side tracking store
+   * and this browser's localSignatureStore, so `request.status` can finally
+   * advance past "Sent" once DocuSign actually reports Viewed/Signed/Completed.
+   */
   async function handleCheckStatus() {
     if (!request?.envelopeId) return;
     setCheckingStatus(true);
     setError(null);
     try {
-      const res = await quoteApiGet<EnvelopeStatusCheck>("Check DocuSign status", `/api/contracts/docusign/envelopes/${request.envelopeId}/diagnostics`);
+      const res = await quoteApiPost<EnvelopeStatusCheck>("Refresh DocuSign status", `/api/contracts/docusign/envelopes/${request.envelopeId}/refresh`, {});
       setDocuSignStatus(res);
+      const saved = await signatureStore.applyServerSync(contractId, selectedDocId, {
+        stage: res.stage, envelopeStatus: res.envelopeStatus, timeline: res.timeline, signedContentVersionId: res.signedContentVersionId,
+      });
+      applyWorkingState(saved);
     } catch (err) {
-      setError(toErrorPanelData(err, "Could not check DocuSign status"));
+      setError(toErrorPanelData(err, "Could not refresh DocuSign status"));
     } finally {
       setCheckingStatus(false);
+    }
+  }
+
+  /** Wires envelope.ts's retrieveSignedDocument() (§Phase 9) to the UI — only enabled once the stage has reached "Completed". Idempotent both client- and server-side: once signedContentVersionId is set, this becomes a no-op re-fetch of the same Id rather than a new upload. */
+  async function handleRetrieveSignedDocument() {
+    if (!request?.envelopeId) return;
+    setRetrievingDocument(true);
+    setError(null);
+    try {
+      const res = await quoteApiPost<{ success: boolean; contentVersionId: string; alreadyRetrieved: boolean }>(
+        "Retrieve signed document", `/api/contracts/docusign/envelopes/${request.envelopeId}/retrieve-signed-document`, {},
+      );
+      const saved = await signatureStore.applyServerSync(contractId, selectedDocId, {
+        stage: request.status, envelopeStatus: request.envelopeStatus, timeline: request.timeline, signedContentVersionId: res.contentVersionId,
+      });
+      applyWorkingState(saved);
+      // The signed PDF is a brand-new, separate ContentDocument on this Contract — refresh the Generated Documents list so it shows up immediately.
+      const docsRes = await quoteApiGet<{ documents: GeneratedDocument[] }>("List contract documents", `/api/contracts/${contractId}/documents`);
+      setDocuments(docsRes.documents);
+    } catch (err) {
+      setError(toErrorPanelData(err, "Could not retrieve the signed document"));
+    } finally {
+      setRetrievingDocument(false);
+    }
+  }
+
+  /**
+   * "Correct & Resend" (§Phase 6) — recovers a recipient DocuSign reported as
+   * undeliverable by updating their email on the SAME envelope and forcing a
+   * fresh invitation (see envelope.ts's correctAndResendEnvelopeRecipient).
+   * Never creates a new envelope/duplicate send. One explicit click = one
+   * correction attempt — no retry loop, no auto-resend.
+   */
+  async function handleCorrectAndResend(recipientId: string) {
+    if (!request?.envelopeId || !correctedEmailInput.trim()) return;
+    const recipient = docuSignStatus?.recipients.find(r => r.recipientId === recipientId);
+    if (!recipient) return;
+    setCorrecting(true);
+    setError(null);
+    try {
+      const res = await quoteApiPost<EnvelopeStatusCheck>(
+        "Correct and resend recipient",
+        `/api/contracts/docusign/envelopes/${request.envelopeId}/correct-recipient`,
+        { recipientId, name: recipient.name, email: correctedEmailInput.trim() },
+      );
+      setDocuSignStatus(res);
+      // recipientId is assigned 1-based in send order (buildEnvelopeSigners) —
+      // matches this document's local recipient `order` directly.
+      const savedRecipients = await signatureStore.correctRecipientEmail(contractId, selectedDocId, Number(recipientId), correctedEmailInput.trim());
+      applyWorkingState(savedRecipients);
+      setCorrectingRecipientId(null);
+      setCorrectedEmailInput("");
+    } catch (err) {
+      setError(toErrorPanelData(err, "Could not correct and resend to this recipient"));
+    } finally {
+      setCorrecting(false);
     }
   }
 
@@ -262,6 +440,8 @@ export default function SignaturePanel({ isDark, contractId, contractLabel, init
   const selectedDoc = documents.find(d => d.contentVersionId === selectedDocId) ?? null;
 
   const canSend = !locked && recipients.length > 0 && recipients.every(r => r.name.trim() && r.email.trim()) && !!selectedDocId;
+  /** "Send Signing Email" only needs a document + a first recipient — independent of `locked`, since it's a separate test flow from Send for Signature. */
+  const canSendTestLink = !!selectedDocId && !!recipients[0]?.name.trim() && !!recipients[0]?.email.trim();
 
   /** Each document's own stage — "Draft" for a document that has no signature request row yet, i.e. never touched. */
   function docStage(doc: GeneratedDocument): string {
@@ -296,8 +476,44 @@ export default function SignaturePanel({ isDark, contractId, contractLabel, init
               <div style={{ fontSize: 11, color: t.dim, display: "flex", alignItems: "center", gap: 6 }}>
                 <Ic n="info" s={12} /> Sent via DocuSign — envelope {request?.envelopeId}. This confirms DocuSign ACCEPTED the envelope, not that the recipient received/viewed/signed it.
               </div>
-              <GhostButton label={checkingStatus ? "Checking…" : "Check DocuSign Status"} icon="refresh" isDark={isDark} disabled={checkingStatus} onClick={handleCheckStatus} />
+              <GhostButton label={checkingStatus ? "Refreshing…" : "Refresh DocuSign Status"} icon="refresh" isDark={isDark} disabled={checkingStatus} onClick={handleCheckStatus} />
             </div>
+
+            {request && (
+              <div style={{ padding: 10, borderRadius: 9, border: `1px solid ${t.border}`, background: t.surfaceAlt, fontSize: 11.5 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 700, color: t.heading, marginBottom: 8 }}>
+                  <Ic n="user" s={12} /> Sent by / Sent to
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, color: t.body }}>
+                  <div><span style={{ color: t.dim }}>Contract Number:</span> {contractLabel}</div>
+                  <div><span style={{ color: t.dim }}>Envelope ID:</span> {request.envelopeId}</div>
+                  <div><span style={{ color: t.dim }}>Sender Name:</span> {request.senderName ?? "—"}</div>
+                  <div><span style={{ color: t.dim }}>Sender Email:</span> {request.senderEmail ?? "—"}</div>
+                  <div><span style={{ color: t.dim }}>Sender User ID:</span> {request.senderUserId ?? "—"}</div>
+                  <div><span style={{ color: t.dim }}>Sent Date/Time:</span> {request.sentDateTime ? new Date(request.sentDateTime).toLocaleString() : "—"}</div>
+                  <div><span style={{ color: t.dim }}>Envelope Status:</span> {request.envelopeStatus ?? "—"}</div>
+                </div>
+                {request.senderCopyRequested != null && (
+                  <div style={{ marginTop: 8, fontSize: 10.5, color: t.dim, display: "flex", alignItems: "flex-start", gap: 6 }}>
+                    <Ic n="info" s={11} />
+                    <span>
+                      {request.senderCopyRequested
+                        ? `A copy/notification of this envelope was also sent to the sender's own DocuSign-registered inbox (${request.senderEmail}) as a non-signing "receives a copy" recipient — DocuSign cannot place this in the sender's Sent Items, only deliver it as a new message to their Inbox.`
+                        : "No sender copy was added to this envelope — either the connected sender has no known DocuSign email on file, or it matched a recipient's email already on this envelope."}
+                    </span>
+                  </div>
+                )}
+                <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${t.border}` }}>
+                  <div style={{ fontWeight: 700, color: t.heading, marginBottom: 6 }}>Recipients</div>
+                  {request.recipients.map((r, i) => (
+                    <div key={i} style={{ paddingTop: i > 0 ? 6 : 0, marginTop: i > 0 ? 6 : 0, borderTop: i > 0 ? `1px solid ${t.border}` : "none", color: t.body }}>
+                      <strong>{r.name}</strong> ({r.email}) <span style={{ color: t.dim }}>— {r.role}</span>
+                      <div style={{ color: t.dim, fontSize: 10.5, marginTop: 2 }}>Recipient Status: {r.status ?? "—"}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {docuSignStatus && (
               <div style={{ padding: 10, borderRadius: 9, border: `1px solid ${t.border}`, background: t.surfaceAlt, fontSize: 11.5 }}>
@@ -307,6 +523,7 @@ export default function SignaturePanel({ isDark, contractId, contractLabel, init
                 </div>
                 {docuSignStatus.recipients.map((r, i) => {
                   const state = recipientDeliveryState(r);
+                  const undeliverable = isUndeliverable(r);
                   return (
                   <div key={i} style={{ paddingTop: i > 0 ? 6 : 0, marginTop: i > 0 ? 6 : 0, borderTop: i > 0 ? `1px solid ${t.border}` : "none" }}>
                     <div style={{ color: t.body, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
@@ -320,9 +537,62 @@ export default function SignaturePanel({ isDark, contractId, contractLabel, init
                       {" · "}Signed: {r.signedDateTime ? new Date(r.signedDateTime).toLocaleString() : "—"}
                       {r.declinedDateTime && <> · Declined: {new Date(r.declinedDateTime).toLocaleString()}</>}
                     </div>
+                    {undeliverable && (
+                      <div style={{ marginTop: 6, padding: 8, borderRadius: 8, border: `1px solid #FF406660`, background: "#FF406614" }}>
+                        <div style={{ color: "#FF4066", fontWeight: 700, fontSize: 11, display: "flex", alignItems: "center", gap: 6 }}>
+                          <Ic n="alert" s={12} /> DocuSign could not deliver the signing invitation to this recipient.
+                        </div>
+                        <div style={{ color: t.dim, fontSize: 10.5, marginTop: 3 }}>
+                          {r.autoRespondedReason ? `Reason reported by DocuSign: ${r.autoRespondedReason}` : "DocuSign did not report a further reason for this account/plan."}
+                        </div>
+                        {correctingRecipientId === r.recipientId ? (
+                          <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+                            <input
+                              placeholder="Corrected email address"
+                              type="email"
+                              value={correctedEmailInput}
+                              onChange={e => setCorrectedEmailInput(e.target.value)}
+                              style={{ ...inputStyle(t), flex: 1, minWidth: 180 }}
+                            />
+                            <PrimaryButton label={correcting ? "Sending…" : "Resend"} icon="send" isDark={isDark} disabled={correcting || !correctedEmailInput.trim()} onClick={() => handleCorrectAndResend(r.recipientId)} />
+                            <GhostButton label="Cancel" isDark={isDark} disabled={correcting} onClick={() => { setCorrectingRecipientId(null); setCorrectedEmailInput(""); }} />
+                          </div>
+                        ) : (
+                          <div style={{ marginTop: 6 }}>
+                            <GhostButton label="Correct Email & Resend" icon="edit" isDark={isDark} onClick={() => { setCorrectingRecipientId(r.recipientId); setCorrectedEmailInput(""); }} />
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                   );
                 })}
+                {docuSignStatus.salesforceWriteback?.notes.map((note, i) => (
+                  <div key={i} style={{ marginTop: 6, paddingTop: 6, borderTop: `1px solid ${t.border}`, color: t.dim, fontSize: 10.5, display: "flex", gap: 6 }}>
+                    <Ic n="info" s={11} /> {note}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {request?.status === "Completed" && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, paddingTop: 8, borderTop: `1px solid ${t.border}` }}>
+                <div style={{ fontSize: 11, color: t.dim, display: "flex", alignItems: "center", gap: 6 }}>
+                  <Ic n="check-circle" s={12} /> Envelope Completed.
+                  {request.signedContentVersionId
+                    ? " The signed document has been stored in Salesforce as a new document (original unsigned document is unchanged)."
+                    : " Retrieve the signed PDF and store it in Salesforce as a new document."}
+                </div>
+                {request.signedContentVersionId ? (
+                  <button
+                    onClick={() => window.open(`/api/contracts/${contractId}/documents/${request.signedContentVersionId}/download?disposition=inline`, "_blank")}
+                    style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 8px", borderRadius: 6, border: `1px solid ${t.accent}60`, background: `${t.accent}14`, color: t.accent, cursor: "pointer", fontSize: 10.5, fontWeight: 700 }}
+                  >
+                    <Ic n="eye" s={11} /> View Signed Document
+                  </button>
+                ) : (
+                  <GhostButton label={retrievingDocument ? "Retrieving…" : "Retrieve Signed Document"} icon="download" isDark={isDark} disabled={retrievingDocument} onClick={handleRetrieveSignedDocument} />
+                )}
               </div>
             )}
           </div>
@@ -477,14 +747,57 @@ export default function SignaturePanel({ isDark, contractId, contractLabel, init
       </div>
 
       {/* Footer */}
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, paddingTop: 4 }}>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, paddingTop: 4, flexWrap: "wrap" }}>
         <GhostButton label="Cancel" icon="x" isDark={isDark} onClick={handleCancel} />
         <GhostButton label={savingDraft ? "Saving…" : "Save Draft"} icon="save" isDark={isDark} disabled={locked || savingDraft} onClick={handleSaveDraft} />
+        <GhostButton
+          label={sendingTestLink ? "Preparing…" : "Send Signing Email"}
+          icon="external-link"
+          isDark={isDark}
+          disabled={!canSendTestLink || sendingTestLink}
+          onClick={handleCreateSigningEmail}
+        />
         <PrimaryButton label={sending ? "Sending…" : "Send for Signature"} icon="send" isDark={isDark} disabled={!canSend || sending} onClick={handleSend} />
       </div>
       {!canSend && !locked && (
         <div style={{ fontSize: 11, color: t.dim, textAlign: "right", marginTop: -10 }}>
           {recipients.length === 0 ? "Add at least one recipient. " : recipients.some(r => !r.name.trim() || !r.email.trim()) ? "Every recipient needs a name and email. " : ""}{!selectedDocId ? "Select a document to send." : ""}
+        </div>
+      )}
+      {testLinkResult && (
+        <div style={{ padding: 12, borderRadius: 9, border: `1px solid ${t.border}`, background: t.surfaceAlt, fontSize: 11.5 }}>
+          <div style={{ fontWeight: 700, color: t.heading, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+            <Ic n="send" s={12} /> Signing email ready — envelope {testLinkResult.envelopeId}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, color: t.body, marginBottom: 8 }}>
+            <div><span style={{ color: t.dim }}>From:</span> {testLinkResult.senderName ?? "—"} {testLinkResult.senderEmail ? `(${testLinkResult.senderEmail})` : ""}</div>
+            <div><span style={{ color: t.dim }}>To:</span> {testLinkResult.recipientName} ({testLinkResult.recipientEmail})</div>
+            <div><span style={{ color: t.dim }}>Contract:</span> {contractLabel}</div>
+            <div><span style={{ color: t.dim }}>Document:</span> {testLinkResult.documentName}</div>
+          </div>
+
+          {testLinkResult.isLocalhost && (
+            <div style={{ marginBottom: 8, padding: 8, borderRadius: 8, border: `1px solid ${t.warn}60`, background: `${t.warn}14`, color: t.warn, fontSize: 10.5, display: "flex", alignItems: "flex-start", gap: 6 }}>
+              <Ic n="alert" s={12} />
+              <span>
+                This signing link points at <strong>localhost</strong> — it will only open for someone on THIS computer. It will not work for a real external recipient.
+                Set <code>NEXT_PUBLIC_APP_URL</code> to a publicly reachable URL (a deployed domain, or a tunnel for local testing) before sending this for real.
+              </span>
+            </div>
+          )}
+
+          {!emailDraftOpened ? (
+            <PrimaryButton label="Open Email Draft" icon="external-link" isDark={isDark} onClick={handleOpenEmailDraft} />
+          ) : (
+            <div style={{ color: t.dim }}>
+              An email compose window should have opened, addressed to {testLinkResult.recipientEmail} — nothing has been sent yet; review it and click Send yourself.
+              If no compose window opened (no default mail app configured), copy this signing link manually:
+              <div style={{ marginTop: 6, padding: 8, borderRadius: 6, background: t.surface, border: `1px solid ${t.border}`, wordBreak: "break-all", color: t.body, fontFamily: "monospace", fontSize: 10.5 }}>
+                {testLinkResult.signingLink}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

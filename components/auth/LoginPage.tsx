@@ -324,16 +324,16 @@ OMNIVERSE · BY OMNICLOUD
 
               <div className="absolute inset-0 flex items-center justify-center">
                 <div className="relative" style={{ width: 220, height: 220 }}>
-                  <OrbitParticle radius={110} duration={12} delay={0}   color={isDark ? "#1E90FF" : "#010B1E"} size={4}   />
-                  <OrbitParticle radius={110} duration={12} delay={-6}  color={isDark ? "#00D4FF" : "#010B1E"} size={3}   />
-                  <OrbitParticle radius={135} duration={18} delay={-4}  color={isDark ? "#3AABFF" : "#001F5B"} size={3.5} />
-                  <OrbitParticle radius={135} duration={18} delay={-12} color={isDark ? "#60B8FF" : "#001F5B"} size={2.5} />
-                  <OrbitParticle radius={160} duration={25} delay={-8}  color={isDark ? "#1E90FF" : "#010B1E"} size={2.5} />
+                  <OrbitParticle radius={110} duration={12} delay={0}   color={isDark ? "#1E90FF" : "#EAF6FF"} size={4}   />
+                  <OrbitParticle radius={110} duration={12} delay={-6}  color={isDark ? "#00D4FF" : "#EAF6FF"} size={3}   />
+                  <OrbitParticle radius={135} duration={18} delay={-4}  color={isDark ? "#3AABFF" : "#BFE0FF"} size={3.5} />
+                  <OrbitParticle radius={135} duration={18} delay={-12} color={isDark ? "#60B8FF" : "#BFE0FF"} size={2.5} />
+                  <OrbitParticle radius={160} duration={25} delay={-8}  color={isDark ? "#1E90FF" : "#EAF6FF"} size={2.5} />
                 </div>
               </div>
 
               <motion.div style={{ rotateX, rotateY, perspective: 800 }} className="relative z-10">
-                <OmnionMascot size={230} mood={mascotMood} particleColor={isDark ? undefined : "#010B1E"} />
+                <OmnionMascot size={230} mood={mascotMood} particleColor={isDark ? undefined : "#EAF6FF"} />
               </motion.div>
             </div>
           </div>
@@ -421,7 +421,7 @@ OMNICLOUD © 2026 · OMNIVERSE
               background: isDark ? "rgba(5,12,25,0.7)" : "rgba(255,255,255,0.85)",
               backdropFilter: "blur(24px)",
               WebkitBackdropFilter: "blur(24px)",
-              border: isDark ? "1px solid rgba(30,144,255,0.18)" : "1px solid rgba(0,71,171,0.12)",
+              border: isDark ? "1px solid rgba(30,144,255,0.18)" : "1px solid rgba(0,71,171,0.22)",
               boxShadow: isDark
                 ? "0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(30,144,255,0.08), inset 0 1px 0 rgba(255,255,255,0.06)"
                 : "0 24px 80px rgba(0,31,91,0.12), 0 0 0 1px rgba(0,71,171,0.08), inset 0 1px 0 rgba(255,255,255,0.9)",
@@ -454,7 +454,7 @@ OMNICLOUD © 2026 · OMNIVERSE
                     style={{ color: isDark ? "white" : "#001F5B", letterSpacing: "-0.025em" }}>
                     Sign in to OmniVerse
                   </h2>
-                  <p className="text-sm" style={{ color: isDark ? "rgba(160,184,216,0.65)" : "rgba(0,31,91,0.5)" }}>
+                  <p className="text-sm" style={{ color: isDark ? "rgba(160,184,216,0.65)" : "rgba(15,45,100,0.72)" }}>
                     Restricted to Omnicloud team members
                   </p>
                 </div>
@@ -491,7 +491,7 @@ OMNICLOUD © 2026 · OMNIVERSE
 
               {/* Dev stub notice — Phase A */}
               <p className="mt-3 text-center text-[11px]"
-                style={{ color: isDark ? "rgba(90,122,154,0.6)" : "rgba(74,106,160,0.55)" }}>
+                style={{ color: isDark ? "rgba(90,122,154,0.6)" : "rgba(15,45,100,0.72)" }}>
                 Development sign-in · Microsoft Entra wiring pending
               </p>
 
@@ -501,7 +501,7 @@ OMNICLOUD © 2026 · OMNIVERSE
                 animate={{ opacity: 1 }}
                 transition={{ delay: 0.75, duration: 0.5 }}>
                 <div className="flex items-center justify-center gap-2 text-[11px]"
-                  style={{ color: isDark ? "rgba(90,122,154,0.6)" : "rgba(74,106,160,0.5)" }}>
+                  style={{ color: isDark ? "rgba(90,122,154,0.6)" : "rgba(15,45,100,0.72)" }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
                     stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
@@ -514,7 +514,7 @@ OMNICLOUD © 2026 · OMNIVERSE
 
           <motion.div
             className="text-center mt-5 text-[11px] font-mono tracking-widest"
-            style={{ color: isDark ? "rgba(120,180,255,0.7)" : "rgba(0,71,171,0.6)" }}
+            style={{ color: isDark ? "rgba(120,180,255,0.7)" : "rgba(15,45,100,0.72)" }}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 1, duration: 0.6 }}

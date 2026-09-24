@@ -153,6 +153,14 @@ export async function createOrderItems(
   const flatItems = flattenForestWithParentIndex(draftRoots);
   const dependencyGraph = flatItems.map(i => ({ index: i.index, product: i.draft.product.name, parentIndex: i.parentIndex, depth: i.path.length - 1 }));
   logStep("Dependency Graph", "success", { draftRootCount: draftRoots.length }, dependencyGraph, `${flatItems.length} line item(s) flattened; ${flatItems.filter(i => i.parentIndex === null).length} root (parent) line(s), ${flatItems.filter(i => i.parentIndex !== null).length} child line(s).`);
+  // §TEMP DIAGNOSTIC (remove once Antivirus-class Billing Frequency
+  // failures are confirmed resolved): the EXACT request payload this server
+  // call received, per line, before any server-side re-resolution — proves
+  // whether the client's draft still carried a Billing Frequency by the
+  // time it reached this endpoint.
+  for (const item of flatItems) {
+    console.log(`[BILLING FREQUENCY LINE REQUEST] productId=${item.draft.productId} ("${item.draft.product.name}") sellingModelType=${item.draft.sellingModelType ?? "null"} parentIndex=${item.parentIndex ?? "root"} -> draft.billingFrequency=${item.draft.billingFrequency ?? "null"} source=${item.draft.billingFrequencySource ?? "null"}.`);
+  }
 
   if (flatItems.length === 0) {
     return fail({ currentStep: "Dependency Graph", validationRule: "non-empty request", reason: "No order line items to create.", missingField: "draftRoots" });
@@ -240,6 +248,10 @@ export async function createOrderItems(
   const billingFrequencyValidation: Record<string, unknown> = {};
   for (const item of flatItems) {
     const sm = sellingModels.get(item.draft.productId);
+    // §TEMP DIAGNOSTIC (remove once Antivirus-class Billing Frequency
+    // failures are confirmed resolved): the final decision inputs for this
+    // line, at the exact point Resolve Billing Frequency evaluates it.
+    console.log(`[BILLING FREQUENCY FINAL] productId=${item.draft.productId} ("${item.draft.product.name}") sellingModelType=${sm?.chosen?.type ?? "null"} requiresBillingFrequency=${!!sm?.chosen?.requiresBillingFrequency} chosenReason=${sm?.chosenReason ?? "null"} -> draft.billingFrequency=${item.draft.billingFrequency ?? "null"} source=${item.draft.billingFrequencySource ?? "null"}.`);
     if (!sm?.chosen?.requiresBillingFrequency) {
       const skipReason = !sm
         ? "No SellingModelResolution entry at all for this product."

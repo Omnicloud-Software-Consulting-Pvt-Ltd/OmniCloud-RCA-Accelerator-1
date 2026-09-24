@@ -12,6 +12,31 @@ export function soqlEscape(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
+/**
+ * The one place an API version string ("v61.0", "61.0", "V61.0", ...) gets
+ * normalized to its bare numeric form. REST/Tooling URLs need a "v" prefix
+ * (`/services/data/v61.0/...`); the SOAP Metadata endpoint does NOT
+ * (`/services/Soap/m/61.0` — a literal `v` there fails with "Invalid Api
+ * version specified on URL"). Every endpoint builder in this file composes
+ * its own prefix (or lack of one) from this single normalized core, so a
+ * caller passing an already-"v"-prefixed version can never end up with a
+ * doubled or wrongly-placed prefix in one URL scheme but not the other.
+ */
+export function normalizeApiVersionNumber(version: string): string {
+  return version.replace(/^v/i, "").trim();
+}
+
+/** Builds a `{instanceUrl}/services/data/vXX.X{path}` REST URL — the single place this shape is assembled, for any API version (not just a client's own configured one; see the pricing-rules Connect Pricing execute endpoint, which needs a newer version than the rest of that module). */
+export function buildDataApiUrl(instanceUrl: string, apiVersion: string, path: string): string {
+  const base = `${instanceUrl.replace(/\/+$/, "")}/services/data/v${normalizeApiVersionNumber(apiVersion)}`;
+  return path ? (path.startsWith("/") ? `${base}${path}` : `${base}/${path}`) : base;
+}
+
+/** Builds the `{instanceUrl}/services/Soap/m/XX.X` Metadata API SOAP endpoint — no "v" prefix on the version segment, unlike the REST/Tooling APIs. */
+export function buildMetadataSoapUrl(instanceUrl: string, apiVersion: string): string {
+  return `${instanceUrl.replace(/\/+$/, "")}/services/Soap/m/${normalizeApiVersionNumber(apiVersion)}`;
+}
+
 /* ── Types ── */
 export interface SalesforceUserInfo {
   sub: string;
@@ -132,12 +157,38 @@ export interface RefreshConfig {
   onRefreshed?: (newAccessToken: string) => void;
 }
 
+/**
+ * One instrumented call/record, collected on `SalesforceClient.debugLog`
+ * whenever a caller opts into Debug Mode. Always collected (the array push
+ * itself is negligible cost) — callers decide whether to surface it in an
+ * API response. This is the single, non-invasive instrumentation point for
+ * "every SOQL query / REST endpoint / Metadata API request / record Id
+ * created / retry" rather than threading a logger through every call site
+ * across every module that uses this client.
+ */
+export interface SalesforceDebugLogEntry {
+  type: "soql" | "rest" | "metadata-soap" | "record" | "retry" | "deploy-response" | "xml-diagnostic" | "zip-diagnostic" | "native-create-request" | "native-create-response" | "execution-trace";
+  detail: string;
+  timestamp: number;
+  /** §API/JSON Audit Trail — populated only on `type: "rest"` entries produced by `request()` itself;
+   * every other `logDebug()` call site (manual diagnostics) leaves these undefined. Request/response
+   * bodies are captured as-received/as-sent — sanitization for secrets happens at the point a caller
+   * builds a user-facing audit log from this array (see lib/salesforce/auditLog.ts), never here. */
+  method?: string;
+  url?: string;
+  requestBody?: unknown;
+  responseBody?: unknown;
+  httpStatus?: number;
+  durationMs?: number;
+}
+
 /* ── SalesforceClient ── */
 export class SalesforceClient {
   readonly instanceUrl: string;
   private accessToken: string;
   readonly apiVersion: string;
   private readonly refresh?: RefreshConfig;
+  readonly debugLog: SalesforceDebugLogEntry[] = [];
 
   constructor(
     instanceUrl: string,
@@ -149,6 +200,22 @@ export class SalesforceClient {
     this.accessToken = accessToken;
     this.apiVersion = apiVersion;
     this.refresh = refresh;
+  }
+
+  /** Manual debug-log entry point for callers that know something worth recording beyond a plain SOQL/REST/SOAP call (e.g. a retry). */
+  logDebug(type: SalesforceDebugLogEntry["type"], detail: string): void {
+    this.debugLog.push({ type, detail, timestamp: Date.now() });
+  }
+
+  /** §API/JSON Audit Trail — records the full request/response of a single REST call. `requestBody`
+   * is parsed back to an object when it was sent as a JSON string, so the audit log holds real JSON,
+   * not an escaped string. */
+  private recordAudit(method: string, url: string, requestBody: unknown, responseBody: unknown, httpStatus: number, durationMs: number): void {
+    let parsedRequest = requestBody;
+    if (typeof requestBody === "string") {
+      try { parsedRequest = JSON.parse(requestBody); } catch { /* not JSON (e.g. form-encoded) — keep the raw string */ }
+    }
+    this.debugLog.push({ type: "rest", detail: `${method} ${url}`, timestamp: Date.now(), method, url, requestBody: parsedRequest, responseBody, httpStatus, durationMs });
   }
 
   /* Exchange the refresh token for a fresh access token. Returns true on success. */
@@ -179,11 +246,11 @@ export class SalesforceClient {
   }
 
   get dataApiBase() {
-    return `${this.instanceUrl}/services/data/${this.apiVersion}`;
+    return buildDataApiUrl(this.instanceUrl, this.apiVersion, "");
   }
 
   get toolingApiBase() {
-    return `${this.instanceUrl}/services/data/${this.apiVersion}/tooling`;
+    return `${this.dataApiBase}/tooling`;
   }
 
   /* ── Core request ── */
@@ -193,6 +260,9 @@ export class SalesforceClient {
     _retried = false,
   ): Promise<T> {
     const url = path.startsWith("http") ? path : `${this.dataApiBase}${path}`;
+    const method = options.method ?? "GET";
+    const startedAt = Date.now();
+    if (!_retried) this.logDebug("rest", `${method} ${url}`);
 
     const res = await fetch(url, {
       ...options,
@@ -204,7 +274,10 @@ export class SalesforceClient {
       },
     });
 
-    if (res.status === 204) return undefined as T;
+    if (res.status === 204) {
+      this.recordAudit(method, url, options.body, undefined, res.status, Date.now() - startedAt);
+      return undefined as T;
+    }
 
     // §Do not collapse the error: read the raw text ONCE (a Response body
     // can only be consumed once), then attempt JSON parsing — if parsing
@@ -229,6 +302,7 @@ export class SalesforceClient {
         const refreshed = await this.tryRefresh();
         if (refreshed) return this.request<T>(path, options, true);
       }
+      this.recordAudit(method, url, options.body, body ?? (parseFailed ? text.slice(0, 2000) : undefined), res.status, Date.now() - startedAt);
       const bodyRecord = body as { message?: string; error_description?: string } | null;
       const message = Array.isArray(body)
         ? ((body[0] as { message?: string } | undefined)?.message ?? res.statusText)
@@ -236,6 +310,7 @@ export class SalesforceClient {
       throw new SalesforceError(message, res.status, body, parseFailed ? text : null);
     }
 
+    this.recordAudit(method, url, options.body, body, res.status, Date.now() - startedAt);
     return body as T;
   }
 
@@ -253,6 +328,7 @@ export class SalesforceClient {
 
   /* ── SOQL ── */
   async query<T = SalesforceRecord>(soql: string): Promise<QueryResult<T>> {
+    this.logDebug("soql", soql);
     return this.request<QueryResult<T>>(
       `/query/?q=${encodeURIComponent(soql)}`,
     );
@@ -283,10 +359,12 @@ export class SalesforceClient {
     sobject: string,
     fields: Record<string, unknown>,
   ): Promise<CreateResult> {
-    return this.request<CreateResult>(`/sobjects/${sobject}`, {
+    const result = await this.request<CreateResult>(`/sobjects/${sobject}`, {
       method: "POST",
       body: JSON.stringify(fields),
     });
+    if (result?.id) this.logDebug("record", `Created ${sobject} ${result.id}`);
+    return result;
   }
 
   async updateRecord(
@@ -294,10 +372,11 @@ export class SalesforceClient {
     id: string,
     fields: Record<string, unknown>,
   ): Promise<void> {
-    return this.request(`/sobjects/${sobject}/${id}`, {
+    await this.request(`/sobjects/${sobject}/${id}`, {
       method: "PATCH",
       body: JSON.stringify(fields),
     });
+    this.logDebug("record", `Updated ${sobject} ${id}`);
   }
 
   async deleteRecord(sobject: string, id: string): Promise<void> {
@@ -397,6 +476,52 @@ export class SalesforceClient {
     });
   }
 
+  /* ── Metadata API (SOAP) ──
+   * Nothing else in this app talks to the SOAP Metadata API — every other
+   * "metadata" read goes through the Tooling API (§Metadata queries via
+   * Tooling API below). Expression Set deploy/retrieve genuinely requires
+   * the SOAP endpoint (there is no REST equivalent for arbitrary metadata
+   * deploy), so this is new, narrowly-scoped surface: a single raw
+   * envelope-in/text-out primitive. Callers (lib/pricing-rules/metadata/*)
+   * own building request envelopes and parsing responses — this method's
+   * only job is auth + fault detection, mirroring how `request()` owns
+   * auth + error detection for the REST surface.
+   */
+  get metadataSoapEndpoint(): string {
+    return buildMetadataSoapUrl(this.instanceUrl, this.apiVersion);
+  }
+
+  async metadataSoapCall(soapAction: string, bodyXml: string): Promise<string> {
+    this.logDebug("metadata-soap", `${soapAction} -> ${this.metadataSoapEndpoint}`);
+    const envelope =
+      `<?xml version="1.0" encoding="UTF-8"?>` +
+      `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:met="http://soap.sforce.com/2006/04/metadata">` +
+      `<soapenv:Header><met:SessionHeader><met:sessionId>${this.accessToken}</met:sessionId></met:SessionHeader></soapenv:Header>` +
+      `<soapenv:Body>${bodyXml}</soapenv:Body>` +
+      `</soapenv:Envelope>`;
+
+    const res = await fetch(this.metadataSoapEndpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/xml; charset=UTF-8",
+        SOAPAction: soapAction,
+      },
+      body: envelope,
+    });
+    const text = await res.text();
+
+    if (!res.ok || text.includes("<soapenv:Fault>") || text.includes("<faultstring>")) {
+      const faultMatch = text.match(/<faultstring>([\s\S]*?)<\/faultstring>/);
+      throw new SalesforceError(
+        faultMatch ? faultMatch[1] : `Metadata SOAP call failed (${soapAction})`,
+        res.status || 500,
+        null,
+        text,
+      );
+    }
+    return text;
+  }
+
   /**
    * §Never lose the real Salesforce response: unlike `request()` (which
    * throws a SalesforceError on non-2xx and discards the raw text on
@@ -452,6 +577,7 @@ export class SalesforceClient {
 
   /* ── Tooling API ── */
   async toolingQuery<T = SalesforceRecord>(soql: string): Promise<QueryResult<T>> {
+    this.logDebug("soql", `[Tooling] ${soql}`);
     return this.request<QueryResult<T>>(
       `${this.toolingApiBase}/query/?q=${encodeURIComponent(soql)}`,
     );

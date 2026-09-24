@@ -687,6 +687,8 @@ export function ActionCard({ action, isDark, index, onLaunch }: {
       initial={{ opacity: 0, y: 18 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.04, duration: 0.38, ease: [0.16, 1, 0.3, 1] }}
+      whileHover={action.workflow ? { y: -2 } : undefined}
+      whileTap={action.workflow ? { scale: 0.98 } : undefined}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
       onClick={() => action.workflow && onLaunch(action.workflow)}
@@ -763,13 +765,15 @@ export function ActionCard({ action, isDark, index, onLaunch }: {
 // ─────────────────────────────────────────────────────────────────────────────
 // OBJECT WORKSPACE (browse mode)
 // ─────────────────────────────────────────────────────────────────────────────
-export function ObjectWorkspace({ obj, isDark, onLaunch, recentActivity, recentActivityLabel, extraSection }: {
+export function ObjectWorkspace({ obj, isDark, onLaunch, recentActivity, recentActivityLabel, extraSection, subtitle }: {
   obj: DashboardObject; isDark: boolean; onLaunch: (wf: string) => void;
   /** Overrides the generic demo activity feed with real per-object data (e.g. live Quote history) — defaults to the shared static feed so every other tile is unaffected. */
   recentActivity?: RecentOp[];
   recentActivityLabel?: string;
   /** Optional extra content rendered between the Actions grid and Recent Activity (e.g. an analytics breakdown panel). */
   extraSection?: ReactNode;
+  /** Optional one-line description rendered under the title/badge — omitted (as today) unless a tile passes one. */
+  subtitle?: string;
 }) {
   const rgb = hexToRgb(obj.color);
   const activity = recentActivity ?? DEFAULT_RECENT_OPS;
@@ -815,6 +819,12 @@ export function ObjectWorkspace({ obj, isDark, onLaunch, recentActivity, recentA
               </div>
             </div>
           </div>
+
+          {subtitle && (
+            <p className="text-[11.5px] mb-4 max-w-2xl" style={{ color: isDark ? "rgba(140,170,205,0.72)" : "rgba(0,30,80,0.68)" }}>
+              {subtitle}
+            </p>
+          )}
 
           {/* Stats row */}
           <div className="flex gap-3 flex-wrap">
@@ -873,8 +883,8 @@ export function ObjectWorkspace({ obj, isDark, onLaunch, recentActivity, recentA
                 <span className="text-[12px] font-mono font-medium flex-1 truncate" style={{ color: isDark ? "rgba(180,210,240,0.85)" : "rgba(0,15,45,0.8)" }}>
                   {op.item}
                 </span>
-                <span className="text-[10px] shrink-0" style={{ color: isDark ? "rgba(90,120,160,0.5)" : "rgba(0,31,91,0.58)" }}>{op.meta}</span>
-                <span className="text-[10px] shrink-0" style={{ color: isDark ? "rgba(90,120,160,0.38)" : "rgba(0,31,91,0.52)" }}>{op.time}</span>
+                <span className="text-[10px] shrink-0" style={{ color: isDark ? "rgba(90,120,160,0.5)" : "rgba(15,45,100,0.75)" }}>{op.meta}</span>
+                <span className="text-[10px] shrink-0" style={{ color: isDark ? "rgba(90,120,160,0.38)" : "rgba(15,45,100,0.62)" }}>{op.time}</span>
               </motion.div>
             ))}
           </div>

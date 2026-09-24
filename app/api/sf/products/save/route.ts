@@ -1,145 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  SalesforceClient,
   SalesforceError,
   SESSION_COOKIE,
   decodeSession,
   clientFromSession,
-  type QueryResult,
 } from "@/lib/salesforce/client";
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * Types
- * ─────────────────────────────────────────────────────────────────────────── */
-
-interface ProductPayload {
-  productName: string;
-  productCode: string;
-  family: string;
-  category?: string;
-  catalog?: string;
-  description?: string;
-  isActive?: boolean;
-  sellingModel?: string;
-  productOwner?: string;
-  priceBook?: string;
-  basePrice?: string;
-}
-
-interface SellingModel {
-  Id: string;
-  Name: string;
-  SellingModelType: string;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * Helpers
- * ─────────────────────────────────────────────────────────────────────────── */
-
-function soqlEscape(v: string) {
-  return v.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-}
-
-function toDeveloperName(key: string): string {
-  return key
-    .replace(/([a-z])([A-Z])/g, "$1_$2")
-    .replace(/[\s\-]+/g, "_")
-    .split("_")
-    .filter(Boolean)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-    .join("_")
-    .replace(/[^a-zA-Z0-9_]/g, "");
-}
-
-function isUnsupportedSObject(e: Error): boolean {
-  return /sObject type .+ is not supported/i.test(e.message) || /INVALID_TYPE/i.test(e.message);
-}
-
-function normalizeName(s: string) {
-  return (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-async function findOrCreate(
-  client: SalesforceClient,
-  sobject: string,
-  fields: Record<string, unknown>,
-  searchOn: string[],
-): Promise<{ id: string; created: boolean }> {
-  const whereClauses = searchOn
-    .map((k) => `${k} = '${soqlEscape(String(fields[k] ?? ""))}'`)
-    .join(" AND ");
-  const soql = `SELECT Id FROM ${sobject} WHERE ${whereClauses} LIMIT 1`;
-
-  try {
-    const result = await client.query<{ Id: string }>(soql);
-    if (result.records.length > 0) return { id: result.records[0].Id, created: false };
-  } catch {
-    // not found — fall through to create
-  }
-
-  const created = await client.createRecord(sobject, fields);
-  if (!created.success) throw new Error(`Failed to create ${sobject}: ${JSON.stringify(created.errors)}`);
-  return { id: created.id, created: true };
-}
-
-function parseSellingModelFallback(input: string) {
-  const s = (input || "").toLowerCase().replace(/[^a-z0-9]/g, " ").replace(/\s+/g, " ").trim();
-  let modelType: string | null = null;
-  if (/\bone ?time\b|onetime/.test(s)) modelType = "onetime";
-  else if (/\bevergreen\b|\brecurring\b|\bsubscription\b/.test(s)) modelType = "evergreen";
-  else if (/\bterm ?based\b|\btermed\b|\bterm\b|\bcontract\b/.test(s)) modelType = "termbased";
-
-  let frequency: string | null = null;
-  if (/\bsemi ?annual\b|\bbiannual\b|\bhalf ?year\b/.test(s)) frequency = "semiannual";
-  else if (/\bmonth/.test(s)) frequency = "monthly";
-  else if (/\bquarter/.test(s)) frequency = "quarterly";
-  else if (/\byear\b|\bannual\b/.test(s)) frequency = "yearly";
-
-  return { modelType, frequency };
-}
-
-function scoreSellingModel(record: SellingModel, modelType: string | null, frequency: string | null): number {
-  const n = normalizeName(record.Name);
-  let recordType: string | null = null;
-  if (/onetime/.test(n)) recordType = "onetime";
-  else if (/evergreen/.test(n)) recordType = "evergreen";
-  else if (/termbased|termd/.test(n)) recordType = "termbased";
-
-  if (modelType && recordType !== modelType) return 0;
-
-  let score = 10;
-  let recordFreq: string | null = null;
-  if (/semiannual/.test(n)) recordFreq = "semiannual";
-  else if (/monthly/.test(n)) recordFreq = "monthly";
-  else if (/quarterly/.test(n)) recordFreq = "quarterly";
-  else if (/yearly/.test(n)) recordFreq = "yearly";
-
-  if (frequency) {
-    if (recordFreq === frequency) score += 5;
-    else return 0;
-  }
-  return score;
-}
-
-async function findMatchingSellingModels(client: SalesforceClient, requestedType: string): Promise<SellingModel[]> {
-  const all = (await client.query<SellingModel>(
-    "SELECT Id, Name, SellingModelType FROM ProductSellingModel LIMIT 200",
-  )) as QueryResult<SellingModel>;
-
-  const normInput = normalizeName(requestedType);
-  const exact = all.records.find((r) => normalizeName(r.Name) === normInput);
-  if (exact) return [exact];
-
-  const { modelType, frequency } = parseSellingModelFallback(requestedType);
-  if (!modelType && !frequency) return [];
-
-  const scored = all.records
-    .map((r) => ({ model: r, score: scoreSellingModel(r, modelType, frequency) }))
-    .filter((s) => s.score > 0)
-    .sort((a, b) => b.score - a.score || a.model.Name.localeCompare(b.model.Name));
-
-  return scored.length > 0 ? [scored[0].model] : [];
-}
+import type { ProductPayload } from "@/lib/products/types";
+import { findMatchingSellingModels } from "@/lib/products/server/sellingModel";
+import { isUnsupportedSObject, findOrCreate } from "@/lib/products/server/salesforceWrites";
+import { persistProductPrice } from "@/lib/products/server/pricebookEntry";
+import { resolveProductFields } from "@/lib/products/server/productFieldResolution";
+import { parseProductPrice } from "@/lib/products/price";
+import { checkProductDuplicate } from "@/lib/products/server/duplicateCheck";
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Route handler — POST /api/sf/products/save
@@ -160,9 +32,48 @@ export async function POST(req: NextRequest) {
   // Use v62.0 for EPC objects
   const client = clientFromSession(session, { apiVersion: "v62.0" });
 
+  /* ── Duplicate Prevention — the final, race-condition-safe gate (§21).
+   * A frontend pre-check (POST /api/sf/products/check-duplicate) already
+   * ran before the user got here; this is the authority that actually
+   * decides whether Salesforce gets a create call, so two concurrent
+   * requests that both passed their own frontend check before either
+   * record existed still can't both succeed. Never bypassable — this
+   * route has no "create anyway" override. */
+  try {
+    const duplicate = await checkProductDuplicate(client, { name: payload.productName, code: payload.productCode });
+    if (duplicate.isDuplicate) {
+      return NextResponse.json({
+        success: false,
+        error: duplicate.matchType === "exact-code"
+          ? `Product Code "${duplicate.recordCode}" is already used by ${duplicate.recordName}.`
+          : `A product named "${duplicate.recordName}" already exists in Salesforce.`,
+        duplicate,
+      }, { status: 409 });
+    }
+  } catch (err) {
+    // A failed duplicate check must never silently allow a create through — fail closed.
+    return NextResponse.json({ success: false, error: `Could not verify this product doesn't already exist: ${(err as Error).message}` }, { status: 500 });
+  }
+
   const steps: Record<string, unknown> = {};
   const errors: Array<{ step: string; error: string }> = [];
   const skipped: Array<{ step: string; reason: string }> = [];
+  const warnings: string[] = [];
+
+  /* ── Validate the price BEFORE anything is created, so a bad value is
+   * reported instead of silently producing a product with no price. ── */
+  const price = parseProductPrice(payload.basePrice);
+  if (price && !price.ok) {
+    return NextResponse.json({ success: false, error: price.error }, { status: 400 });
+  }
+
+  /* ── Unit of Measure / Product Classification → real Product2 fields,
+   * resolved against this org's own describe + records (never created). ── */
+  const extra = await resolveProductFields(client, {
+    unitOfMeasure: payload.unitOfMeasure,
+    classification: payload.classification,
+  });
+  skipped.push(...extra.skipped);
 
   /* ── Step 1: Product2 ── */
   let productId: string;
@@ -173,10 +84,20 @@ export async function POST(req: NextRequest) {
       Family:      payload.family,
       Description: payload.description || payload.productName,
       IsActive:    payload.isActive !== false,
+      // Product2.Type is a restricted picklist whose only reliably-real
+      // value across orgs is "Bundle" (see app/api/bundles/list/route.ts's
+      // own `WHERE Type = 'Bundle'` filter) — everything else (the
+      // create-form's internal "simple"/"bundle" distinction, e.g.) is a
+      // client-side concept, not a real picklist value, and must never be
+      // forwarded verbatim or Salesforce rejects the whole create.
+      ...(payload.productType?.toLowerCase() === "bundle" ? { Type: "Bundle" } : {}),
+      ...extra.fields,
     });
     if (!product.success) throw new Error(`Product2 creation failed: ${JSON.stringify(product.errors)}`);
     productId = product.id;
     steps.product = { id: productId, name: payload.productName };
+    if (extra.resolved.unitOfMeasure) steps.unitOfMeasure = extra.resolved.unitOfMeasure;
+    if (extra.resolved.classification) steps.classification = extra.resolved.classification;
   } catch (err) {
     const msg = err instanceof SalesforceError ? err.message : (err as Error).message;
     return NextResponse.json({ success: false, error: msg }, { status: 500 });
@@ -244,39 +165,33 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  /* ── Step 4: PricebookEntry ── */
-  if (payload.priceBook && payload.basePrice !== undefined && payload.basePrice !== "") {
+  /* ── Step 4: PricebookEntry ──
+   * A price given in the prompt/form is always written (Standard Price Book
+   * when no Price Book was named), via the shared persistProductPrice()
+   * which handles the standard-entry prerequisite, single- vs multi-currency
+   * orgs, and reads back what Salesforce actually stored. A failure here is
+   * returned in `errors` + `priceError` so no caller can report the product
+   * as fully created while its price is missing. */
+  let priceError: string | undefined;
+  if (price?.ok) {
     try {
-      const unitPrice = parseFloat(payload.basePrice);
-      if (!isNaN(unitPrice)) {
-        const pbResult = await client.query<{ Id: string }>(
-          `SELECT Id FROM Pricebook2 WHERE Name = '${soqlEscape(payload.priceBook)}' LIMIT 1`,
-        );
-        if (pbResult.records.length > 0) {
-          const pricebook2Id = pbResult.records[0].Id;
-          const pbe = await client.createRecord("PricebookEntry", {
-            Product2Id:   productId,
-            Pricebook2Id: pricebook2Id,
-            UnitPrice:    unitPrice,
-            IsActive:     payload.isActive !== false,
-          });
-          if (pbe.success) {
-            steps.pricebookEntry = { id: pbe.id, pricebook: payload.priceBook, unitPrice };
-          } else {
-            errors.push({ step: "pricebookEntry", error: JSON.stringify(pbe.errors) });
-          }
-        } else {
-          skipped.push({ step: "pricebookEntry", reason: `Price Book '${payload.priceBook}' not found in org` });
-        }
-      }
+      const outcome = await persistProductPrice(client, {
+        productId,
+        unitPrice: price.value,
+        priceBook: payload.priceBook,
+        currencyIsoCode: payload.currencyIsoCode,
+        isActive: payload.isActive !== false,
+      });
+      warnings.push(...outcome.warnings);
+      if (outcome.entry) steps.pricebookEntry = outcome.entry;
+      else priceError = outcome.error;
     } catch (e) {
-      if (isUnsupportedSObject(e as Error)) {
-        skipped.push({ step: "pricebookEntry", reason: "PricebookEntry not accessible in this org" });
-      } else {
-        errors.push({ step: "pricebookEntry", error: (e as Error).message });
-      }
+      priceError = isUnsupportedSObject(e as Error)
+        ? "PricebookEntry is not accessible in this org"
+        : (e instanceof SalesforceError ? e.message : (e as Error).message);
     }
+    if (priceError) errors.push({ step: "pricebookEntry", error: priceError });
   }
 
-  return NextResponse.json({ success: true, salesforceId: productId, steps, errors, skipped });
+  return NextResponse.json({ success: true, salesforceId: productId, steps, errors, skipped, warnings, ...(priceError ? { priceError } : {}) });
 }

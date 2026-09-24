@@ -95,6 +95,31 @@ export function buildQLIPayload(
   if (qliSchema.discountField) payload[qliSchema.discountField.apiName] = d.discountPercent;
   const initialPricingField = resolveInitialPricingField(qliSchema);
   if (initialPricingField.apiName) payload[initialPricingField.apiName] = d.unitPrice;
+  // §List Price gap: on real Revenue Cloud orgs, List Price mirrors the raw
+  // PricebookEntry price and is a SEPARATE field from Sales Price/UnitPrice —
+  // a manually-added QLI always has both. resolveInitialPricingField only
+  // ever picks ONE of UnitPrice/ListPrice as the starting-price write target
+  // (preferring UnitPrice when both are writable), which previously left
+  // ListPrice completely unwritten — showing as 0.00 — whenever UnitPrice
+  // won that choice. Written here from the SAME Describe evidence
+  // resolveInitialPricingField already computed, only when ListPrice is
+  // writable/non-calculated and wasn't already the field chosen above.
+  const listPriceEvidence = qliSchema.pricingModelDiagnosis.evidence.listPrice;
+  if (
+    qliSchema.listPriceField && listPriceEvidence?.createable && !listPriceEvidence.calculated &&
+    qliSchema.listPriceField.apiName !== initialPricingField.apiName
+  ) {
+    payload[qliSchema.listPriceField.apiName] = d.product.listPrice;
+  }
+  // §Selling Model field split: ProductSellingModel (parent) and
+  // ProductSellingModelOption (child) are DISTINCT reference targets that
+  // require DISTINCT values — never write the option's Id into a
+  // parent-typed field or vice versa. sellingModelOptionId is only ever
+  // populated on the draft with a REAL Salesforce Id (never a synthetic
+  // `direct:` placeholder — see resolveSellingModelForProduct/toDirectOption
+  // in lib/quotes/catalog/sellingModel.ts), so no synthetic-value check is
+  // needed here.
+  if (qliSchema.sellingModelField && d.sellingModelId) payload[qliSchema.sellingModelField.apiName] = d.sellingModelId;
   if (qliSchema.sellingModelOptionField && d.sellingModelOptionId) payload[qliSchema.sellingModelOptionField.apiName] = d.sellingModelOptionId;
   if (qliSchema.billingFrequencyField && d.billingFrequency) payload[qliSchema.billingFrequencyField.apiName] = d.billingFrequency;
   if (qliSchema.subscriptionTermField && d.subscriptionTerm != null) payload[qliSchema.subscriptionTermField.apiName] = d.subscriptionTerm;
@@ -112,6 +137,92 @@ export function integrityCheckPayload(payload: Record<string, unknown>, qliSchem
     missing.push("a positive Quantity");
   }
   return missing;
+}
+
+export interface RequiredQuoteLineItemFieldResolution {
+  apiName: string;
+  label: string;
+  type: string;
+  selectedValue: unknown;
+  reasonSelected: string;
+}
+
+export interface RequiredQuoteLineItemFieldAuditResult {
+  success: boolean;
+  extraFields: Record<string, unknown>;
+  resolutions: RequiredQuoteLineItemFieldResolution[];
+  error: string | null;
+}
+
+/**
+ * Audit QuoteLineItem's own required+createable fields with no explicit
+ * mapping (qliSchema.requiredFieldsNotMapped) and resolve a REAL value for
+ * each — an org-marked default/sole-active-picklist-value/reusable-or-
+ * auto-created reference record — exactly the same never-fabricate strategy
+ * createNativeBundleRelationships already applies to the bundle relationship
+ * object below. Resolved ONCE per create request (not per line): these are
+ * QuoteLineItem-object-level requirements, not edge-specific data, so the
+ * same extraFields are merged into every line's create payload (see
+ * createInDependencyOrderedPasses's `extraFields` param). Returns
+ * success:false (never a fabricated value) when any field can't be resolved
+ * — this is the mechanism that surfaces "Salesforce Setup must define a
+ * default for QuoteLineItem.<field>" instead of silently omitting a field a
+ * real org requires for Revenue Cloud configuration/pricing to make sense of
+ * the record (e.g. what native "Refresh Prices" later reads).
+ */
+export async function resolveRequiredQuoteLineItemFields(
+  client: SalesforceClient,
+  qliSchema: QuoteLineItemFieldSchema,
+): Promise<RequiredQuoteLineItemFieldAuditResult> {
+  if (qliSchema.requiredFieldsNotMapped.length === 0) {
+    return { success: true, extraFields: {}, resolutions: [], error: null };
+  }
+  let describe: DescribeResult;
+  try {
+    describe = await describeObjectCached(client, "QuoteLineItem");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to Describe QuoteLineItem.";
+    return { success: false, extraFields: {}, resolutions: [], error: message };
+  }
+
+  const extraFields: Record<string, unknown> = {};
+  const resolutions: RequiredQuoteLineItemFieldResolution[] = [];
+  for (const ref of qliSchema.requiredFieldsNotMapped) {
+    const field = describe.fields.find(f => f.name === ref.apiName);
+    if (!field) continue;
+
+    let selectedValue: unknown;
+    let reasonSelected: string;
+    if (field.type === "boolean") {
+      selectedValue = false;
+      reasonSelected = "Boolean field defaulted to false.";
+    } else if (field.type === "picklist" || field.type === "multipicklist") {
+      const active = field.picklistValues?.filter(v => v.active) ?? [];
+      const withDefault = active.find(v => v.defaultValue);
+      selectedValue = withDefault?.value ?? (active.length === 1 ? active[0].value : undefined);
+      reasonSelected = selectedValue === undefined
+        ? `${active.length} active value(s), none marked default and not exactly one option.`
+        : withDefault ? "Org-marked active default." : "Sole active picklist value.";
+    } else if (field.type === "reference") {
+      selectedValue = await resolveRealDefaultForField(client, "QuoteLineItem", field.name, field.type, field.picklistValues);
+      reasonSelected = selectedValue === undefined
+        ? "Reference field: no existing record to reuse and no resolvable default for its own required fields."
+        : "Reference field: reused/created a real record via resolveRealDefaultForField.";
+    } else {
+      selectedValue = undefined;
+      reasonSelected = `Field type "${field.type}" has no automatic resolution strategy.`;
+    }
+
+    resolutions.push({ apiName: field.name, label: field.label, type: field.type, selectedValue, reasonSelected });
+    if (selectedValue === undefined) {
+      return {
+        success: false, extraFields, resolutions,
+        error: `Required QuoteLineItem field "${field.name}" (${field.label}, type ${field.type}) could not be resolved automatically. ${reasonSelected} This app never fabricates a value for a field Salesforce hasn't defined a resolvable default for — Salesforce Setup must define an active default value (or reduce this to a single active option) for QuoteLineItem.${field.name}.`,
+      };
+    }
+    extraFields[field.name] = selectedValue;
+  }
+  return { success: true, extraFields, resolutions, error: null };
 }
 
 export interface PassCreationResult {
@@ -133,6 +244,7 @@ export async function createInDependencyOrderedPasses(
   quoteId: string,
   qliSchema: QuoteLineItemFieldSchema,
   onStep: (step: BundleHierarchyStep) => void,
+  extraFields: Record<string, unknown> = {},
 ): Promise<PassCreationResult> {
   const idByIndex = new Map<number, string>();
   const remaining = new Set(flatItems.map(i => i.index));
@@ -149,13 +261,14 @@ export async function createInDependencyOrderedPasses(
     const chunkSize = 200;
     for (let offset = 0; offset < passItems.length; offset += chunkSize) {
       const chunkItems = passItems.slice(offset, offset + chunkSize);
-      const chunkPayloads = chunkItems.map(item =>
-        buildQLIPayload(
+      const chunkPayloads = chunkItems.map(item => ({
+        ...extraFields,
+        ...buildQLIPayload(
           item, quoteId, qliSchema,
           item.parentIndex != null ? (idByIndex.get(item.parentIndex) ?? null) : null,
           item.rootIndex !== item.index ? (idByIndex.get(item.rootIndex) ?? null) : null,
         ),
-      );
+      }));
 
       let results;
       try {

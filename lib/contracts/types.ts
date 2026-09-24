@@ -343,6 +343,12 @@ export interface SignatureRequest {
   /** DocuSign's own "sent at" timestamp from the create-and-send response — null until sent, never our own clock's guess. */
   sentDateTime: string | null;
   signedContentVersionId: string | null;
+  /** The connected DocuSign account/user this envelope was actually sent as (from the send route's response, itself sourced from the org's saved OAuth /oauth/userinfo capture) — null until sent, never a recipient's identity. */
+  senderName: string | null;
+  senderEmail: string | null;
+  senderUserId: string | null;
+  /** Whether the sender was also added as a non-signing "receives a copy" recipient on this envelope, so they get their own copy/notification — null until sent. */
+  senderCopyRequested: boolean | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -375,5 +381,7 @@ export interface DocuSignConnectionConfig {
   /** The DocuSign user whose OAuth grant this connection runs as — from the real /oauth/userinfo call, not guessed. */
   connectedUserName: string | null;
   connectedUserEmail: string | null;
+  /** DocuSign's own `sub` (user ID) for the connected user — from the same /oauth/userinfo call. */
+  connectedUserId: string | null;
   connectedAt: string | null;
 }

@@ -8,7 +8,7 @@ import { formatRelativeTime } from "@/lib/dashboard/relativeTime";
 import { pickBestEffortStatus, activityColorFor } from "@/lib/dashboard/statusStats";
 import type { QuoteStatsResponse } from "@/app/api/quotes/stats/route";
 
-type ModuleTarget = { mode: "history" | "create" };
+type ModuleTarget = { mode: "history" | "create" | "import" };
 
 const ACCENT = "#00D4FF";
 const ACCENT_BLUE = "#3AABFF";
@@ -64,7 +64,7 @@ export default function QuotesDashboard({ isDark, onNavigate }: { isDark: boolea
       { id: "quote-line-items", title: "Add Quote Line Items", desc: "Add products to an existing Quote", icon: "layers", accent: ACCENT, workflow: "quote-line-items" },
       { id: "quote-analytics", title: "Quote Analytics", desc: "View Quote trends and metrics", icon: "bar-chart", accent: ACCENT_BLUE, workflow: "quote-analytics" },
       { id: "ai-quote-assistant", title: "AI Quote Assistant", desc: "Generate Quote using AI", icon: "sparkles", accent: ACCENT_SOFT, badge: "AI", workflow: "ai-quote-assistant" },
-      { id: "import-quotes", title: "Import Quotes", desc: "Bulk import Quote data", icon: "upload", accent: ACCENT_BLUE, badge: "Soon" },
+      { id: "import-quotes", title: "Import Quotes", desc: "Import quotes from CSV or Excel and create them in Salesforce.", icon: "upload", accent: ACCENT_BLUE, badge: "Import", workflow: "import-quotes" },
     ];
 
     return {
@@ -102,6 +102,8 @@ export default function QuotesDashboard({ isDark, onNavigate }: { isDark: boolea
       onNavigate({ mode: "history" });
     } else if (workflow === "quote-analytics") {
       setShowAnalytics(v => !v);
+    } else if (workflow === "import-quotes") {
+      onNavigate({ mode: "import" });
     }
   };
 

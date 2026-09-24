@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSFClient } from "@/lib/salesforce/serverSession";
+import { soqlEscape } from "@/lib/salesforce/client";
 import { getConnection } from "@/lib/contracts/docusign/connectionStore";
-import { sendContractForSignature } from "@/lib/contracts/docusign/envelope";
+import { sendContractForSignature, normalizeRecipientEmail, EnvelopeInvariantError } from "@/lib/contracts/docusign/envelope";
 import { DocuSignError } from "@/lib/contracts/docusign/client";
 import type { SignatureRecipient } from "@/lib/contracts/types";
 
@@ -57,14 +58,21 @@ export async function POST(req: NextRequest, { params }: Params) {
 
   const recipients = Array.isArray(body.recipients) ? body.recipients : [];
   if (recipients.length === 0) {
-    return NextResponse.json({ error: "Please add at least one recipient." }, { status: 400 });
+    return NextResponse.json({ error: "Please add at least one recipient.", code: "DOCUSIGN_RECIPIENT_CONFIGURATION_FAILED" }, { status: 400 });
   }
-  const invalidRecipient = recipients.find(r => !r.name?.trim() || !EMAIL_PATTERN.test(r.email ?? ""));
+  // §Phase 3 — validated AFTER normalizeRecipientEmail() strips invisible
+  // characters (zero-width space/joiner, BOM, NBSP) a copy-paste can carry
+  // in undetectably: those pass EMAIL_PATTERN on the raw string but produce
+  // an address DocuSign silently fails to deliver to even though it accepts
+  // the envelope. Rejecting on the same normalized value that actually gets
+  // sent means a corrupted-looking address is now caught here instead of
+  // reaching DocuSign at all.
+  const invalidRecipient = recipients.find(r => !r.name?.trim() || !EMAIL_PATTERN.test(normalizeRecipientEmail(r.email ?? "")));
   if (invalidRecipient) {
-    return NextResponse.json({ error: "Recipient email is invalid." }, { status: 400 });
+    return NextResponse.json({ error: "Recipient email is invalid.", code: "DOCUSIGN_RECIPIENT_CONFIGURATION_FAILED" }, { status: 400 });
   }
   if (!body.contentVersionId?.trim()) {
-    return NextResponse.json({ error: "Please select a document." }, { status: 400 });
+    return NextResponse.json({ error: "Please select a document.", code: "DOCUSIGN_RECIPIENT_CONFIGURATION_FAILED" }, { status: 400 });
   }
 
   const connection = await getConnection(orgId);
@@ -85,24 +93,87 @@ export async function POST(req: NextRequest, { params }: Params) {
 
   if (!connection || connection.status === "disconnected") {
     logSignatureSend({ ...diagnostics, "Envelope creation attempted": false, "DocuSign HTTP status": null, "Envelope ID": null });
-    return NextResponse.json({ error: "DocuSign is not connected." }, { status: 400 });
+    return NextResponse.json({ error: "DocuSign is not connected.", code: "DOCUSIGN_NOT_CONNECTED" }, { status: 400 });
   }
   if (connection.status === "reauthorization_required") {
     logSignatureSend({ ...diagnostics, "Envelope creation attempted": false, "DocuSign HTTP status": null, "Envelope ID": null });
-    return NextResponse.json({ error: "DocuSign authorization expired." }, { status: 400 });
+    return NextResponse.json({ error: "DocuSign authorization expired.", code: "DOCUSIGN_OAUTH_FAILED" }, { status: 400 });
+  }
+
+  // §Phase 4/7: resolve the selected document in THIS Salesforce session
+  // BEFORE ever reaching DocuSign — a stale/local ContentVersion Id (e.g.
+  // from a prior org/session, or a record deleted since it was selected)
+  // must stop here with a clear message, never produce an envelope built
+  // from document metadata this org can no longer actually retrieve. Also
+  // confirms the ContentVersion actually BELONGS to this Contract (via
+  // ContentDocumentLink) — an arbitrary browser-supplied 068 Id is never
+  // trusted just because it resolves to *some* document somewhere.
+  let verifiedContentDocumentId: string;
+  try {
+    const verify = await client.query<{ Id: string; ContentDocumentId: string }>(
+      `SELECT Id, ContentDocumentId FROM ContentVersion WHERE Id = '${soqlEscape(body.contentVersionId.trim())}'`,
+    );
+    if (verify.records.length === 0) {
+      logSignatureSend({ ...diagnostics, "Envelope creation attempted": false, "DocuSign HTTP status": null, "Envelope ID": null, "ContentVersion resolved": false });
+      return NextResponse.json({
+        error: "The selected Salesforce document is no longer available in the current Salesforce org. Regenerate or select another document.",
+        code: "SALESFORCE_CONTENT_VERSION_NOT_FOUND",
+      }, { status: 404 });
+    }
+    verifiedContentDocumentId = verify.records[0].ContentDocumentId;
+
+    const link = await client.query<{ Id: string }>(
+      `SELECT Id FROM ContentDocumentLink WHERE LinkedEntityId = '${soqlEscape(contractId)}' AND ContentDocumentId = '${soqlEscape(verifiedContentDocumentId)}'`,
+    );
+    if (link.records.length === 0) {
+      logSignatureSend({ ...diagnostics, "Envelope creation attempted": false, "DocuSign HTTP status": null, "Envelope ID": null, "ContentVersion resolved": true, "ContentVersion belongs to Contract": false });
+      return NextResponse.json({
+        error: "The selected document does not belong to this Contract.",
+        code: "SALESFORCE_CONTENT_VERSION_NOT_LINKED_TO_CONTRACT",
+      }, { status: 400 });
+    }
+  } catch (err) {
+    logSignatureSend({ ...diagnostics, "Envelope creation attempted": false, "DocuSign HTTP status": null, "Envelope ID": null, "ContentVersion resolved": false });
+    const message = err instanceof Error ? err.message : "Could not verify the selected Salesforce document.";
+    return NextResponse.json({ error: message, code: "SALESFORCE_CONTENT_VERSION_NOT_FOUND" }, { status: 502 });
   }
 
   try {
     const result = await sendContractForSignature(client, orgId, {
+      contractId,
       contentVersionId: body.contentVersionId,
+      contentDocumentId: verifiedContentDocumentId,
       recipients,
       contractLabel: body.contractNumber || body.documentName || contractId,
       emailSubject: body.emailSubject,
       emailBody: body.emailBody,
     });
-    logSignatureSend({ ...diagnostics, "Envelope creation attempted": true, "DocuSign HTTP status": 201, "Envelope ID": result.envelopeId });
-    return NextResponse.json({ success: true, envelopeId: result.envelopeId, envelopeStatus: result.envelopeStatus, sentDateTime: result.sentDateTime });
+    logSignatureSend({
+      ...diagnostics, "Envelope creation attempted": true, "DocuSign HTTP status": 201, "Envelope ID": result.envelopeId,
+      "PDF header check": result.pdfHeaderCheck, "Sender email": result.senderEmail, "Sender copy requested": result.senderCopyRequested,
+    });
+    return NextResponse.json({
+      success: true,
+      envelopeId: result.envelopeId,
+      envelopeStatus: result.envelopeStatus,
+      sentDateTime: result.sentDateTime,
+      pdfHeaderCheck: result.pdfHeaderCheck,
+      // The connected DocuSign account/user this envelope was actually sent as — never the recipient's identity.
+      senderName: result.senderName,
+      senderEmail: result.senderEmail,
+      senderUserId: result.senderUserId,
+      senderCopyRequested: result.senderCopyRequested,
+      // §Phase 7 — REAL recipient state fetched back from DocuSign after create, never manufactured.
+      recipients: result.recipients.map(r => ({
+        recipientId: r.recipientId, name: r.name, email: r.email, routingOrder: r.routingOrder, deliveryMethod: r.deliveryMethod,
+        clientUserIdPresent: r.clientUserIdPresent, status: r.status, sentDateTime: r.sentDateTime, deliveredDateTime: r.deliveredDateTime,
+      })),
+    });
   } catch (err) {
+    if (err instanceof EnvelopeInvariantError) {
+      logSignatureSend({ ...diagnostics, "Envelope creation attempted": false, "DocuSign HTTP status": null, "Envelope ID": null });
+      return NextResponse.json({ error: err.message, code: err.code }, { status: 400 });
+    }
     if (err instanceof DocuSignError) {
       // DocuSign's own errorCode/message describe what's wrong with the request — safe to
       // surface (never our secrets/tokens). accountId/environment are already shown in the
@@ -121,12 +192,12 @@ export async function POST(req: NextRequest, { params }: Params) {
         environment: connection.environment,
       };
       if (err.status === 401) {
-        return NextResponse.json({ error: "DocuSign authorization expired.", ...detail }, { status: 401 });
+        return NextResponse.json({ error: "DocuSign authorization expired.", code: "DOCUSIGN_OAUTH_FAILED", ...detail }, { status: 401 });
       }
-      return NextResponse.json({ error: "DocuSign rejected the envelope.", ...detail }, { status: 502 });
+      return NextResponse.json({ error: "DocuSign rejected the envelope.", code: "DOCUSIGN_ENVELOPE_CREATE_FAILED", ...detail }, { status: 502 });
     }
     logSignatureSend({ ...diagnostics, "Envelope creation attempted": true, "DocuSign HTTP status": null, "Envelope ID": null });
     const message = err instanceof Error ? err.message : "Unable to retrieve the Salesforce document.";
-    return NextResponse.json({ error: message }, { status: 502 });
+    return NextResponse.json({ error: message, code: "SALESFORCE_DOCUMENT_DOWNLOAD_FAILED" }, { status: 502 });
   }
 }

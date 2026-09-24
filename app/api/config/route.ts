@@ -5,6 +5,7 @@ import {
   type AppConfig,
   encodeConfig,
   getConfig,
+  resolveAnthropicKeyStatus,
 } from "@/lib/config";
 
 /**
@@ -13,15 +14,21 @@ import {
  *  - Salesforce Connected App Client ID + Secret (per user/browser)
  * Stored in an httpOnly cookie. Accepts partial updates (merges with existing).
  *
- * GET    → booleans only, never the secret values
+ * GET    → booleans/status only, never the secret values
  * POST   → save a subset of fields
  * DELETE → clear all config
  */
 
 export async function GET(req: NextRequest) {
   const config = getConfig(req);
+  // Reuses `resolveAnthropicKeyStatus` (the same per-user config-cookie lookup `resolveAnthropicKey`
+  // itself uses — no environment fallback exists in this architecture) so this status can never drift out
+  // of sync with what the real AI routes actually do. Never the key value itself.
+  const anthropicStatus = resolveAnthropicKeyStatus(req);
   return NextResponse.json({
-    hasAnthropicKey: Boolean(config?.anthropicApiKey),
+    hasAnthropicKey: anthropicStatus.configured,
+    anthropicKeySource: anthropicStatus.source,
+    anthropicKeyLooksValid: anthropicStatus.looksValid,
     hasConnectedApp: Boolean(config?.sfClientId && config?.sfClientSecret),
   });
 }

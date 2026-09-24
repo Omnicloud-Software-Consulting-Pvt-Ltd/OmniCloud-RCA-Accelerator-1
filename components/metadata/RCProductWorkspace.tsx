@@ -1,7 +1,23 @@
 "use client";
 
-import React, { useState, useCallback, useRef, useEffect } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { loadSession } from "@/lib/auth/session";
+import { toCreatedSalesforceRecord } from "@/lib/salesforce/recordUrl";
+import { useSalesforceSuccess } from "@/components/notifications/SalesforceSuccessContext";
+import {
+  Ic, FieldWrap, FInput, FSelect, FTextarea, SectionHeader, RCConfigCard, rcCssVars,
+  autoCode, SELLING_MODELS, FAMILIES, CATEGORY_MAP, CATALOG_MAP, UNIT_OF_MEASURES,
+} from "@/components/metadata/shared/productFields";
+import FieldMappingTable from "@/components/metadata/shared/FieldMappingTable";
+import type { ProductIntentMap } from "@/lib/products/ai/productIntent";
+import { formatProductPrice } from "@/lib/products/price";
+import { buildProductMappingRows } from "@/lib/products/ai/productMappingRows";
+import type { ProductPayload } from "@/lib/products/types";
+import type { DuplicateCheckResult } from "@/lib/duplicateDetection";
+import DuplicateRecordModal from "@/components/duplicates/DuplicateRecordModal";
+import PromptGuide from "@/components/ai/PromptGuide";
+import { promptGuideConfig } from "@/lib/ai/promptGuideConfig";
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Types
@@ -27,6 +43,11 @@ interface ProductState {
   productOwner: string;
   priceBook: string;
   basePrice: string;
+  currencyIsoCode: string;
+  /** Verbatim "product type" text from the prompt (e.g. "Physical") — separate from the simple/bundle toggle above, which only controls actual bundle behavior. Shown in the Field Mapping table for traceability; only forwarded to Salesforce when it resolves to "Bundle" (Type is a restricted picklist). */
+  productTypeRaw: string;
+  /** null = the prompt said nothing about tax. There is no Product2/PricebookEntry field for this in standard Salesforce — never sent to /api/sf/products/save, shown here only so the meaning is never silently dropped. */
+  taxIncluded: boolean | null;
 }
 
 interface StepResult {
@@ -40,44 +61,29 @@ interface DeployResult {
   steps: Record<string, StepResult>;
   errors: { step: string; error: string }[];
   skipped: { step: string; reason: string }[];
+  warnings?: string[];
+  /** Set by /save when the product was created but its PricebookEntry could not be written. */
+  priceError?: string;
 }
 type ValidationIssue = { field: string; msg: string };
+
+/** Passed in when the workspace is opened via "Edit Product" from Product History, instead of "Create Product". */
+export interface ProductEditContext {
+  id: string;
+  original: ProductPayload;
+}
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Constants
  * ─────────────────────────────────────────────────────────────────────────── */
 const EMPTY_PRODUCT: ProductState = {
-  productName: "", productCode: "", status: "Draft", description: "",
+  productName: "", productCode: "", status: "Active", description: "",
   family: "", category: "", catalog: "", sellingModel: "One Time",
   productType: "simple", isActive: true, unitOfMeasure: "Each",
   classification: "", productOwner: "", priceBook: "Standard Price Book",
-  basePrice: "",
+  basePrice: "", currencyIsoCode: "", productTypeRaw: "", taxIncluded: null,
 };
 
-const SELLING_MODELS = [
-  "One Time",
-  "Evergreen - Monthly", "Evergreen - Quarterly", "Evergreen - Semi-Annual", "Evergreen - Yearly",
-  "Term Based - Monthly", "Term Based - Quarterly", "Term Based - Semi-Annual", "Term Based - Yearly",
-];
-
-const FAMILIES = ["Electronics", "Software", "Telecommunications", "Services", "Industrial", "Healthcare", "Financial", "Other"];
-const CATEGORY_MAP: Record<string, string[]> = {
-  Electronics:        ["Mobile Phones", "Laptops", "Tablets", "Gaming", "Audio", "Displays", "Cameras", "Wearables", "Peripherals", "Smart Home"],
-  Software:           ["CRM", "ERP", "Analytics", "Security", "Collaboration", "DevTools", "Enterprise Software", "Productivity"],
-  Telecommunications: ["Mobile Plans", "Broadband", "Fiber", "5G", "IoT Connectivity"],
-  Services:           ["Subscription Services", "Professional Services", "Managed Services", "Cloud Services", "Support Plans"],
-  Industrial:         ["Manufacturing", "Equipment", "Industrial Software"],
-  Healthcare:         ["Medical Devices", "Health Services", "Diagnostics"],
-  Financial:          ["Insurance", "Banking Products", "Investment"],
-  Other:              ["General Products"],
-};
-const CATALOG_MAP: Record<string, string> = {
-  Electronics: "Electronics Catalog", Software: "Software Catalog",
-  Telecommunications: "Telecom Catalog", Services: "Services Catalog",
-  Industrial: "Industrial Catalog", Healthcare: "Healthcare Catalog",
-  Financial: "Financial Catalog", Other: "General Catalog",
-};
-const UNIT_OF_MEASURES = ["Each", "Hour", "License", "Month", "Year", "GB", "TB", "User", "Seat"];
 const EXAMPLE_PROMPTS = [
   "Samsung Galaxy S25 mobile phone with black and silver colors under Electronics",
   "Salesforce CRM Enterprise subscription plan billed monthly",
@@ -85,195 +91,6 @@ const EXAMPLE_PROMPTS = [
   "Smartwatch with AMOLED display, GPS, health monitoring, wireless charging",
   "Enterprise support contract billed quarterly for 2 years",
 ];
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * Helpers
- * ─────────────────────────────────────────────────────────────────────────── */
-function autoCode(name: string) {
-  return name.toUpperCase().replace(/\s+/g,"_").replace(/[^A-Z0-9_]/g,"").slice(0,40);
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * Icon system
- * ─────────────────────────────────────────────────────────────────────────── */
-function Ic({ n, s = 16 }: { n: string; s?: number }) {
-  const I: Record<string, React.ReactNode> = {
-    package:        <><line x1="16.5" y1="9.4" x2="7.55" y2="4.24"/><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></>,
-    zap:            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>,
-    wand:           <><path d="M15 4V2"/><path d="M15 16v-2"/><path d="M8 9h2"/><path d="M20 9h2"/><path d="M17.8 11.8L19 13"/><path d="M15 9h.01"/><path d="M17.8 6.2L19 5"/><path d="M3 21l9-9"/><path d="M12.2 6.2L11 5"/></>,
-    sparkles:       <><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z"/><path d="M19 3l.75 2.25L22 6l-2.25.75L19 9l-.75-2.25L16 6l2.25-.75z"/></>,
-    rocket:         <><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 00-2.91-.09z"/><path d="M12 15l-3-3a22 22 0 012-3.95A12.88 12.88 0 0122 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 01-4 2z"/></>,
-    "check-circle": <><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></>,
-    "x-circle":     <><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></>,
-    alert:          <><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,
-    refresh:        <><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></>,
-    x:              <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,
-    copy:           <><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></>,
-    plus:           <><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></>,
-    edit:           <><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,
-    trash:          <><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a1 1 0 011-1h4a1 1 0 011 1v2"/></>,
-    "arrow-left":   <><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></>,
-    "chevron-down": <polyline points="6 9 12 15 18 9"/>,
-    info:           <><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></>,
-    "check-square": <><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></>,
-    layers:         <><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></>,
-    tag:            <><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></>,
-    "bar-chart":    <><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></>,
-    code:           <><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></>,
-    eye:            <><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>,
-    "eye-off":      <><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></>,
-    user:           <><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></>,
-    "book-open":    <><path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/></>,
-    "dollar-sign":  <><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,
-  };
-  return (
-    <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      {I[n] ?? <circle cx="12" cy="12" r="5"/>}
-    </svg>
-  );
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * Field components
- * ─────────────────────────────────────────────────────────────────────────── */
-function FieldWrap({ label, children, span2 }: { label: string; children: React.ReactNode; span2?: boolean }) {
-  return (
-    <div style={{ gridColumn: span2 ? "1 / -1" : undefined }}>
-      <label className="block text-[10px] font-semibold uppercase tracking-wider mb-1.5"
-        style={{ color: "rgba(90,120,160,0.7)" }}>
-        {label}
-      </label>
-      {children}
-    </div>
-  );
-}
-
-function FInput({ value, onChange, placeholder, mono, large, readOnly, type }: {
-  value: string; onChange?: (v: string) => void; placeholder?: string;
-  mono?: boolean; large?: boolean; readOnly?: boolean; type?: string;
-}) {
-  return (
-    <input
-      value={value}
-      type={type ?? "text"}
-      readOnly={readOnly}
-      onChange={e => onChange?.(e.target.value)}
-      placeholder={placeholder}
-      className={`w-full rounded-lg outline-none ${large ? "text-[14px] px-3.5 py-2.5" : "text-[12px] px-3 py-2"}`}
-      style={{
-        background: "var(--rc-field-bg)",
-        border: "1px solid var(--rc-field-border)",
-        color: "var(--rc-text-primary)",
-        fontFamily: mono ? "monospace" : "inherit",
-        cursor: readOnly ? "default" : "text",
-        transition: "border-color 180ms",
-      }}
-      onFocus={e => !readOnly && (e.target.style.borderColor = "#1E90FF")}
-      onBlur={e => (e.target.style.borderColor = "var(--rc-field-border)")}
-    />
-  );
-}
-
-function FSelect({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: string[] }) {
-  return (
-    <select
-      value={value}
-      onChange={e => onChange(e.target.value)}
-      className="w-full rounded-lg text-[12px] px-3 py-2 outline-none"
-      style={{
-        background: "var(--rc-field-bg)",
-        border: "1px solid var(--rc-field-border)",
-        color: "var(--rc-text-primary)",
-        fontFamily: "inherit",
-        cursor: "pointer",
-      }}
-    >
-      {options.map(o => <option key={o} value={o}>{o}</option>)}
-    </select>
-  );
-}
-
-function FTextarea({ value, onChange, placeholder, rows = 3 }: {
-  value: string; onChange: (v: string) => void; placeholder?: string; rows?: number;
-}) {
-  return (
-    <textarea
-      value={value}
-      onChange={e => onChange(e.target.value)}
-      placeholder={placeholder}
-      rows={rows}
-      className="w-full rounded-lg text-[12px] px-3 py-2 outline-none resize-none"
-      style={{
-        background: "var(--rc-field-bg)",
-        border: "1px solid var(--rc-field-border)",
-        color: "var(--rc-text-primary)",
-        fontFamily: "inherit",
-        lineHeight: 1.55,
-        transition: "border-color 180ms",
-      }}
-      onFocus={e => (e.target.style.borderColor = "#1E90FF")}
-      onBlur={e => (e.target.style.borderColor = "var(--rc-field-border)")}
-    />
-  );
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * Section header
- * ─────────────────────────────────────────────────────────────────────────── */
-function SectionHeader({ icon, label, badge, action }: {
-  icon: string; label: string; badge?: string | number;
-  action?: { label: string; onClick: () => void };
-}) {
-  return (
-    <div className="flex items-center justify-between mb-4">
-      <div className="flex items-center gap-2">
-        <div className="w-5 h-5 flex items-center justify-center" style={{ color: "#1E90FF" }}>
-          <Ic n={icon} s={14} />
-        </div>
-        <span className="text-[11px] font-bold uppercase tracking-widest" style={{ color: "var(--rc-text-section)" }}>
-          {label}
-        </span>
-        {badge !== undefined && (
-          <span className="text-[9px] font-mono px-1.5 py-0.5 rounded"
-            style={{ background: "rgba(30,144,255,0.1)", border: "1px solid rgba(30,144,255,0.2)", color: "#3AABFF" }}>
-            {badge}
-          </span>
-        )}
-      </div>
-      {action && (
-        <motion.button
-          onClick={action.onClick}
-          className="flex items-center gap-1.5 text-[10px] font-medium px-2.5 py-1.5 rounded-lg cursor-pointer"
-          style={{ color: "#1E90FF", border: "1px solid rgba(30,144,255,0.2)", background: "transparent" }}
-          whileHover={{ background: "rgba(30,144,255,0.07)" }}
-          whileTap={{ scale: 0.95 }}
-        >
-          <Ic n="plus" s={11} />
-          {action.label}
-        </motion.button>
-      )}
-    </div>
-  );
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * RC Config Card
- * ─────────────────────────────────────────────────────────────────────────── */
-function RCConfigCard({ icon, label, value, color, sub }: {
-  icon: string; label: string; value: string; color: string; sub?: string;
-}) {
-  return (
-    <div className="px-4 py-3 rounded-xl"
-      style={{ background: `${color}0A`, border: `1px solid ${color}22`, minWidth: 0 }}>
-      <div className="flex items-center gap-2 mb-1.5">
-        <div style={{ color }}><Ic n={icon} s={13} /></div>
-        <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: `${color}90` }}>{label}</span>
-      </div>
-      <div className="text-[13px] font-bold truncate" style={{ color, letterSpacing: "-0.02em" }}>{value || "—"}</div>
-      {sub && <div className="text-[10px] mt-0.5 truncate" style={{ color: `${color}70` }}>{sub}</div>}
-    </div>
-  );
-}
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Visual Preview Panel
@@ -302,7 +119,7 @@ function VisualPreview({ product, isDark }: { product: ProductState; isDark: boo
 
   return (
     <div className="space-y-2.5">
-      {card("Product Information", "#1E90FF", rows([
+      {card("Product Information", isDark ? "#1E90FF" : "#0968D3", rows([
         ["Name", product.productName || "—"],
         ["Code", product.productCode || "—"],
         ["Family", product.family || "—"],
@@ -312,17 +129,18 @@ function VisualPreview({ product, isDark }: { product: ProductState; isDark: boo
         ["Active", product.isActive ? "Yes" : "No"],
         ["Unit", product.unitOfMeasure],
         ...(product.productOwner ? [["Owner", product.productOwner] as [string, string]] : []),
-      ], "#3AABFF"))}
+      ], isDark ? "#3AABFF" : "#1789B0"))}
 
-      {card("Revenue Cloud", "#00D4FF", rows([
+      {card("Revenue Cloud", isDark ? "#00D4FF" : "#0098CC", rows([
         ["Catalog", product.catalog || "—"],
         ["Selling Model", product.sellingModel || "—"],
         ["Classification", product.classification || "—"],
         ["Price Book", product.priceBook || "—"],
-        ["Base Price", product.basePrice ? `$${product.basePrice}` : "—"],
-      ], "#00D4FF"))}
+        ["Base Price", formatProductPrice(product.basePrice, product.currencyIsoCode) || "—"],
+        ["Tax", product.taxIncluded === null ? "—" : product.taxIncluded ? "Included" : "Excluded"],
+      ], isDark ? "#00D4FF" : "#0098CC"))}
 
-      {product.description && card("Description", "#60B8FF", (
+      {product.description && card("Description", isDark ? "#60B8FF" : "#1C6DBF", (
         <p className="text-[11px] leading-relaxed" style={{ color: "var(--rc-text-primary)" }}>
           {product.description}
         </p>
@@ -332,9 +150,64 @@ function VisualPreview({ product, isDark }: { product: ProductState; isDark: boo
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+ * Edit mode — pre-populate from the CURRENT Salesforce values, diff back a
+ * minimal patch on Save
+ * ─────────────────────────────────────────────────────────────────────────── */
+function fromEditDetail(p: ProductPayload): ProductState {
+  return {
+    ...EMPTY_PRODUCT,
+    productName: p.productName,
+    productCode: p.productCode,
+    status: p.isActive !== false ? "Active" : "Draft",
+    description: p.description ?? "",
+    family: p.family ?? "",
+    category: p.category ?? "",
+    catalog: p.catalog ?? "",
+    sellingModel: p.sellingModel ?? "",
+    productType: p.productType === "bundle" ? "bundle" : "simple",
+    isActive: p.isActive !== false,
+    productOwner: p.productOwner ?? "",
+    priceBook: p.priceBook || "Standard Price Book",
+    basePrice: p.basePrice ?? "",
+    currencyIsoCode: p.currencyIsoCode ?? "",
+    unitOfMeasure: p.unitOfMeasure ?? "",
+    classification: p.classification ?? "",
+  };
+}
+
+/** Only the fields that actually differ from what was loaded — sent to PATCH /api/sf/products/[id]. */
+function buildEditPatch(product: ProductState, original: ProductPayload): Partial<ProductPayload> {
+  const patch: Partial<ProductPayload> = {};
+  if (product.productName !== original.productName) patch.productName = product.productName;
+  if (product.productCode !== original.productCode) patch.productCode = product.productCode;
+  if (product.family !== original.family) patch.family = product.family;
+  if ((product.category || undefined) !== original.category) patch.category = product.category || undefined;
+  if ((product.catalog || undefined) !== original.catalog) patch.catalog = product.catalog || undefined;
+  if ((product.description || undefined) !== original.description) patch.description = product.description || undefined;
+  if (product.isActive !== (original.isActive !== false)) patch.isActive = product.isActive;
+  if ((product.sellingModel || undefined) !== original.sellingModel) patch.sellingModel = product.sellingModel || undefined;
+  if ((product.productOwner || undefined) !== original.productOwner) patch.productOwner = product.productOwner || undefined;
+  if ((product.priceBook || undefined) !== original.priceBook) patch.priceBook = product.priceBook || undefined;
+  if ((product.basePrice || undefined) !== original.basePrice) patch.basePrice = product.basePrice || undefined;
+  if ((product.currencyIsoCode || undefined) !== original.currencyIsoCode) patch.currencyIsoCode = product.currencyIsoCode || undefined;
+  if ((product.unitOfMeasure || undefined) !== original.unitOfMeasure && product.unitOfMeasure) patch.unitOfMeasure = product.unitOfMeasure;
+  if ((product.classification || undefined) !== original.classification && product.classification) patch.classification = product.classification;
+  const wasBundle = original.productType === "bundle";
+  if (product.productType === "bundle" && !wasBundle) patch.productType = "bundle";
+  return patch;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
  * Main Component
  * ─────────────────────────────────────────────────────────────────────────── */
-export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
+export default function RCProductWorkspace({ isDark, editProductId, onSaved, onCancel }: {
+  isDark: boolean;
+  /** When set, opens in Edit mode: loads this Product2's current values from Salesforce and Save Changes updates it (never creates a new one). */
+  editProductId?: string;
+  onSaved?: () => void;
+  onCancel?: () => void;
+}) {
+  const notifySalesforceSuccess = useSalesforceSuccess();
   const [product, setProduct] = useState<ProductState>(EMPTY_PRODUCT);
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiPhase, setAiPhase] = useState<"idle" | "generating" | "done" | "error">("idle");
@@ -346,29 +219,41 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
   const [showPreview, setShowPreview] = useState(false);
   const [previewTab, setPreviewTab] = useState<PreviewTab>("visual");
   const [copied, setCopied] = useState(false);
-  const codeManualSet = useRef(false);
+  // Whether Product Code was explicitly set (by the user, or by an AI extraction that found one
+  // in the prompt) rather than auto-derived from the Product Name — state, not a ref, because the
+  // Field Mapping table needs to read it during render.
+  const [codeIsManual, setCodeIsManual] = useState(!!editProductId);
+  const [intent, setIntent] = useState<ProductIntentMap | null>(null);
+  const isEditMode = !!editProductId;
+  const [editContext, setEditContext] = useState<ProductEditContext | null>(null);
+  const [editLoad, setEditLoad] = useState<"loading" | "ready" | "error">(editProductId ? "loading" : "ready");
+  const [editLoadError, setEditLoadError] = useState<string | null>(null);
+  const [duplicateCheck, setDuplicateCheck] = useState<DuplicateCheckResult | null>(null);
 
-  const cssVars = {
-    "--rc-field-bg":     isDark ? "rgba(30,144,255,0.04)" : "rgba(0,71,171,0.08)",
-    "--rc-field-border": isDark ? "rgba(30,144,255,0.12)" : "rgba(0,71,171,0.20)",
-    "--rc-text-primary": isDark ? "rgba(180,210,240,0.9)" : "rgba(0,15,45,0.85)",
-    "--rc-text-muted":   isDark ? "rgba(90,120,160,0.65)" : "rgba(0,31,91,0.66)",
-    "--rc-text-section": isDark ? "rgba(30,144,255,0.6)" : "rgba(0,71,171,0.72)",
-    "--rc-divider":      isDark ? "rgba(30,144,255,0.07)" : "rgba(0,71,171,0.12)",
-    "--rc-card-bg":      isDark ? "rgba(6,12,28,0.6)" : "rgba(222,234,255,0.92)",
-    "--rc-panel-bg":     isDark ? "rgba(2,7,18,0.7)" : "rgba(228,238,255,0.96)",
-    "--rc-panel-border": isDark ? "rgba(30,144,255,0.1)" : "rgba(0,71,171,0.18)",
-  } as React.CSSProperties;
+  /* ── Edit mode: load the product's CURRENT Salesforce values ── */
+  useEffect(() => {
+    if (!editProductId) return;
+    fetch(`/api/sf/products/${editProductId}`)
+      .then(async res => {
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error ?? "Could not load this product");
+        setEditContext({ id: editProductId, original: data.product });
+        setProduct(fromEditDetail(data.product));
+        setEditLoad("ready");
+      })
+      .catch(err => {
+        setEditLoadError(err instanceof Error ? err.message : "Could not load this product");
+        setEditLoad("error");
+      });
+  }, [editProductId]);
+
+  const cssVars = rcCssVars(isDark);
 
   const border = isDark ? "1px solid rgba(30,144,255,0.1)" : "1px solid rgba(0,71,171,0.18)";
 
-  /* ── Auto-generate product code ── */
-  useEffect(() => {
-    if (!codeManualSet.current && product.productName) {
-      setProduct(p => ({ ...p, productCode: autoCode(p.productName) }));
-    }
-  }, [product.productName]);
-
+  // Product Code auto-derives from Product Name as the user types, exactly like typing it in
+  // manually always has — applied directly where productName changes (here, and in handleGenerate
+  // below) rather than via a reactive effect, so there's no synchronous setState-in-effect.
   const setField = useCallback(<K extends keyof ProductState>(key: K, value: ProductState[K]) => {
     setProduct(p => {
       const next = { ...p, [key]: value };
@@ -376,10 +261,17 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
         next.catalog = CATALOG_MAP[value as string] ?? "";
         next.category = "";
       }
+      if (key === "productName" && !codeIsManual) {
+        next.productCode = autoCode(value as string);
+      }
+      // Product2 has no Status field — IsActive is what Salesforce stores, so the
+      // two controls are kept in sync instead of letting them contradict each other.
+      if (key === "status") next.isActive = value === "Active";
+      if (key === "isActive") next.status = value ? "Active" : (p.status === "Active" ? "Draft" : p.status);
       return next;
     });
-    if (key === "productCode") codeManualSet.current = true;
-  }, []);
+    if (key === "productCode") setCodeIsManual(true);
+  }, [codeIsManual]);
 
   const validate = useCallback(() => {
     const issues: ValidationIssue[] = [];
@@ -395,7 +287,7 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
     if (!aiPrompt.trim() || aiPhase === "generating") return;
     setAiPhase("generating");
     setAiError(null);
-    codeManualSet.current = false;
+    setCodeIsManual(false);
 
     try {
       const res = await fetch("/api/sf/products/generate-payload", {
@@ -410,22 +302,36 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
         return;
       }
       const p = data.payload;
+      const nextIntent: ProductIntentMap | null = data.intent ?? null;
       setProduct(prev => ({
         ...prev,
         productName:    p.productName  ?? "",
-        productCode:    p.productCode  ?? "",
-        status:         "Draft",
+        productCode:    p.productCode || autoCode(p.productName ?? ""),
+        status:         p.isActive !== false ? "Active" : "Draft",
         description:    p.description  ?? "",
         family:         p.family       ?? "",
         category:       p.category     ?? "",
         catalog:        p.catalog      ?? "",
-        sellingModel:   p.sellingModel ?? "One Time",
-        productType:    p.productType  ?? "simple",
+        // Unspecified in the prompt stays blank — never force "One Time" just to fill the field.
+        sellingModel:   p.sellingModel ?? "",
+        productType:    p.productType === "bundle" ? "bundle" : "simple",
+        productTypeRaw: nextIntent?.productType.value ?? "",
         isActive:       p.isActive !== false,
-        unitOfMeasure:  p.unitOfMeasure ?? "Each",
-        classification: p.classification?.name ?? "",
+        unitOfMeasure:  p.unitOfMeasure || "Each",
+        classification: p.classification ?? "",
+        productOwner:   p.productOwner ?? "",
+        // The extracted price was previously never copied into the form, so every
+        // AI-generated product reached /save with basePrice "" and no PricebookEntry.
+        basePrice:      p.basePrice ?? "",
+        priceBook:      p.priceBook || "Standard Price Book",
+        currencyIsoCode: p.currencyIsoCode ?? "",
+        taxIncluded:    nextIntent?.taxIncluded.value ?? null,
       }));
-      codeManualSet.current = true;
+      // Only treat the code as "explicitly set" if the AI actually extracted one from the
+      // prompt — otherwise leave it false so the existing auto-generate-from-name effect fills
+      // it in (a system default, shown as such in the Field Mapping table), same as manual entry.
+      setCodeIsManual(nextIntent?.productCode.provenance === "explicit");
+      setIntent(nextIntent);
       setAiPhase("done");
       setValidationIssues([]);
     } catch {
@@ -435,10 +341,7 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
   }, [aiPrompt, aiPhase]);
 
   /* ── Deploy ── */
-  const handleDeploy = useCallback(async () => {
-    const issues = validate();
-    if (issues.length > 0) return;
-
+  const proceedToSave = useCallback(async () => {
     setDeployPhase("deploying");
     setDeployError(null);
 
@@ -453,10 +356,11 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
       sellingModel:   product.sellingModel,
       unitOfMeasure:  product.unitOfMeasure,
       productType:    product.productType,
-      classification: { name: product.classification, createIfMissing: true },
+      classification: product.classification || undefined,
       productOwner:   product.productOwner,
       priceBook:      product.priceBook,
       basePrice:      product.basePrice,
+      currencyIsoCode: product.currencyIsoCode || undefined,
     };
 
     try {
@@ -467,17 +371,70 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
+        // The backend re-runs the same duplicate check as its own final gate
+        // (§21) — surface that result the same way the frontend pre-check
+        // would have, rather than a generic error, in case a concurrent
+        // request created it between our pre-check and this save.
+        if (data.duplicate) {
+          setDuplicateCheck(data.duplicate as DuplicateCheckResult);
+          setDeployPhase("idle");
+          return;
+        }
         setDeployError(data.error ?? "Deployment failed");
         setDeployPhase("idle");
         return;
       }
       setDeployResult(data as DeployResult);
       setDeployPhase("done");
+
+      const instanceUrl = loadSession()?.instanceUrl;
+      if (instanceUrl && data.salesforceId) {
+        const record = toCreatedSalesforceRecord(instanceUrl, "Product2", data.salesforceId, product.productName);
+        notifySalesforceSuccess({
+          title: "Product Created Successfully",
+          message: data.priceError
+            ? `${record.recordName} was created in Salesforce, but its price was NOT saved: ${data.priceError}`
+            : `${record.recordName} has been successfully created in Salesforce.`,
+          records: [record],
+        });
+      }
     } catch {
       setDeployError("Network error — could not reach Salesforce");
       setDeployPhase("idle");
     }
-  }, [product, validate]);
+  }, [product, notifySalesforceSuccess]);
+
+  const handleDeploy = useCallback(async () => {
+    const issues = validate();
+    if (issues.length > 0) return;
+
+    setDeployPhase("deploying");
+    setDeployError(null);
+
+    // Duplicate Prevention pre-check (§1, §20) — runs before the create
+    // request itself. Advisory only: /api/sf/products/save re-runs this
+    // exact check server-side as the final authority (§21), so a failed
+    // pre-check (network hiccup) doesn't need to block the user — it just
+    // means the backend gate is the one that'll catch a real duplicate.
+    try {
+      const res = await fetch("/api/sf/products/check-duplicate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: [{ key: "product", name: product.productName, code: product.productCode }] }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        const result = data.results.product as DuplicateCheckResult;
+        if (result.isDuplicate || result.similarRecords.length > 0) {
+          setDuplicateCheck(result);
+          setDeployPhase("idle");
+          return;
+        }
+      }
+    } catch { /* pre-check failed — fall through to the backend's own authoritative check */ }
+
+    await proceedToSave();
+  }, [product, validate, proceedToSave]);
 
   const handleReset = () => {
     setProduct(EMPTY_PRODUCT);
@@ -489,9 +446,83 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
     setDeployError(null);
     setValidationIssues([]);
     setShowPreview(false);
-    codeManualSet.current = false;
-
+    setCodeIsManual(false);
+    setIntent(null);
+    setDuplicateCheck(null);
   };
+
+  /* ── Save edit (UPDATE, never CREATE) ── */
+  const handleSaveEdit = useCallback(async () => {
+    if (!editContext) return;
+    const issues = validate();
+    if (issues.length > 0) return;
+
+    const patch = buildEditPatch(product, editContext.original);
+    if (Object.keys(patch).length === 0) {
+      setDeployError("No changes to save.");
+      return;
+    }
+
+    setDeployPhase("deploying");
+    setDeployError(null);
+
+    try {
+      const res = await fetch(`/api/sf/products/${editContext.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ patch }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setDeployError(data.error ?? "Update failed");
+        setDeployPhase("idle");
+        return;
+      }
+      setDeployResult(data as DeployResult);
+      setDeployPhase("done");
+
+      const instanceUrl = loadSession()?.instanceUrl;
+      if (instanceUrl) {
+        const record = toCreatedSalesforceRecord(instanceUrl, "Product2", editContext.id, product.productName);
+        notifySalesforceSuccess({
+          title: "Product Updated Successfully",
+          message: `${record.recordName} has been successfully updated in Salesforce.`,
+          records: [record],
+        });
+      }
+      onSaved?.();
+    } catch {
+      setDeployError("Network error — could not reach Salesforce");
+      setDeployPhase("idle");
+    }
+  }, [editContext, product, validate, notifySalesforceSuccess, onSaved]);
+
+  /* ── Edit mode: block the form until the current Salesforce values have loaded ── */
+  if (isEditMode && editLoad !== "ready") {
+    return (
+      <div className="flex flex-col h-full items-center justify-center" style={cssVars}>
+        {editLoad === "loading" ? (
+          <div className="flex items-center gap-2 text-[13px]" style={{ color: "var(--rc-text-muted)" }}>
+            <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }}>
+              <Ic n="refresh" s={16} />
+            </motion.span>
+            Loading product…
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-3 text-center px-6">
+            <div style={{ color: "#E84444" }}><Ic n="alert" s={22} /></div>
+            <p className="text-[13px]" style={{ color: "var(--rc-text-primary)" }}>{editLoadError}</p>
+            <motion.button onClick={onCancel}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-medium cursor-pointer"
+              style={{ color: "var(--rc-text-muted)", border: "1px solid var(--rc-field-border)", background: "transparent" }}
+              whileTap={{ scale: 0.96 }}>
+              <Ic n="arrow-left" s={12} />Back
+            </motion.button>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   const payloadJson = JSON.stringify({
     productName:    product.productName,
@@ -504,11 +535,14 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
     unitOfMeasure:  product.unitOfMeasure,
     sellingModel:   product.sellingModel,
     productType:    product.productType,
-    classification: { name: product.classification, createIfMissing: true },
+    classification: product.classification || undefined,
     productOwner:   product.productOwner || undefined,
     priceBook:      product.priceBook || undefined,
     basePrice:      product.basePrice || undefined,
+    currencyIsoCode: product.currencyIsoCode || undefined,
   }, null, 2);
+
+  const mappingRows = buildProductMappingRows(product, intent, codeIsManual);
 
   const statusColors: Record<ProductStatus, { bg: string; text: string; border: string }> = {
     Draft:    { bg: "rgba(0,212,255,0.10)",   text: "#00D4FF", border: "rgba(0,212,255,0.28)"  },
@@ -526,7 +560,7 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-start gap-3 min-w-0">
             <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
-              style={{ background: "linear-gradient(135deg, rgba(30,144,255,0.18) 0%, rgba(0,212,255,0.12) 100%)", border: "1px solid rgba(30,144,255,0.22)", color: "#1E90FF" }}>
+              style={{ background: "linear-gradient(135deg, rgba(30,144,255,0.18) 0%, rgba(0,212,255,0.12) 100%)", border: "1px solid rgba(30,144,255,0.22)", color: isDark ? "#1E90FF" : "#0968D3" }}>
               <Ic n="package" s={18} />
             </div>
             <div className="min-w-0">
@@ -537,6 +571,12 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
                 </h2>
                 {product.productName && (
                   <div className="flex items-center gap-2 shrink-0">
+                    {isEditMode && (
+                      <span className="text-[9px] font-semibold px-2 py-0.5 rounded-full"
+                        style={{ background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.35)", color: "#F59E0B" }}>
+                        EDITING
+                      </span>
+                    )}
                     <span className="text-[9px] font-mono px-2 py-0.5 rounded"
                       style={{ background: isDark ? "rgba(30,144,255,0.08)" : "rgba(0,71,171,0.10)", border, color: isDark ? "#3AABFF" : "#0047AB" }}>
                       {product.productCode || "—"}
@@ -546,27 +586,37 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
                       {product.status}
                     </span>
                     <span className="text-[9px] font-mono px-2 py-0.5 rounded"
-                      style={{ background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.2)", color: "#00D4FF" }}>
+                      style={{ background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.2)", color: isDark ? "#00D4FF" : "#0098CC" }}>
                       EPC v62.0
                     </span>
                   </div>
                 )}
                 {!product.productName && (
                   <span className="text-[9px] font-mono px-2 py-0.5 rounded"
-                    style={{ background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.2)", color: "#00D4FF" }}>
+                    style={{ background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.2)", color: isDark ? "#00D4FF" : "#0098CC" }}>
                     AI · EPC v62.0
                   </span>
                 )}
               </div>
               <p className="text-[12px] mt-1 leading-relaxed" style={{ color: "var(--rc-text-muted)" }}>
-                {product.productName
-                  ? (product.description || "Revenue Cloud product workspace")
-                  : "Describe your product to auto-fill all fields, or fill manually and deploy to Salesforce."}
+                {isEditMode
+                  ? "Editing an existing Salesforce product — Save Changes updates this record, it never creates a new one."
+                  : product.productName
+                    ? (product.description || "Revenue Cloud product workspace")
+                    : "Describe your product to auto-fill all fields, or fill manually and deploy to Salesforce."}
               </p>
             </div>
           </div>
 
-          {product.productName && (
+          {isEditMode ? (
+            <motion.button onClick={onCancel}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-medium cursor-pointer shrink-0"
+              style={{ color: "var(--rc-text-muted)", border, background: "transparent" }}
+              whileHover={{ background: isDark ? "rgba(30,144,255,0.06)" : "rgba(0,71,171,0.09)" }}
+              whileTap={{ scale: 0.96 }}>
+              <Ic n="arrow-left" s={12} />Cancel
+            </motion.button>
+          ) : product.productName && (
             <motion.button onClick={handleReset}
               className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-medium cursor-pointer shrink-0"
               style={{ color: "var(--rc-text-muted)", border, background: "transparent" }}
@@ -614,7 +664,7 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
               <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
                 <FieldWrap label="Product Code *">
                   <FInput value={product.productCode}
-                    onChange={v => { codeManualSet.current = true; setField("productCode", v); }}
+                    onChange={v => { setCodeIsManual(true); setField("productCode", v); }}
                     placeholder="AUTO_GENERATED" mono />
                 </FieldWrap>
                 <FieldWrap label="Product Status">
@@ -627,7 +677,7 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
                 </FieldWrap>
                 <FieldWrap label="Unit of Measure">
                   <FSelect value={product.unitOfMeasure} onChange={v => setField("unitOfMeasure", v)}
-                    options={UNIT_OF_MEASURES} />
+                    options={product.unitOfMeasure && !UNIT_OF_MEASURES.includes(product.unitOfMeasure) ? [product.unitOfMeasure, ...UNIT_OF_MEASURES] : UNIT_OF_MEASURES} />
                 </FieldWrap>
                 <FieldWrap label="Is Active">
                   <div className="flex gap-2 pt-0.5">
@@ -638,7 +688,7 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
                         style={{
                           background: (product.isActive ? "Yes" : "No") === v ? "rgba(30,144,255,0.14)" : "var(--rc-field-bg)",
                           border: `1px solid ${(product.isActive ? "Yes" : "No") === v ? "rgba(30,144,255,0.35)" : "var(--rc-field-border)"}`,
-                          color: (product.isActive ? "Yes" : "No") === v ? "#1E90FF" : "var(--rc-text-muted)",
+                          color: (product.isActive ? "Yes" : "No") === v ? (isDark ? "#1E90FF" : "#0968D3") : "var(--rc-text-muted)",
                         }}
                         whileTap={{ scale: 0.96 }}>{v}</motion.button>
                     ))}
@@ -686,7 +736,7 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
                   {aiPhase === "done" && (
                     <motion.span initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }}
                       className="text-[9px] font-mono px-1.5 py-0.5 rounded"
-                      style={{ background: "rgba(0,212,255,0.1)", border: "1px solid rgba(0,212,255,0.25)", color: "#00D4FF" }}>
+                      style={{ background: "rgba(0,212,255,0.1)", border: "1px solid rgba(0,212,255,0.25)", color: isDark ? "#00D4FF" : "#0098CC" }}>
                       ✓ FIELDS FILLED
                     </motion.span>
                   )}
@@ -723,7 +773,7 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
                 />
                 {/* Cmd/Ctrl+Enter hint */}
                 <div className="absolute bottom-2.5 right-3 text-[9px] font-mono pointer-events-none"
-                  style={{ color: "rgba(30,144,255,0.4)" }}>
+                  style={{ color: isDark ? "rgba(30,144,255,0.4)" : "rgba(15,45,100,0.6)" }}>
                   ⌘↵ to generate
                 </div>
               </div>
@@ -744,6 +794,10 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
                     </motion.button>
                   ))}
                 </div>
+              </div>
+
+              <div className="mb-3">
+                <PromptGuide isDark={isDark} config={promptGuideConfig.product} onUseExample={setAiPrompt} />
               </div>
 
               {/* Error */}
@@ -824,7 +878,7 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
                 </FieldWrap>
                 <FieldWrap label="Selling Model">
                   <FSelect value={product.sellingModel} onChange={v => setField("sellingModel", v)}
-                    options={SELLING_MODELS} />
+                    options={["", ...SELLING_MODELS]} />
                 </FieldWrap>
                 <FieldWrap label="Product Owner">
                   <FInput value={product.productOwner} onChange={v => setField("productOwner", v)}
@@ -834,20 +888,46 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
                   <FInput value={product.priceBook} onChange={v => setField("priceBook", v)}
                     placeholder="Standard Price Book" />
                 </FieldWrap>
-                <FieldWrap label="Base Price (USD)">
+                <FieldWrap label="Base Price">
                   <FInput value={product.basePrice} onChange={v => setField("basePrice", v)}
                     placeholder="0.00" type="number" />
                 </FieldWrap>
+                <FieldWrap label="Currency">
+                  <FInput value={product.currencyIsoCode} onChange={v => setField("currencyIsoCode", v)}
+                    placeholder="USD" />
+                </FieldWrap>
+                <FieldWrap label="Product Type (as stated)">
+                  <FInput value={product.productTypeRaw} onChange={v => setField("productTypeRaw", v)}
+                    placeholder="e.g. Physical" />
+                </FieldWrap>
+                <FieldWrap label="Tax Included">
+                  <div className="flex gap-2 pt-0.5">
+                    {([["Yes", true], ["No", false], ["Not specified", null]] as const).map(([label, v]) => (
+                      <motion.button key={label}
+                        onClick={() => setField("taxIncluded", v)}
+                        className="flex-1 py-2 rounded-lg text-[10.5px] font-medium cursor-pointer"
+                        style={{
+                          background: product.taxIncluded === v ? "rgba(30,144,255,0.14)" : "var(--rc-field-bg)",
+                          border: `1px solid ${product.taxIncluded === v ? "rgba(30,144,255,0.35)" : "var(--rc-field-border)"}`,
+                          color: product.taxIncluded === v ? (isDark ? "#1E90FF" : "#0968D3") : "var(--rc-text-muted)",
+                        }}
+                        whileTap={{ scale: 0.96 }}>{label}</motion.button>
+                    ))}
+                  </div>
+                </FieldWrap>
               </div>
+              <p className="text-[10px] mt-1.5 leading-relaxed" style={{ color: "var(--rc-text-muted)" }}>
+                Tax Included is not sent to Salesforce — Product2/PricebookEntry have no standard field for it. It&apos;s tracked here so the prompt&apos;s meaning isn&apos;t lost.
+              </p>
 
               {/* RC Config summary cards */}
               {(product.catalog || product.category || product.sellingModel || product.classification) && (
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-2">
-                  {product.catalog        && <RCConfigCard icon="layers"       label="Catalog"         value={product.catalog}         color="#1E90FF" />}
-                  {product.category       && <RCConfigCard icon="tag"          label="Category"        value={product.category}        color="#3AABFF" sub={product.family} />}
-                  {product.sellingModel   && <RCConfigCard icon="zap"          label="Selling Model"   value={product.sellingModel}    color="#00D4FF" />}
-                  {product.classification && <RCConfigCard icon="package"      label="Classification"  value={product.classification}  color="#60B8FF" />}
-                  {product.priceBook      && <RCConfigCard icon="book-open"    label="Price Book"      value={product.priceBook}       color="#0070D6" sub={product.basePrice ? `$${product.basePrice}` : undefined} />}
+                  {product.catalog        && <RCConfigCard icon="layers"       label="Catalog"         value={product.catalog}         color={isDark ? "#1E90FF" : "#0968D3"} />}
+                  {product.category       && <RCConfigCard icon="tag"          label="Category"        value={product.category}        color={isDark ? "#3AABFF" : "#1789B0"} sub={product.family} />}
+                  {product.sellingModel   && <RCConfigCard icon="zap"          label="Selling Model"   value={product.sellingModel}    color={isDark ? "#00D4FF" : "#0098CC"} />}
+                  {product.classification && <RCConfigCard icon="package"      label="Classification"  value={product.classification}  color={isDark ? "#60B8FF" : "#1C6DBF"} />}
+                  {product.priceBook      && <RCConfigCard icon="book-open"    label="Price Book"      value={product.priceBook}       color={isDark ? "#0070D6" : "#0047AB"} sub={formatProductPrice(product.basePrice, product.currencyIsoCode) || undefined} />}
                   {product.productOwner   && <RCConfigCard icon="user"         label="Owner"           value={product.productOwner}    color="#2563EB" />}
                 </div>
               )}
@@ -864,14 +944,14 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
 
             {/* Panel header */}
             <div className="flex items-center gap-2 mb-4">
-              <div style={{ color: "#1E90FF" }}><Ic n="rocket" s={14} /></div>
+              <div style={{ color: isDark ? "#1E90FF" : "#0968D3" }}><Ic n="rocket" s={14} /></div>
               <span className="text-[12px] font-bold" style={{ color: isDark ? "white" : "#001F5B", letterSpacing: "-0.01em" }}>
                 Deploy &amp; Preview
               </span>
               {deployPhase === "done" && deployResult && (
                 <motion.span initial={{ opacity: 0 }} animate={{ opacity: 1 }}
                   className="ml-auto text-[9px] font-mono px-1.5 py-0.5 rounded"
-                  style={{ background: "rgba(0,212,255,0.1)", border: "1px solid rgba(0,212,255,0.25)", color: "#00D4FF" }}>
+                  style={{ background: "rgba(0,212,255,0.1)", border: "1px solid rgba(0,212,255,0.25)", color: isDark ? "#00D4FF" : "#0098CC" }}>
                   ✓ LIVE
                 </motion.span>
               )}
@@ -884,26 +964,30 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
                   initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
                   className="mb-4 px-3 py-3 rounded-xl"
                   style={{ background: "rgba(30,144,255,0.07)", border: "1px solid rgba(30,144,255,0.20)" }}>
-                  <div className="text-[10px] font-semibold mb-2" style={{ color: "#1E90FF" }}>Product Created in Salesforce</div>
+                  <div className="text-[10px] font-semibold mb-2" style={{ color: isDark ? "#1E90FF" : "#0968D3" }}>{isEditMode ? "Product Updated in Salesforce" : "Product Created in Salesforce"}</div>
                   <div className="flex items-center gap-2 mb-2.5">
-                    <span className="text-[9px] font-mono" style={{ color: "rgba(30,144,255,0.6)" }}>ID</span>
-                    <span className="text-[11px] font-mono font-semibold truncate flex-1" style={{ color: "#3AABFF" }}>{deployResult.salesforceId}</span>
+                    <span className="text-[9px] font-mono" style={{ color: isDark ? "rgba(30,144,255,0.6)" : "rgba(15,45,100,0.6)" }}>ID</span>
+                    <span className="text-[11px] font-mono font-semibold truncate flex-1" style={{ color: isDark ? "#3AABFF" : "#1789B0" }}>{deployResult.salesforceId}</span>
                     <motion.button onClick={() => {
                       navigator.clipboard.writeText(deployResult.salesforceId ?? "");
                       setCopied(true); setTimeout(() => setCopied(false), 1600);
-                    }} style={{ color: "rgba(0,212,255,0.6)", flexShrink: 0 }} whileTap={{ scale: 0.9 }}>
+                    }} style={{ color: isDark ? "rgba(0,212,255,0.6)" : "rgba(0,152,204,0.7)", flexShrink: 0 }} whileTap={{ scale: 0.9 }}>
                       <Ic n="copy" s={11} />
                     </motion.button>
-                    {copied && <span className="text-[9px]" style={{ color: "#00D4FF" }}>Copied!</span>}
+                    {copied && <span className="text-[9px]" style={{ color: isDark ? "#00D4FF" : "#0098CC" }}>Copied!</span>}
                   </div>
                   <div className="flex flex-col gap-0.5">
                     {[
-                      deployResult.steps.product        && { ok: true,  label: "Product2 created" },
+                      deployResult.steps.product        && { ok: true,  label: isEditMode ? "Product2 updated" : "Product2 created" },
                       deployResult.steps.catalog        && { ok: true,  label: `Catalog: ${(deployResult.steps.catalog as StepResult).name}` },
                       deployResult.steps.sellingModel   && { ok: true,  label: "Selling Model linked" },
-                      deployResult.steps.pricebookEntry && { ok: true,  label: `PricebookEntry @ $${(deployResult.steps.pricebookEntry as StepResult).unitPrice}` },
-                      ...deployResult.errors.map(e => ({ ok: false, label: `Error: ${e.step}` })),
-                      ...deployResult.skipped.map(s => ({ ok: null,  label: `Skipped: ${s.step}` })),
+                      deployResult.steps.unitOfMeasure  && { ok: true,  label: `Unit of Measure: ${(deployResult.steps.unitOfMeasure as StepResult).value}` },
+                      deployResult.steps.classification && { ok: true,  label: `Classification: ${(deployResult.steps.classification as StepResult).value}` },
+                      // Shows the UnitPrice Salesforce actually stored (read back server-side), not the form value.
+                      deployResult.steps.pricebookEntry && { ok: true,  label: `Price saved: ${formatProductPrice((deployResult.steps.pricebookEntry as StepResult).unitPrice, (deployResult.steps.pricebookEntry as StepResult).currencyIsoCode as string | undefined)} in ${(deployResult.steps.pricebookEntry as StepResult).pricebook}` },
+                      ...deployResult.errors.map(e => ({ ok: false, label: e.step === "pricebookEntry" ? `Price NOT saved: ${e.error}` : `Error: ${e.step} — ${e.error}` })),
+                      ...deployResult.skipped.map(s => ({ ok: null,  label: `Skipped: ${s.step} — ${s.reason}` })),
+                      ...(deployResult.warnings ?? []).map(w => ({ ok: null, label: w })),
                     ].filter(Boolean).map((item, i) => (
                       <div key={i} className="flex items-center gap-1.5 text-[10px]" style={{
                         color: item!.ok === true ? "#00C875" : item!.ok === false ? "#FF4066" : "var(--rc-text-muted)"
@@ -1011,16 +1095,26 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
               )}
             </AnimatePresence>
 
-            {/* Deploy button */}
+            {/* Field Mapping — visible before Deploy, per-field Provided/Default/Not specified */}
+            {product.productName && (
+              <div className="mb-4">
+                <p className="text-[9px] font-bold uppercase tracking-wider mb-2" style={{ color: "var(--rc-text-section)" }}>
+                  Field Mapping
+                </p>
+                <FieldMappingTable rows={mappingRows} />
+              </div>
+            )}
+
+            {/* Deploy / Save button */}
             <motion.button
-              onClick={handleDeploy}
+              onClick={isEditMode ? handleSaveEdit : handleDeploy}
               disabled={deployPhase === "deploying"}
               className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-[12px] font-bold cursor-pointer"
               style={{
                 background: deployPhase === "deploying"
                   ? isDark ? "rgba(30,144,255,0.08)" : "rgba(30,144,255,0.06)"
                   : "linear-gradient(135deg, #0070D6 0%, #00D4FF 100%)",
-                color: deployPhase === "deploying" ? "#1E90FF" : "rgba(0,10,20,0.92)",
+                color: deployPhase === "deploying" ? (isDark ? "#1E90FF" : "#0968D3") : "rgba(0,10,20,0.92)",
                 border: deployPhase === "deploying" ? "1px solid rgba(30,144,255,0.3)" : "none",
                 opacity: deployPhase === "deploying" ? 0.7 : 1,
                 boxShadow: deployPhase !== "deploying" ? "0 4px 20px rgba(0,212,255,0.25)" : "none",
@@ -1033,12 +1127,12 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
                   <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }}>
                     <Ic n="refresh" s={13} />
                   </motion.span>
-                  Creating Salesforce Records…
+                  {isEditMode ? "Saving Changes…" : "Creating Salesforce Records…"}
                 </>
               ) : (
                 <>
-                  <Ic n="rocket" s={13} />
-                  Create Record in Salesforce
+                  <Ic n={isEditMode ? "check-circle" : "rocket"} s={13} />
+                  {isEditMode ? "Save Changes" : "Create Record in Salesforce"}
                 </>
               )}
             </motion.button>
@@ -1057,13 +1151,13 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
                 <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
                   {product.family && (
                     <span className="text-[9px] px-1.5 py-0.5 rounded"
-                      style={{ background: "rgba(30,144,255,0.08)", border: "1px solid rgba(30,144,255,0.15)", color: "#3AABFF" }}>
+                      style={{ background: "rgba(30,144,255,0.08)", border: "1px solid rgba(30,144,255,0.15)", color: isDark ? "#3AABFF" : "#1789B0" }}>
                       {product.family}
                     </span>
                   )}
                   {product.sellingModel && (
                     <span className="text-[9px] px-1.5 py-0.5 rounded"
-                      style={{ background: "rgba(0,212,255,0.07)", border: "1px solid rgba(0,212,255,0.15)", color: "#00D4FF" }}>
+                      style={{ background: "rgba(0,212,255,0.07)", border: "1px solid rgba(0,212,255,0.15)", color: isDark ? "#00D4FF" : "#0098CC" }}>
                       {product.sellingModel}
                     </span>
                   )}
@@ -1075,6 +1169,22 @@ export default function RCProductWorkspace({ isDark }: { isDark: boolean }) {
         </div>
 
       </div>
+
+      {duplicateCheck && (
+        <DuplicateRecordModal
+          isDark={isDark}
+          kind="product"
+          requestedName={product.productName}
+          result={duplicateCheck}
+          onClose={() => {
+            const wasAdvisoryOnly = !duplicateCheck.isDuplicate;
+            setDuplicateCheck(null);
+            if (wasAdvisoryOnly) void proceedToSave();
+          }}
+          onChooseAnotherName={() => setDuplicateCheck(null)}
+          onUseExisting={duplicateCheck.isDuplicate ? () => { setDuplicateCheck(null); onCancel?.(); } : undefined}
+        />
+      )}
     </div>
   );
 }

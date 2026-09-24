@@ -1,6 +1,6 @@
 import { soqlEscape, type SalesforceClient } from "@/lib/salesforce/client";
 import { describeObjectCached, resolveField } from "@/lib/salesforce/describe";
-import { resolveQuoteLineItemFieldSchema } from "@/lib/quotes/metadata/lineItemFields";
+import { resolveQuoteLineItemFieldSchema, resolveQuoteLineItemAttributeFieldSchema } from "@/lib/quotes/metadata/lineItemFields";
 import { resolveQuoteFieldSchema } from "@/lib/quotes/metadata/quoteFields";
 import type {
   RepricingAttemptError,
@@ -261,6 +261,48 @@ export async function repriceQuote(client: SalesforceClient, quoteId: string): P
   if (quoteSchema.nameField && quoteRecord[quoteSchema.nameField.apiName] != null) quoteFieldValues[quoteSchema.nameField.apiName] = quoteRecord[quoteSchema.nameField.apiName];
   if (quoteSchema.pricebookField && quoteRecord[quoteSchema.pricebookField.apiName] != null) quoteFieldValues[quoteSchema.pricebookField.apiName] = quoteRecord[quoteSchema.pricebookField.apiName];
   if (quoteSchema.opportunityField && quoteRecord[quoteSchema.opportunityField.apiName] != null) quoteFieldValues[quoteSchema.opportunityField.apiName] = quoteRecord[quoteSchema.opportunityField.apiName];
+
+  // §Phase 21/22 fix — read-only diagnostic, never sent to Salesforce: this request body (below) carries
+  // no per-line attribute selections at all — this app's own Instant Pricing docs comment (top of this
+  // file) and every attempt to verify Salesforce's real request schema for this endpoint were blocked
+  // (developer.salesforce.com returned HTTP 403 to every fetch attempt this session), so this does NOT
+  // assume that omission is a bug — Salesforce's declarative pricing procedures typically evaluate
+  // Attribute-Based Pricing by reading a QuoteLineItem's own already-persisted QuoteLineItemAttribute
+  // child records server-side (by the QuoteLineItem Id this request already includes), the same
+  // relational-lookup model this app's own `resolveRuntimeAttributeAdjustment` (Attribute-Based Pricing
+  // module) already replicates read-only for verification. What CAN be checked here, without guessing at
+  // an unverified request-schema field: whether those child records actually exist and are populated at
+  // the moment this reprice call fires — if a live run's calculated price never reflects the selected
+  // attribute values, this log is the first place to check (a genuinely empty/missing set here would mean
+  // the attribute-selection UI never persisted them, or persisted them too late — a real, checkable bug;
+  // a populated set here that STILL doesn't affect the price would instead point at the org's own Pricing
+  // Procedure/AttributeDiscount configuration, not at this request payload).
+  try {
+    const qliAttrSchema = await resolveQuoteLineItemAttributeFieldSchema(client);
+    if (qliAttrSchema.objectName && qliAttrSchema.quoteLineItemField && qliAttrSchema.attributeField && qliAttrSchema.valueField) {
+      const attrSelectFields = ["Id", qliAttrSchema.quoteLineItemField.apiName, qliAttrSchema.attributeField.apiName, qliAttrSchema.valueField.apiName];
+      const attrRes = await client.query<Record<string, unknown>>(
+        `SELECT ${[...new Set(attrSelectFields)].join(", ")} FROM ${qliAttrSchema.objectName} WHERE ${qliAttrSchema.quoteLineItemField.apiName} IN (${lineItemIds.map(id => `'${soqlEscape(id)}'`).join(",")})`,
+      );
+      const byLine = new Map<string, { attributeId: unknown; value: unknown }[]>();
+      for (const rec of attrRes.records) {
+        const lineId = rec[qliAttrSchema.quoteLineItemField.apiName] as string;
+        if (!byLine.has(lineId)) byLine.set(lineId, []);
+        byLine.get(lineId)!.push({ attributeId: rec[qliAttrSchema.attributeField!.apiName], value: rec[qliAttrSchema.valueField!.apiName] });
+      }
+      for (const li of lineItems) {
+        const attrs = byLine.get(li.Id) ?? [];
+        console.log(
+          `[QLI ATTRIBUTES] QuoteLineItem ${li.Id} — ${attrs.length} ${qliAttrSchema.objectName} record(s) at repricing time` +
+          (attrs.length > 0 ? `: ${attrs.map(a => `${a.attributeId}=${a.value}`).join(", ")}` : " (none — if this line's price was expected to reflect a configured attribute selection, this is the reason it can't)."),
+        );
+      }
+    } else {
+      console.log(`[QLI ATTRIBUTES] This org's schema does not expose a resolvable QuoteLineItemAttribute object/field set — skipping the diagnostic (never fatal).`);
+    }
+  } catch (err) {
+    console.log(`[QLI ATTRIBUTES] Diagnostic query failed (non-fatal, informational only): ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   const body = {
     correlationId: `reprice-${quoteId}-${Date.now()}`,

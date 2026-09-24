@@ -52,3 +52,6 @@ Thumbs.db
 
 # salesforce data exports (local only)
 *.csv
+
+# temporary donor-xml-diagnostic output (org metadata captured locally, never committed)
+/diagnostics/

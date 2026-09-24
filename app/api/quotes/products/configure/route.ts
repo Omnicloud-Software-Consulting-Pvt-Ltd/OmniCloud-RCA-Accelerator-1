@@ -3,21 +3,16 @@ import { requireSFClient, sfErrorResponse } from "@/lib/salesforce/serverSession
 import type { SalesforceClient } from "@/lib/salesforce/client";
 import { createTTLCache } from "@/lib/salesforce/cache";
 import { resolveBundleObjectDiscovery } from "@/lib/quotes/metadata/relationshipFields";
-import { expandBundle } from "@/lib/quotes/bundles/expansion";
-import { resolveProductAttributes } from "@/lib/quotes/catalog/attributes";
-import { resolveSellingModelForProduct } from "@/lib/quotes/catalog/sellingModel";
-import { resolveBillingFrequency, resolveSubscriptionTerm } from "@/lib/quotes/billing/frequency";
-import { validateBillingTreatment } from "@/lib/quotes/billing/treatment";
+import {
+  resolveProductConfigurationBase, computeConfigurationBlockingReasons,
+  type ProductConfigurationBase,
+} from "@/lib/quotes/server/productConfiguration";
 import type {
   BillingFrequencyResolution,
-  BillingTreatmentValidation,
   BundleComponent,
-  BundleExpansionResult,
   BundleObjectDiscovery,
   CatalogProduct,
   ProductConfigurationResult,
-  SellingModelResolution,
-  SubscriptionTermResolution,
 } from "@/lib/quotes/types";
 
 /**
@@ -37,24 +32,15 @@ import type {
  * product) share the SAME in-progress computation instead of each
  * launching their own full resolution chain.
  */
-interface CachedProductConfiguration {
-  attributes: Awaited<ReturnType<typeof resolveProductAttributes>>;
-  bundleRaw: BundleExpansionResult;
-  sellingModel: SellingModelResolution;
-  billingFrequency: BillingFrequencyResolution | null;
-  billingTreatment: BillingTreatmentValidation | null;
-  subscriptionTerm: SubscriptionTermResolution | null;
-}
-
-const configureCache = createTTLCache<CachedProductConfiguration>();
-const configureInFlight = new Map<string, Promise<CachedProductConfiguration>>();
+const configureCache = createTTLCache<ProductConfigurationBase>();
+const configureInFlight = new Map<string, Promise<ProductConfigurationBase>>();
 
 async function resolveCachedBaseConfiguration(
   client: SalesforceClient,
   discovery: BundleObjectDiscovery,
   product: CatalogProduct,
   pricebookId: string,
-): Promise<CachedProductConfiguration> {
+): Promise<ProductConfigurationBase> {
   // §Cache key MUST include pricebookEntryId: a single Product2 can have
   // MULTIPLE PricebookEntry rows in the SAME price book — one per Selling
   // Model (e.g. a One-Time entry and a separate Annual entry). Keying only
@@ -71,28 +57,7 @@ async function resolveCachedBaseConfiguration(
   const existing = configureInFlight.get(key);
   if (existing) return existing;
 
-  const promise = (async (): Promise<CachedProductConfiguration> => {
-    const [attributes, bundleRaw, sellingModel] = await Promise.all([
-      resolveProductAttributes(client, product.id),
-      expandBundle(client, discovery, product.id, pricebookId, "QuoteLineItem"),
-      resolveSellingModelForProduct(client, product.id, product.pricebookEntryId),
-    ]);
-
-    let billingFrequency: BillingFrequencyResolution | null = null;
-    let billingTreatment: BillingTreatmentValidation | null = null;
-    let subscriptionTerm: SubscriptionTermResolution | null = null;
-    if (sellingModel.chosen?.requiresBillingFrequency) {
-      [billingFrequency, billingTreatment] = await Promise.all([
-        resolveBillingFrequency(client, product.id, sellingModel.chosen.sellingModelId, sellingModel.chosen.name, "QuoteLineItem"),
-        validateBillingTreatment(client, product.id),
-      ]);
-    }
-    if (sellingModel.chosen?.type === "TermDefined") {
-      subscriptionTerm = await resolveSubscriptionTerm(client, product.id, sellingModel.chosen.sellingModelId, "QuoteLineItem");
-    }
-    return { attributes, bundleRaw, sellingModel, billingFrequency, billingTreatment, subscriptionTerm };
-  })();
-
+  const promise = resolveProductConfigurationBase(client, discovery, product, pricebookId, "QuoteLineItem");
   configureInFlight.set(key, promise);
   try {
     const result = await promise;
@@ -101,21 +66,6 @@ async function resolveCachedBaseConfiguration(
   } finally {
     configureInFlight.delete(key);
   }
-}
-
-/**
- * §Automatic Billing Frequency Resolution: a bundle CHILD needing a billing
- * frequency that couldn't be auto-resolved must surface here too, not only
- * the root product being configured — otherwise it silently reaches
- * createQuoteLineItems() with a null value and fails at submission instead
- * of offering the fallback dropdown up front (§Do NOT fail immediately).
- */
-function hasUnresolvedBillingFrequency(components: BundleComponent[]): boolean {
-  return components.some(
-    c =>
-      (c.sellingModel?.chosen?.requiresBillingFrequency && !c.billingFrequency?.value) ||
-      hasUnresolvedBillingFrequency(c.children),
-  );
 }
 
 /**
@@ -162,38 +112,24 @@ export async function POST(req: NextRequest) {
     const cacheKey = `${client.instanceUrl}:${product.id}:${pricebookId}:${product.pricebookEntryId ?? "none"}`;
     const wasCached = !!configureCache.get(cacheKey);
     const base = await resolveCachedBaseConfiguration(client, discovery, product, pricebookId);
-    const { attributes, bundleRaw, sellingModel, billingTreatment, subscriptionTerm } = base;
+    const { attributes, sellingModel, billingTreatment, subscriptionTerm } = base;
 
     const billingFrequency = sellingModel.chosen?.requiresBillingFrequency
       ? withManualOverride(base.billingFrequency, manualBillingFrequencies[product.id])
       : null;
 
-    const bundle = { ...bundleRaw, components: applyManualOverrides(bundleRaw.components, manualBillingFrequencies) };
+    const bundle = { ...base.bundle, components: applyManualOverrides(base.bundle.components, manualBillingFrequencies) };
     // §Perf instrumentation (dev-log only, never customer-facing UI): the
     // single number that most directly answers "why is + Add slow".
     console.log(`[products/configure] product=${product.id} ("${product.name}") resolved in ${Date.now() - t0}ms (cache ${wasCached ? "HIT" : "MISS"}).`);
+    // §TEMP DIAGNOSTIC (remove once Antivirus-class Billing Frequency
+    // failures are confirmed resolved).
+    console.log(`[BILLING FREQUENCY CONFIGURE] product=${product.id} ("${product.name}") pricebookEntryId=${product.pricebookEntryId ?? "null"} sellingModelId=${sellingModel.chosen?.sellingModelId ?? "null"} sellingModelName=${sellingModel.chosen?.name ?? "null"} sellingModelType=${sellingModel.chosen?.type ?? "null"} requiresBillingFrequency=${!!sellingModel.chosen?.requiresBillingFrequency} chosenReason=${sellingModel.chosenReason} -> billingFrequency.value=${billingFrequency?.value ?? "null"} source=${billingFrequency?.source ?? "null"} (cache ${wasCached ? "HIT" : "MISS"}).`);
 
-    const reasons: string[] = [];
-    if (attributes.some(a => a.required)) reasons.push("Required product attributes need input.");
-    if (bundle.isBundle) {
-      const hasAmbiguousGroup = bundle.groups.some(g => {
-        const candidates = bundle.components.filter(c => c.groupId === g.id);
-        const flagged = candidates.some(c => c.isDefault || c.isRequired);
-        return !flagged && g.min == null && candidates.length > 1;
-      });
-      if (hasAmbiguousGroup) reasons.push("This bundle has component choices that need confirmation.");
-    }
-    if (sellingModel.chosen?.requiresBillingFrequency && !billingFrequency?.value) {
-      reasons.push("A billing frequency could not be automatically resolved.");
-    }
-    if (bundle.isBundle && hasUnresolvedBillingFrequency(bundle.components)) {
-      reasons.push("One or more bundle components need a billing frequency selected.");
-    }
-    if (billingTreatment?.outcome === "no-billing-policy") {
-      reasons.push("This product has no Billing Policy configured.");
-    } else if (billingTreatment?.blocks) {
-      reasons.push(billingTreatment.message ?? "Billing treatment configuration is invalid for this product.");
-    }
+    // Reasons are computed from the POST-manual-override values (billingFrequency/bundle
+    // above), never the raw cached `base` — a manual override can resolve exactly the
+    // condition that would otherwise be reported as blocking.
+    const reasons = computeConfigurationBlockingReasons({ ...base, billingFrequency, bundle });
 
     console.log(
       `[products/configure] product=${product.id} ("${product.name}") isBundle=${bundle.isBundle} ` +
@@ -214,6 +150,11 @@ export async function POST(req: NextRequest) {
       requiresConfigurationReasons: reasons,
     };
 
+    // §TEMP DIAGNOSTIC (remove once Antivirus-class Billing Frequency
+    // failures are confirmed resolved): what's ACTUALLY in the JSON response
+    // the client receives — proves whether resolution's result survives
+    // being assembled into `result` and serialized.
+    console.log(`[BILLING FREQUENCY RESPONSE] product=${product.id} ("${product.name}") requiresConfiguration=${result.requiresConfiguration} sellingModelType=${result.sellingModel.chosen?.type ?? "null"} -> result.billingFrequency.value=${result.billingFrequency?.value ?? "null"} source=${result.billingFrequency?.source ?? "null"}.`);
     return NextResponse.json({ success: true, configuration: result });
   } catch (err) {
     return sfErrorResponse(err, "Failed to resolve product configuration");

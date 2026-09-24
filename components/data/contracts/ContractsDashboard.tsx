@@ -8,7 +8,7 @@ import { formatRelativeTime } from "@/lib/dashboard/relativeTime";
 import { pickBestEffortStatus, activityColorFor } from "@/lib/dashboard/statusStats";
 import type { ContractStatsResponse } from "@/app/api/contracts/stats/route";
 
-type ModuleTarget = { mode: "history" | "create" };
+type ModuleTarget = { mode: "history" | "create" | "import" };
 
 const ACCENT = "#00D4FF";
 const ACCENT_BLUE = "#3AABFF";
@@ -65,6 +65,7 @@ export default function ContractsDashboard({ isDark, onNavigate }: { isDark: boo
       { id: "generate-contract-document", title: "Generate Contract Document", desc: "Generate agreement documents", icon: "file-text", accent: ACCENT_BLUE, workflow: "generate-contract-document" },
       { id: "ai-contract-assistant", title: "AI Contract Assistant", desc: "Generate Contract using AI", icon: "sparkles", accent: ACCENT_SOFT, badge: "AI", workflow: "ai-contract-assistant" },
       { id: "contract-analytics", title: "Contract Analytics", desc: "View contract insights", icon: "bar-chart", accent: ACCENT_BLUE, workflow: "contract-analytics" },
+      { id: "import-contracts", title: "Import Contracts", desc: "Import contracts from CSV or Excel and create them in Salesforce.", icon: "upload", accent: ACCENT_BLUE, badge: "Import", workflow: "import-contracts" },
     ];
 
     return {
@@ -102,6 +103,8 @@ export default function ContractsDashboard({ isDark, onNavigate }: { isDark: boo
       onNavigate({ mode: "history" });
     } else if (workflow === "contract-analytics") {
       setShowAnalytics(v => !v);
+    } else if (workflow === "import-contracts") {
+      onNavigate({ mode: "import" });
     }
   };
 

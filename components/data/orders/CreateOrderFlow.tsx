@@ -9,10 +9,15 @@ import ReferenceLookup, { type ReferenceLookupHandle, type ReferenceLookupValue 
 import LineItemsEditor from "@/components/data/orders/LineItemsEditor";
 import OrderPreviewPanel from "@/components/data/orders/OrderPreviewPanel";
 import OrderLineItemFailureView from "@/components/data/orders/OrderLineItemFailureView";
+import PromptGuide from "@/components/ai/PromptGuide";
+import { promptGuideConfig } from "@/lib/ai/promptGuideConfig";
 import { quoteApiGet, quoteApiPost, toErrorPanelData, type ErrorPanelDataLike } from "@/lib/quotes/client/apiClient";
 import { replayServerSteps } from "@/lib/quotes/client/executionLog";
 import { updateResponseSummary } from "@/lib/quotes/client/responseSummary";
 import { salesforceRecordUrl } from "@/lib/salesforce/client/recordLink";
+import { loadSession } from "@/lib/auth/session";
+import { toCreatedSalesforceRecord } from "@/lib/salesforce/recordUrl";
+import { useSalesforceSuccess } from "@/components/notifications/SalesforceSuccessContext";
 import { sumDraftTreeTotal, flattenDraftTree } from "@/lib/quotes/pricing/calc";
 import type { BundleHierarchyStep, QuoteLineItemDraft } from "@/lib/quotes/types";
 import type { OrderCreateResult, OrderFieldSchema, OrderFormData, OrderLineItemCreationResult, OrderLineItemFailureDetail } from "@/lib/orders/types";
@@ -97,6 +102,7 @@ function FieldGroup({ title, icon, isDark, children }: { title: string; icon: st
 
 export default function CreateOrderFlow({ isDark }: { isDark: boolean }) {
   const t = tokens(isDark);
+  const notifySalesforceSuccess = useSalesforceSuccess();
   const [step, setStep] = useState<Step>("details");
   const [schema, setSchema] = useState<OrderFieldSchema | null>(null);
   const [formData, setFormData] = useState<OrderFormData>(EMPTY_FORM);
@@ -107,6 +113,11 @@ export default function CreateOrderFlow({ isDark }: { isDark: boolean }) {
   const [orderResult, setOrderResult] = useState<OrderCreateResult | null>(null);
   const [lineRoots, setLineRoots] = useState<QuoteLineItemDraft[]>([]);
   const [linesValid, setLinesValid] = useState(false);
+  // §Race-condition fix (Antivirus-class failure): true while any product's
+  // /products/configure call is still in flight — blocks "Next: Preview" so
+  // a line can never advance to submission before its Selling Model/Billing
+  // Frequency resolution has actually completed.
+  const [linesConfiguring, setLinesConfiguring] = useState(false);
   const [submittingLines, setSubmittingLines] = useState(false);
   const [lineItemResult, setLineItemResult] = useState<OrderLineItemCreationResult | null>(null);
   const [lineItemError, setLineItemError] = useState<ErrorPanelDataLike | null>(null);
@@ -252,6 +263,18 @@ export default function CreateOrderFlow({ isDark }: { isDark: boolean }) {
       updateResponseSummary({ orderLineItems: { count: res.createdCount, ids: res.createdIds }, orderBundleResult: res, repricing: res.repricing });
       clearDraftFromStorage();
       setStep("success");
+
+      const instanceUrl = loadSession()?.instanceUrl;
+      if (instanceUrl) {
+        const record = toCreatedSalesforceRecord(instanceUrl, "Order", orderResult.id, orderResult.orderNumber ?? orderResult.id);
+        notifySalesforceSuccess({
+          title: "Order Created Successfully",
+          message: res.createdCount > 0
+            ? `${record.recordName} and ${res.createdCount} Order Line Item${res.createdCount === 1 ? "" : "s"} were successfully created in Salesforce.`
+            : `${record.recordName} has been successfully created in Salesforce.`,
+          records: [record],
+        });
+      }
     } catch (err) {
       const data = toErrorPanelData(err, "Order line item creation failed validation");
       setLineItemError(data);
@@ -291,7 +314,12 @@ export default function CreateOrderFlow({ isDark }: { isDark: boolean }) {
           />
         )}
         {step === "lines" && (
-          <PrimaryButton label="Next: Preview" icon="arrow-right" isDark={isDark} disabled={!linesValid || lineRoots.length === 0} onClick={() => setStep("preview")} />
+          <PrimaryButton
+            label={linesConfiguring ? "Resolving product configuration…" : "Next: Preview"}
+            icon="arrow-right" isDark={isDark}
+            disabled={!linesValid || lineRoots.length === 0 || linesConfiguring}
+            onClick={() => setStep("preview")}
+          />
         )}
         {step === "preview" && (
           <PrimaryButton label={submittingLines ? "Creating…" : "Create Order"} icon="check" isDark={isDark} disabled={submittingLines} onClick={handleSubmitLines} />
@@ -332,6 +360,9 @@ export default function CreateOrderFlow({ isDark }: { isDark: boolean }) {
                 <PrimaryButton label={aiLoading ? "Generating…" : "Generate"} icon="sparkles" isDark={isDark} disabled={aiLoading} onClick={handleAiGenerate} />
               </div>
               {aiLoading && <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: t.dim }}><Spinner isDark={isDark} size={12} /> Parsing with Claude…</div>}
+              <div style={{ marginTop: 10 }}>
+                <PromptGuide isDark={isDark} config={promptGuideConfig.order} onUseExample={setAiPrompt} />
+              </div>
             </Section>
 
             <Section title="Order Details" icon="file-text" isDark={isDark}>
@@ -467,7 +498,7 @@ export default function CreateOrderFlow({ isDark }: { isDark: boolean }) {
                 ))}
               </div>
             )}
-            <LineItemsEditor isDark={isDark} pricebookId={pricebookValue.id} onChange={(roots, valid) => { setLineRoots(roots); setLinesValid(valid); }} initialRoots={lineRoots} />
+            <LineItemsEditor isDark={isDark} pricebookId={pricebookValue.id} onChange={(roots, valid, isConfiguring) => { setLineRoots(roots); setLinesValid(valid); setLinesConfiguring(isConfiguring); }} initialRoots={lineRoots} />
           </>
         )}
 

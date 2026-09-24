@@ -9,15 +9,39 @@ import { useUrlParams } from "@/lib/navigation/useUrlParams";
 import { loadSession, clearSession } from "@/lib/auth/session";
 import { loadIdentity, isSetupComplete, clearIdentity, clearSetup } from "@/lib/auth/identity";
 import type { SessionData } from "@/lib/auth/types";
+import { toCreatedSalesforceRecord } from "@/lib/salesforce/recordUrl";
+import { useSalesforceSuccess } from "@/components/notifications/SalesforceSuccessContext";
 import RCAAttributeStudio from "@/components/data/RCAAttributeStudio";
+import AttributesDashboard from "@/components/data/attributes/AttributesDashboard";
+import AttributeHistoryList from "@/components/data/attributes/AttributeHistoryList";
+import AttributeDetailView from "@/components/data/attributes/AttributeDetailView";
+import AttributeEditWorkspace from "@/components/data/attributes/AttributeEditWorkspace";
+import AttributeImportWizard from "@/components/data/attributes/import/AttributeImportWizard";
 import BundleOrchestrationWorkspace from "@/components/data/BundleOrchestrationWorkspace";
+import BundlesDashboard from "@/components/data/bundles/BundlesDashboard";
+import BundleHistoryList from "@/components/data/bundles/BundleHistoryList";
+import BundleDetailView from "@/components/data/bundles/BundleDetailView";
+import BundleEditWorkspace from "@/components/data/bundles/BundleEditWorkspace";
+import BundleImportWizard from "@/components/data/bundles/import/BundleImportWizard";
+import BundleDependenciesView from "@/components/data/bundles/BundleDependenciesView";
+import BundleComponentsView from "@/components/data/bundles/BundleComponentsView";
 import RCProductWorkspace from "@/components/metadata/RCProductWorkspace";
+import ProductsDashboard from "@/components/data/products/ProductsDashboard";
+import ProductCreationChooser from "@/components/data/products/ProductCreationChooser";
+import ProductHistoryList from "@/components/data/products/ProductHistoryList";
+import ProductImportWizard from "@/components/data/products/import/ProductImportWizard";
+import MultiProductWorkspace from "@/components/metadata/multi/MultiProductWorkspace";
 import QuotesModule from "@/components/data/quotes/QuotesModule";
 import QuotesDashboard from "@/components/data/quotes/QuotesDashboard";
+import QuoteImportWizard from "@/components/data/quotes/import/QuoteImportWizard";
 import OrdersModule from "@/components/data/orders/OrdersModule";
 import OrdersDashboard from "@/components/data/orders/OrdersDashboard";
+import OrderImportWizard from "@/components/data/orders/import/OrderImportWizard";
 import ContractsModule from "@/components/data/contracts/ContractsModule";
 import ContractsDashboard from "@/components/data/contracts/ContractsDashboard";
+import ContractImportWizard from "@/components/data/contracts/import/ContractImportWizard";
+import PricingRulesModule from "@/components/data/pricing-rules/PricingRulesModule";
+import PricingRulesDashboard from "@/components/data/pricing-rules/PricingRulesDashboard";
 import { Ic, hexToRgb, ObjectWorkspace, DashboardModuleFrame, type StatDef, type ActionDef } from "@/components/data/dashboardShell";
 
 type AppMode = "browse" | "workflow" | "preview" | "success";
@@ -1781,6 +1805,7 @@ export default function DataPage() {
   const router = useRouter();
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme !== "light";
+  const notifySalesforceSuccess = useSalesforceSuccess();
   const [session, setSession] = useState<SessionData | null>(null);
   const [mounted, setMounted] = useState(false);
 
@@ -1796,6 +1821,10 @@ export default function DataPage() {
     qv: readUrlParam("qv"), qid: readUrlParam("qid"), qtab: readUrlParam("qtab"),
     ov: readUrlParam("ov"), oid: readUrlParam("oid"), otab: readUrlParam("otab"),
     cv: readUrlParam("cv"), cid: readUrlParam("cid"), ctab: readUrlParam("ctab"),
+    pv: readUrlParam("pv"),
+    pdv: readUrlParam("pdv"),
+    bdv: readUrlParam("bdv"),
+    adv: readUrlParam("adv"),
   });
 
   // Navigation + workspace state
@@ -1809,35 +1838,98 @@ export default function DataPage() {
   // state machine. A "workspace" deep link (a specific record open) still
   // counts as non-null here — the exact sub-view is resolved by the module
   // itself from initialUrlRef.
-  const [quotesModuleView, setQuotesModuleViewState] = useState<{ mode: "history" | "create" } | null>(() => {
+  const [quotesModuleView, setQuotesModuleViewState] = useState<{ mode: "history" | "create" | "import" } | null>(() => {
     const { qv } = initialUrlRef.current;
-    return qv === "history" || qv === "create" || qv === "workspace" ? { mode: qv === "create" ? "create" : "history" } : null;
+    return qv === "history" || qv === "create" || qv === "import" || qv === "workspace" ? { mode: qv === "create" ? "create" : qv === "import" ? "import" : "history" } : null;
   });
-  const [ordersModuleView, setOrdersModuleViewState] = useState<{ mode: "history" | "create" } | null>(() => {
+  const [ordersModuleView, setOrdersModuleViewState] = useState<{ mode: "history" | "create" | "import" } | null>(() => {
     const { ov } = initialUrlRef.current;
-    return ov === "history" || ov === "create" || ov === "workspace" ? { mode: ov === "create" ? "create" : "history" } : null;
+    return ov === "history" || ov === "create" || ov === "import" || ov === "workspace" ? { mode: ov === "create" ? "create" : ov === "import" ? "import" : "history" } : null;
   });
-  const [contractsModuleView, setContractsModuleViewState] = useState<{ mode: "history" | "create" } | null>(() => {
+  const [contractsModuleView, setContractsModuleViewState] = useState<{ mode: "history" | "create" | "import" } | null>(() => {
     const { cv } = initialUrlRef.current;
-    return cv === "history" || cv === "create" || cv === "workspace" || cv === "docusign-settings" ? { mode: cv === "create" ? "create" : "history" } : null;
+    return cv === "history" || cv === "create" || cv === "import" || cv === "workspace" || cv === "docusign-settings" ? { mode: cv === "create" ? "create" : cv === "import" ? "import" : "history" } : null;
   });
+  const [pricingRulesModuleView, setPricingRulesModuleViewState] = useState<{ mode: "history" | "create" } | null>(() => {
+    const { pv } = initialUrlRef.current;
+    return pv === "history" || pv === "create" ? { mode: pv } : null;
+  });
+  // Products tile: null = show the Products dashboard (landing page);
+  // otherwise which module view to enter. "catalog"/"attributes" never land
+  // here — those workflows jump straight to the existing Catalogs/Attributes
+  // tiles instead (see handleLaunch in ProductsDashboard + onNavigate below).
+  const [productsModuleView, setProductsModuleViewState] = useState<{ mode: "history" | "create" | "create-multi" | "choose-type" | "import" | "edit"; productId?: string } | null>(() => {
+    const { pdv } = initialUrlRef.current;
+    return pdv === "history" || pdv === "create" || pdv === "create-multi" || pdv === "choose-type" || pdv === "import" ? { mode: pdv } : null;
+  });
+  // Only meaningful the next time productsModuleView becomes {mode:"import"} —
+  // set by Product History's "Import History" link so the importer opens
+  // straight into its history panel instead of the upload step.
+  const [productsImportStartWithHistory, setProductsImportStartWithHistory] = useState(false);
+  // Bumped after a successful product edit save so Product History re-fetches instead of showing stale values.
+  const [productsHistoryRefreshToken, setProductsHistoryRefreshToken] = useState(0);
+
+  // Bundles tile: null = Bundle Workspace dashboard (landing page); otherwise which module view
+  // to enter. "create" renders the existing, untouched BundleOrchestrationWorkspace.
+  const [bundlesModuleView, setBundlesModuleViewState] = useState<{
+    mode: "create" | "history" | "detail" | "edit" | "import" | "catalog" | "dependencies" | "components";
+    bundleId?: string;
+  } | null>(() => {
+    const { bdv } = initialUrlRef.current;
+    return bdv === "create" || bdv === "history" || bdv === "import" || bdv === "catalog" || bdv === "dependencies" || bdv === "components" ? { mode: bdv } : null;
+  });
+  // Bumped after a successful bundle edit save (or a duplicate) so Bundle History re-fetches instead of showing stale values.
+  const [bundlesHistoryRefreshToken, setBundlesHistoryRefreshToken] = useState(0);
+
+  function setBundlesModuleView(next: { mode: "create" | "history" | "detail" | "edit" | "import" | "catalog" | "dependencies" | "components"; bundleId?: string } | null) {
+    setBundlesModuleViewState(next);
+    // "detail"/"edit" carry a bundleId that isn't restorable from a URL alone, so they aren't persisted there.
+    updateUrl({ bdv: next && next.mode !== "detail" && next.mode !== "edit" ? next.mode : null });
+  }
+
+  // Attributes tile: null = Attribute Workspace dashboard (landing page); otherwise which module view
+  // to enter. "create" renders the existing, untouched RCAAttributeStudio (now a single continuous screen).
+  const [attributesModuleView, setAttributesModuleViewState] = useState<{
+    mode: "create" | "history" | "detail" | "edit" | "import" | "catalog";
+    attributeId?: string;
+  } | null>(() => {
+    const { adv } = initialUrlRef.current;
+    return adv === "create" || adv === "history" || adv === "import" || adv === "catalog" ? { mode: adv } : null;
+  });
+  // Bumped after a successful attribute edit save so Attribute History re-fetches instead of showing stale values.
+  const [attributesHistoryRefreshToken, setAttributesHistoryRefreshToken] = useState(0);
+
+  function setAttributesModuleView(next: { mode: "create" | "history" | "detail" | "edit" | "import" | "catalog"; attributeId?: string } | null) {
+    setAttributesModuleViewState(next);
+    // "detail"/"edit" carry an attributeId that isn't restorable from a URL alone, so they aren't persisted there.
+    updateUrl({ adv: next && next.mode !== "detail" && next.mode !== "edit" ? next.mode : null });
+  }
 
   function setSelectedId(id: string) {
     setSelectedIdState(id);
     updateUrl({ module: id === "accounts" ? null : id });
   }
 
-  function setQuotesModuleView(next: { mode: "history" | "create" } | null) {
+  function setQuotesModuleView(next: { mode: "history" | "create" | "import" } | null) {
     setQuotesModuleViewState(next);
     updateUrl({ qv: next?.mode ?? null, qid: null, qtab: null });
   }
-  function setOrdersModuleView(next: { mode: "history" | "create" } | null) {
+  function setOrdersModuleView(next: { mode: "history" | "create" | "import" } | null) {
     setOrdersModuleViewState(next);
     updateUrl({ ov: next?.mode ?? null, oid: null, otab: null });
   }
-  function setContractsModuleView(next: { mode: "history" | "create" } | null) {
+  function setContractsModuleView(next: { mode: "history" | "create" | "import" } | null) {
     setContractsModuleViewState(next);
     updateUrl({ cv: next?.mode ?? null, cid: null, ctab: null });
+  }
+  function setPricingRulesModuleView(next: { mode: "history" | "create" } | null) {
+    setPricingRulesModuleViewState(next);
+    updateUrl({ pv: next?.mode ?? null });
+  }
+  function setProductsModuleView(next: { mode: "history" | "create" | "create-multi" | "choose-type" | "import" | "edit"; productId?: string } | null) {
+    setProductsModuleViewState(next);
+    // "edit" carries a productId that isn't restorable from a URL alone, so it isn't persisted there — same treatment "choose-type" already gets.
+    updateUrl({ pdv: next && next.mode !== "edit" ? next.mode : null });
   }
 
   // Form state
@@ -1879,6 +1971,8 @@ export default function DataPage() {
     if (id === "quotes") { setQuotesModuleViewState(null); patch.qv = null; patch.qid = null; patch.qtab = null; }
     if (id === "orders") { setOrdersModuleViewState(null); patch.ov = null; patch.oid = null; patch.otab = null; }
     if (id === "contracts") { setContractsModuleViewState(null); patch.cv = null; patch.cid = null; patch.ctab = null; }
+    if (id === "pricing-rules") { setPricingRulesModuleViewState(null); patch.pv = null; }
+    if (id === "products") { setProductsModuleViewState(null); patch.pdv = null; }
     if (mode !== "browse") {
       setMode("browse");
       setSidebarCollapsed(false);
@@ -1932,6 +2026,18 @@ export default function DataPage() {
       setCreatedRecordId(data.id ?? null);
       setSaving(false);
       setMode("success");
+
+      const instanceUrl = loadSession()?.instanceUrl;
+      if (instanceUrl && data.id) {
+        const nameFieldId = selectedObj.form?.[0]?.fields?.[0]?.id;
+        const recordName = (nameFieldId && formData[nameFieldId]) || selectedObj.label;
+        const record = toCreatedSalesforceRecord(instanceUrl, selectedObj.sfApiName, data.id, recordName);
+        notifySalesforceSuccess({
+          title: `${selectedObj.label.replace(/s$/, "")} Created Successfully`,
+          message: `${record.recordName} has been successfully created in Salesforce.`,
+          records: [record],
+        });
+      }
     } catch {
       showToast("Network error — could not reach Salesforce", "error");
       setSaving(false);
@@ -2028,11 +2134,106 @@ export default function DataPage() {
                   className="flex flex-col h-full overflow-hidden"
                 >
                   {selectedObj.id === "products" ? (
-                    <RCProductWorkspace isDark={isDark} />
+                    productsModuleView ? (
+                      <DashboardModuleFrame isDark={isDark} backLabel="Back to Products Dashboard" onBack={() => setProductsModuleView(null)}>
+                        {productsModuleView.mode === "choose-type" ? (
+                          <ProductCreationChooser
+                            isDark={isDark}
+                            onChooseSingle={() => setProductsModuleView({ mode: "create" })}
+                            onChooseMultiple={() => setProductsModuleView({ mode: "create-multi" })}
+                          />
+                        ) : productsModuleView.mode === "create" ? (
+                          <RCProductWorkspace isDark={isDark} />
+                        ) : productsModuleView.mode === "create-multi" ? (
+                          <MultiProductWorkspace isDark={isDark} />
+                        ) : productsModuleView.mode === "history" ? (
+                          <ProductHistoryList
+                            isDark={isDark}
+                            refreshToken={productsHistoryRefreshToken}
+                            onOpenImportHistory={() => { setProductsImportStartWithHistory(true); setProductsModuleView({ mode: "import" }); }}
+                            onEditProduct={productId => setProductsModuleView({ mode: "edit", productId })}
+                          />
+                        ) : productsModuleView.mode === "edit" ? (
+                          <RCProductWorkspace
+                            isDark={isDark}
+                            editProductId={productsModuleView.productId}
+                            onCancel={() => setProductsModuleView({ mode: "history" })}
+                            onSaved={() => {
+                              setProductsHistoryRefreshToken(v => v + 1);
+                              setProductsModuleView({ mode: "history" });
+                            }}
+                          />
+                        ) : (
+                          <ProductImportWizard isDark={isDark} onBack={() => setProductsModuleView(null)} startWithHistory={productsImportStartWithHistory} />
+                        )}
+                      </DashboardModuleFrame>
+                    ) : (
+                      <ProductsDashboard
+                        isDark={isDark}
+                        onNavigate={target => {
+                          if (target.mode === "catalog") { handleSelectObject("catalogs"); return; }
+                          if (target.mode === "attributes") { handleSelectObject("attributes"); return; }
+                          if (target.mode === "import") setProductsImportStartWithHistory(false);
+                          setProductsModuleView({ mode: target.mode });
+                        }}
+                      />
+                    )
                   ) : selectedObj.id === "bundles" ? (
-                    <BundleOrchestrationWorkspace isDark={isDark} />
+                    bundlesModuleView ? (
+                      <DashboardModuleFrame isDark={isDark} backLabel="Back to Bundle Workspace" onBack={() => setBundlesModuleView(null)}>
+                        {bundlesModuleView.mode === "create" ? (
+                          <BundleOrchestrationWorkspace
+                            isDark={isDark}
+                            onViewBundle={bundleId => setBundlesModuleView({ mode: "detail", bundleId })}
+                            onEditBundle={bundleId => setBundlesModuleView({ mode: "edit", bundleId })}
+                          />
+                        ) : bundlesModuleView.mode === "history" || bundlesModuleView.mode === "catalog" ? (
+                          <BundleHistoryList
+                            isDark={isDark}
+                            catalogMode={bundlesModuleView.mode === "catalog"}
+                            refreshToken={bundlesHistoryRefreshToken}
+                            onView={bundleId => setBundlesModuleView({ mode: "detail", bundleId })}
+                            onEdit={bundleId => setBundlesModuleView({ mode: "edit", bundleId })}
+                          />
+                        ) : bundlesModuleView.mode === "detail" && bundlesModuleView.bundleId ? (
+                          <BundleDetailView
+                            isDark={isDark}
+                            bundleId={bundlesModuleView.bundleId}
+                            onBack={() => setBundlesModuleView({ mode: "history" })}
+                            onEdit={() => setBundlesModuleView({ mode: "edit", bundleId: bundlesModuleView.bundleId })}
+                          />
+                        ) : bundlesModuleView.mode === "edit" && bundlesModuleView.bundleId ? (
+                          <BundleEditWorkspace
+                            isDark={isDark}
+                            bundleId={bundlesModuleView.bundleId}
+                            onCancel={() => setBundlesModuleView({ mode: "history" })}
+                            onSaved={() => { setBundlesHistoryRefreshToken(v => v + 1); setBundlesModuleView({ mode: "history" }); }}
+                          />
+                        ) : bundlesModuleView.mode === "import" ? (
+                          <BundleImportWizard isDark={isDark} onBack={() => { setBundlesHistoryRefreshToken(v => v + 1); setBundlesModuleView(null); }} />
+                        ) : bundlesModuleView.mode === "dependencies" ? (
+                          <BundleDependenciesView
+                            isDark={isDark}
+                            onOpenBundle={bundleId => setBundlesModuleView({ mode: "detail", bundleId })}
+                            onBack={() => setBundlesModuleView(null)}
+                          />
+                        ) : (
+                          <BundleComponentsView
+                            isDark={isDark}
+                            onOpenBundle={bundleId => setBundlesModuleView({ mode: "detail", bundleId })}
+                            onBack={() => setBundlesModuleView(null)}
+                          />
+                        )}
+                      </DashboardModuleFrame>
+                    ) : (
+                      <BundlesDashboard isDark={isDark} onNavigate={target => setBundlesModuleView({ mode: target.mode })} />
+                    )
                   ) : selectedObj.id === "quotes" ? (
-                    quotesModuleView ? (
+                    quotesModuleView?.mode === "import" ? (
+                      <DashboardModuleFrame isDark={isDark} backLabel="Back to Quotes Dashboard" onBack={() => setQuotesModuleView(null)}>
+                        <QuoteImportWizard isDark={isDark} onBack={() => setQuotesModuleView(null)} />
+                      </DashboardModuleFrame>
+                    ) : quotesModuleView ? (
                       <DashboardModuleFrame isDark={isDark} backLabel="Back to Quotes Dashboard" onBack={() => setQuotesModuleView(null)}>
                         <QuotesModule
                           isDark={isDark}
@@ -2046,7 +2247,11 @@ export default function DataPage() {
                       <QuotesDashboard isDark={isDark} onNavigate={view => setQuotesModuleView(view)} />
                     )
                   ) : selectedObj.id === "orders" ? (
-                    ordersModuleView ? (
+                    ordersModuleView?.mode === "import" ? (
+                      <DashboardModuleFrame isDark={isDark} backLabel="Back to Orders Dashboard" onBack={() => setOrdersModuleView(null)}>
+                        <OrderImportWizard isDark={isDark} onBack={() => setOrdersModuleView(null)} />
+                      </DashboardModuleFrame>
+                    ) : ordersModuleView ? (
                       <DashboardModuleFrame isDark={isDark} backLabel="Back to Orders Dashboard" onBack={() => setOrdersModuleView(null)}>
                         <OrdersModule
                           isDark={isDark}
@@ -2060,7 +2265,11 @@ export default function DataPage() {
                       <OrdersDashboard isDark={isDark} onNavigate={view => setOrdersModuleView(view)} />
                     )
                   ) : selectedObj.id === "contracts" ? (
-                    contractsModuleView ? (
+                    contractsModuleView?.mode === "import" ? (
+                      <DashboardModuleFrame isDark={isDark} backLabel="Back to Contracts Dashboard" onBack={() => setContractsModuleView(null)}>
+                        <ContractImportWizard isDark={isDark} onBack={() => setContractsModuleView(null)} />
+                      </DashboardModuleFrame>
+                    ) : contractsModuleView ? (
                       <DashboardModuleFrame isDark={isDark} backLabel="Back to Contracts Dashboard" onBack={() => setContractsModuleView(null)}>
                         <ContractsModule
                           isDark={isDark}
@@ -2077,8 +2286,52 @@ export default function DataPage() {
                     ) : (
                       <ContractsDashboard isDark={isDark} onNavigate={view => setContractsModuleView(view)} />
                     )
+                  ) : selectedObj.id === "pricing-rules" ? (
+                    pricingRulesModuleView ? (
+                      <DashboardModuleFrame isDark={isDark} backLabel="Back to Pricing Rules Dashboard" onBack={() => setPricingRulesModuleView(null)}>
+                        <PricingRulesModule
+                          isDark={isDark}
+                          initialView={pricingRulesModuleView.mode}
+                          onNavigate={patch => updateUrl({ ...patch })}
+                        />
+                      </DashboardModuleFrame>
+                    ) : (
+                      <PricingRulesDashboard isDark={isDark} onNavigate={view => setPricingRulesModuleView(view)} />
+                    )
                   ) : selectedObj.id === "attributes" ? (
-                    <RCAAttributeStudio isDark={isDark} />
+                    attributesModuleView ? (
+                      <DashboardModuleFrame isDark={isDark} backLabel="Back to Attribute Workspace" onBack={() => setAttributesModuleView(null)}>
+                        {attributesModuleView.mode === "create" ? (
+                          <RCAAttributeStudio isDark={isDark} />
+                        ) : attributesModuleView.mode === "history" || attributesModuleView.mode === "catalog" ? (
+                          <AttributeHistoryList
+                            isDark={isDark}
+                            catalogMode={attributesModuleView.mode === "catalog"}
+                            refreshToken={attributesHistoryRefreshToken}
+                            onView={attributeId => setAttributesModuleView({ mode: "detail", attributeId })}
+                            onEdit={attributeId => setAttributesModuleView({ mode: "edit", attributeId })}
+                          />
+                        ) : attributesModuleView.mode === "detail" && attributesModuleView.attributeId ? (
+                          <AttributeDetailView
+                            isDark={isDark}
+                            attributeId={attributesModuleView.attributeId}
+                            onBack={() => setAttributesModuleView({ mode: "history" })}
+                            onEdit={() => setAttributesModuleView({ mode: "edit", attributeId: attributesModuleView.attributeId })}
+                          />
+                        ) : attributesModuleView.mode === "edit" && attributesModuleView.attributeId ? (
+                          <AttributeEditWorkspace
+                            isDark={isDark}
+                            attributeId={attributesModuleView.attributeId}
+                            onCancel={() => setAttributesModuleView({ mode: "history" })}
+                            onSaved={() => { setAttributesHistoryRefreshToken(v => v + 1); setAttributesModuleView({ mode: "history" }); }}
+                          />
+                        ) : (
+                          <AttributeImportWizard isDark={isDark} onBack={() => setAttributesModuleView(null)} />
+                        )}
+                      </DashboardModuleFrame>
+                    ) : (
+                      <AttributesDashboard isDark={isDark} onNavigate={target => setAttributesModuleView({ mode: target.mode })} />
+                    )
                   ) : (
                     <>
                       <AICommandBar

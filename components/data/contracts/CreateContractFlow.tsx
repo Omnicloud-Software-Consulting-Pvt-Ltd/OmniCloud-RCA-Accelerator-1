@@ -8,10 +8,15 @@ import {
 import ReferenceLookup, { type ReferenceLookupHandle, type ReferenceLookupValue } from "@/components/data/shared/ReferenceLookup";
 import ContactLookup from "@/components/data/contracts/ContactLookup";
 import ContractPreviewPanel from "@/components/data/contracts/ContractPreviewPanel";
+import PromptGuide from "@/components/ai/PromptGuide";
+import { promptGuideConfig } from "@/lib/ai/promptGuideConfig";
 import { quoteApiGet, quoteApiPost, toErrorPanelData, type ErrorPanelDataLike } from "@/lib/quotes/client/apiClient";
 import { replayServerSteps } from "@/lib/quotes/client/executionLog";
 import { updateResponseSummary } from "@/lib/quotes/client/responseSummary";
 import { salesforceRecordUrl } from "@/lib/salesforce/client/recordLink";
+import { loadSession } from "@/lib/auth/session";
+import { toCreatedSalesforceRecord } from "@/lib/salesforce/recordUrl";
+import { useSalesforceSuccess } from "@/components/notifications/SalesforceSuccessContext";
 import type { BundleHierarchyStep } from "@/lib/quotes/types";
 import type { ContractCreateResult, ContractFieldSchema, ContractFormData } from "@/lib/contracts/types";
 
@@ -55,6 +60,7 @@ export default function CreateContractFlow({ isDark, onViewContract }: {
   onViewContract?: (contractId: string) => void;
 }) {
   const t = tokens(isDark);
+  const notifySalesforceSuccess = useSalesforceSuccess();
   const [step, setStep] = useState<Step>("details");
   const [schema, setSchema] = useState<ContractFieldSchema | null>(null);
   const [formData, setFormData] = useState<ContractFormData>(EMPTY_FORM);
@@ -166,6 +172,16 @@ export default function CreateContractFlow({ isDark, onViewContract }: {
       updateResponseSummary({ contract: { id: res.id, contractNumber: res.contractNumber, status: formData.status || null } });
       clearDraftFromStorage();
       setStep("success");
+
+      const instanceUrl = loadSession()?.instanceUrl;
+      if (instanceUrl) {
+        const record = toCreatedSalesforceRecord(instanceUrl, "Contract", res.id, res.contractNumber ?? res.id);
+        notifySalesforceSuccess({
+          title: "Contract Created Successfully",
+          message: `${record.recordName} has been successfully created in Salesforce.`,
+          records: [record],
+        });
+      }
     } catch (err) {
       const data = toErrorPanelData(err, "Could not create this Contract");
       setCreateError(data);
@@ -228,6 +244,9 @@ export default function CreateContractFlow({ isDark, onViewContract }: {
                 <PrimaryButton label={aiLoading ? "Generating…" : "Generate"} icon="sparkles" isDark={isDark} disabled={aiLoading} onClick={handleAiGenerate} />
               </div>
               {aiLoading && <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: t.dim }}><Spinner isDark={isDark} size={12} /> Parsing with Claude…</div>}
+              <div style={{ marginTop: 10 }}>
+                <PromptGuide isDark={isDark} config={promptGuideConfig.contract} onUseExample={setAiPrompt} />
+              </div>
             </Section>
 
             <Section title="Contract Details" icon="file-contract" isDark={isDark}>

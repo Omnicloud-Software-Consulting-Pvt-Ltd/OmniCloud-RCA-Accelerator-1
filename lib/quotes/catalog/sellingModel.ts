@@ -276,6 +276,12 @@ function toDirectOption(info: ProductSellingModelInfo): SellingModelOption {
     isActive: true,
     requiresBillingFrequency: info.type === "Evergreen" || info.type === "TermDefined",
     type: info.type,
+    // §Never send a fake id to Salesforce: this `id` is a synthetic
+    // placeholder (no real ProductSellingModelOption row backs it) — every
+    // caller writing to a QuoteLineItem must use `sellingModelId` (the real
+    // ProductSellingModel Id, above) for a parent-typed reference field, and
+    // must treat `id` as absent for a ProductSellingModelOption-typed one.
+    isSynthetic: true,
   };
 }
 

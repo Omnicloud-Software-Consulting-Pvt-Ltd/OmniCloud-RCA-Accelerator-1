@@ -68,9 +68,13 @@ export async function callQuoteApi<T>(label: string, method: string, path: strin
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Network request failed.";
-    const structured = deriveStructuredError(message, null);
+    // §Distinguish network failure from every other error class (§8 of the
+    // request-limit fix) — this request never reached the server at all,
+    // unlike every other QuoteApiError below (which always has a real HTTP
+    // response, even a non-2xx one).
+    const structured = deriveStructuredError(message, "NETWORK_ERROR");
     completeExecutionLogEntry(logId, 0, null, structured);
-    throw new QuoteApiError(message, 0, null, structured, logId, { message });
+    throw new QuoteApiError(message, 0, "NETWORK_ERROR", structured, logId, { message });
   }
 
   const json = await res.json().catch(() => null);

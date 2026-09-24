@@ -15,6 +15,7 @@ import {
   rollbackRecords,
   createNativeBundleRelationships,
   validateBundleRelationshipEdges,
+  resolveRequiredQuoteLineItemFields,
   type FlatDraftItem,
 } from "@/lib/quotes/bundles/relationshipCreate";
 import { fetchCatalogProductsByIds } from "@/lib/quotes/catalog/search";
@@ -302,6 +303,12 @@ export async function createQuoteLineItems(
   const flatItems = flattenForestWithParentIndex(draftRoots);
   const dependencyGraph = flatItems.map(i => ({ index: i.index, product: i.draft.product.name, parentIndex: i.parentIndex, depth: i.path.length - 1 }));
   logStep("Dependency Graph", "success", { draftRootCount: draftRoots.length }, dependencyGraph, `${flatItems.length} line item(s) flattened; ${flatItems.filter(i => i.parentIndex === null).length} root (parent) line(s), ${flatItems.filter(i => i.parentIndex !== null).length} child line(s).`);
+  // §TEMP DIAGNOSTIC (remove once Antivirus-class Billing Frequency
+  // failures are confirmed resolved): the EXACT request payload this server
+  // call received, per line, before any server-side re-resolution.
+  for (const item of flatItems) {
+    console.log(`[BILLING FREQUENCY LINE REQUEST] productId=${item.draft.productId} ("${item.draft.product.name}") sellingModelType=${item.draft.sellingModelType ?? "null"} parentIndex=${item.parentIndex ?? "root"} -> draft.billingFrequency=${item.draft.billingFrequency ?? "null"} source=${item.draft.billingFrequencySource ?? "null"}.`);
+  }
 
   if (flatItems.length === 0) {
     return fail({ currentStep: "Dependency Graph", validationRule: "non-empty request", reason: "No line items to create.", missingField: "draftRoots" });
@@ -318,6 +325,38 @@ export async function createQuoteLineItems(
   const qlrSchema = await resolveQuoteLineRelationshipSchema(client, discovery);
   qlrSchemaRef = qlrSchema;
   logStep("Resolve Metadata", "success", { quoteId, pricebookId }, { qliSchema, qliAttrSchema, discovery, qlrSchema }, `Pricing model: ${qliSchema.pricingModel}. Bundle mechanism: ${qlrSchema.mechanism}.`);
+
+  // §Audit required QuoteLineItem fields (mirrors the pre-existing bundle-
+  // relationship-object audit below): an org-specific required field this
+  // app's curated payload builder doesn't know about would otherwise be
+  // silently omitted from every create call — which can succeed at the raw
+  // API layer while leaving Salesforce's own Revenue Cloud configuration/
+  // pricing validation (e.g. native "Refresh Prices") unable to make sense
+  // of the record. Resolved via real Describe-driven defaults only; never
+  // fabricated — a field with no resolvable default hard-stops here with
+  // the exact field name, instead of surfacing later as an opaque
+  // Salesforce rejection or a QLI that native pricing can't process.
+  let qliExtraFields: Record<string, unknown> = {};
+  if (qliSchema.requiredFieldsNotMapped.length > 0) {
+    logStep(
+      "Audit Required QuoteLineItem Fields", "start", { fields: qliSchema.requiredFieldsNotMapped.map(f => f.apiName) }, null,
+      `Resolving ${qliSchema.requiredFieldsNotMapped.length} required QuoteLineItem field(s) with no explicit mapping: ${qliSchema.requiredFieldsNotMapped.map(f => f.apiName).join(", ")}.`,
+    );
+    const audit = await resolveRequiredQuoteLineItemFields(client, qliSchema);
+    if (!audit.success) {
+      return fail({
+        currentStep: "Audit Required QuoteLineItem Fields",
+        validationRule: "every required+createable QuoteLineItem field must have a resolvable real value",
+        reason: audit.error ?? "One or more required QuoteLineItem fields could not be resolved.",
+        salesforceObject: "QuoteLineItem", generatedPayload: audit.resolutions, code: "QLI_REQUIRED_FIELD_UNRESOLVED",
+      });
+    }
+    qliExtraFields = audit.extraFields;
+    logStep(
+      "Audit Required QuoteLineItem Fields", "success", { fields: qliSchema.requiredFieldsNotMapped.map(f => f.apiName) }, audit.resolutions,
+      `Resolved ${Object.keys(qliExtraFields).length} required field(s): ${JSON.stringify(qliExtraFields)}.`,
+    );
+  }
 
   // Resolve Product + Resolve PricebookEntry — re-verify server-side, never trust the client's cached copy.
   logStep("Resolve Product", "start", { productIds: distinctProductIds, pricebookId }, null, "Re-fetching each distinct product from the price book.");
@@ -442,6 +481,10 @@ export async function createQuoteLineItems(
   const billingFrequencyValidation: Record<string, unknown> = {};
   for (const item of flatItems) {
     const sm = sellingModels.get(item.draft.productId);
+    // §TEMP DIAGNOSTIC (remove once Antivirus-class Billing Frequency
+    // failures are confirmed resolved): the final decision inputs for this
+    // line, at the exact point Resolve Billing Frequency evaluates it.
+    console.log(`[BILLING FREQUENCY FINAL] productId=${item.draft.productId} ("${item.draft.product.name}") sellingModelType=${sm?.chosen?.type ?? "null"} requiresBillingFrequency=${!!sm?.chosen?.requiresBillingFrequency} chosenReason=${sm?.chosenReason ?? "null"} -> draft.billingFrequency=${item.draft.billingFrequency ?? "null"} source=${item.draft.billingFrequencySource ?? "null"}.`);
     if (!sm?.chosen?.requiresBillingFrequency) {
       // Log every line, even ones we determined don't need billing frequency —
       // never let "success" mean "silently skipped" (§Issue: log incorrectly marked Success).
@@ -666,7 +709,7 @@ export async function createQuoteLineItems(
 
   // Build Payload + Validate Payload.
   logStep("Build Payload", "start", { itemCount: flatItems.length }, null, "Building the QuoteLineItem create payload for every line via buildQLIPayload() — the one and only serializer.");
-  const builtPayloads = flatItems.map(item => ({ item, payload: buildQLIPayload(item, quoteId, qliSchema, null, null) }));
+  const builtPayloads = flatItems.map(item => ({ item, payload: { ...qliExtraFields, ...buildQLIPayload(item, quoteId, qliSchema, null, null) } }));
 
   // §Sales Price double-discount investigation (Phase 3): print, per line,
   // exactly what is about to be sent as the Sales Price input vs. the
@@ -872,7 +915,7 @@ export async function createQuoteLineItems(
 
   // Create Parent Lines + Create Child Lines (dependency-ordered passes).
   logStep("Create Parent Lines", "start", { rootCount: flatItems.filter(i => i.parentIndex === null).length }, null, "Creating line items in dependency order (parents first, then children).");
-  const creation = await createInDependencyOrderedPasses(client, flatItems, quoteId, qliSchema, s => steps.push(s));
+  const creation = await createInDependencyOrderedPasses(client, flatItems, quoteId, qliSchema, s => steps.push(s), qliExtraFields);
   if (!creation.success) {
     const failedItem = creation.failedIndex != null ? flatItems[creation.failedIndex] : null;
     const failedSellingModel = failedItem ? sellingModels.get(failedItem.draft.productId) ?? null : null;
@@ -1091,11 +1134,26 @@ export async function createQuoteLineItems(
   // produces the correct price for it, and it is left completely untouched
   // (§Phase 6 regression protection).
   const discountedLines = flatItems.filter(i => i.draft.discountPercent > 0 && !i.draft.pricingInclusion);
+  // §Bundle configuration validation: Salesforce's native "Refresh Prices"
+  // button validates a bundle's configuration as PART OF running its own
+  // Revenue Cloud pricing engine. A bundle created by this app but never
+  // actually processed by that engine (a 0%-discount bundle previously
+  // skipped straight to the local "Apply List Price" write above, which is a
+  // raw field write, not a Salesforce pricing run) reaches the user's later
+  // native Refresh Prices click having NEVER been priced by Salesforce at
+  // all — a leading, testable explanation for "We couldn't retrieve the
+  // product and price information... Ensure Product Discovery is set up
+  // correctly." Bundles are therefore always repriced via the SAME existing
+  // Instant Pricing call (never a new/invented pricing path), even at 0%
+  // discount. A plain NON-bundle 0%-discount line keeps its exact prior
+  // behavior — the existing regression protection for that case is
+  // unchanged.
+  const hasBundleForRepricing = flatItems.some(i => i.draft.isBundleParent || i.parentIndex !== null);
   let adjustmentDiscovery: Awaited<ReturnType<typeof resolveQuoteLineAdjustmentDiscovery>> | null = null;
-  if (discountedLines.length === 0) {
+  if (discountedLines.length === 0 && !hasBundleForRepricing) {
     logStep(
-      "Repricing", "info", { discountedLineCount: 0 }, { called: false },
-      "SKIPPED — no line in this request has a non-zero discount percentage; the List Price write above already produces the correct (undiscounted) price and Salesforce repricing is not needed.",
+      "Repricing", "info", { discountedLineCount: 0, hasBundleForRepricing }, { called: false },
+      "SKIPPED — no line in this request has a non-zero discount percentage and this request has no bundle structure; the List Price write above already produces the correct (undiscounted) price and Salesforce repricing is not needed.",
     );
   } else {
     // §Phase 2 — diagnostic-only discovery of a possible DISTINCT Revenue

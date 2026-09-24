@@ -1,7 +1,14 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { loadSession } from "@/lib/auth/session";
+import { toCreatedSalesforceRecord } from "@/lib/salesforce/recordUrl";
+import { useSalesforceSuccess } from "@/components/notifications/SalesforceSuccessContext";
+import type { CatalogProduct } from "@/lib/quotes/types";
+import type { ProductValidationCandidate } from "@/lib/attributes/types";
+import PromptGuide from "@/components/ai/PromptGuide";
+import { promptGuideConfig } from "@/lib/ai/promptGuideConfig";
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Types
@@ -99,6 +106,29 @@ interface BatchContext {
     smoProductFKField:      string | null;
     discoveredAt:           string;
   };
+}
+
+interface ResolvedProduct { id: string; name: string; productCode: string | null }
+
+/**
+ * Product Existence Validation — whenever a prompt references a Product,
+ * this must resolve to "found" (exact Salesforce match), "created" (user
+ * chose to create it), or "selected" (user picked an existing product)
+ * before any batch executes. Never a silent default — "not_found" blocks
+ * deployment until the user resolves it via the modal below.
+ */
+type ProductValidationState =
+  | { status: "idle" }
+  | { status: "checking" }
+  | { status: "found"; product: ResolvedProduct }
+  | { status: "not_found"; candidates: ProductValidationCandidate[] }
+  | { status: "creating" }
+  | { status: "created"; product: ResolvedProduct }
+  | { status: "selected"; product: ResolvedProduct }
+  | { status: "error"; message: string };
+
+function isProductResolved(pv: ProductValidationState): pv is { status: "found" | "created" | "selected"; product: ResolvedProduct } {
+  return pv.status === "found" || pv.status === "created" || pv.status === "selected";
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -313,6 +343,8 @@ function Ic({ n, s = 14 }: { n: string; s?: number }) {
     x:             <><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></>,
     eye:           <><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></>,
     zap:           <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />,
+    search:        <><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></>,
+    plus:          <><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></>,
   };
   return (
     <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
@@ -356,15 +388,16 @@ function ProductContextCard({ data, isDark }: { data: ParsedRCAData; isDark: boo
       style={{
         background: isDark ? "rgba(0,212,255,0.04)" : "rgba(0,212,255,0.04)",
         border: "1px solid rgba(0,212,255,0.18)",
+        boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)",
       }}
     >
       <div className="flex items-center gap-2 mb-2.5">
-        <span style={{ color: ACCENT }}><Ic n="package" s={12} /></span>
-        <span className="text-[10px] font-semibold tracking-widest uppercase" style={{ color: ACCENT }}>
+        <span style={{ color: isDark ? ACCENT : "#0098CC" }}><Ic n="package" s={12} /></span>
+        <span className="text-[10px] font-semibold tracking-widest uppercase" style={{ color: isDark ? ACCENT : "#0098CC" }}>
           Product Context Summary
         </span>
         <span className="ml-auto text-[9px] font-mono px-2 py-0.5 rounded-full"
-          style={{ background: "rgba(0,212,255,0.1)", color: ACCENT, border: "1px solid rgba(0,212,255,0.2)" }}>
+          style={{ background: "rgba(0,212,255,0.1)", color: isDark ? ACCENT : "#0098CC", border: "1px solid rgba(0,212,255,0.2)" }}>
           RCA DEPLOYMENT HEADER
         </span>
       </div>
@@ -372,7 +405,7 @@ function ProductContextCard({ data, isDark }: { data: ParsedRCAData; isDark: boo
         {fields.map(f => (
           <div key={f.label} className="flex flex-col gap-0.5 min-w-0">
             <span className="text-[9px] font-medium tracking-wider uppercase truncate"
-              style={{ color: isDark ? "rgba(0,212,255,0.45)" : "rgba(0,112,214,0.45)" }}>
+              style={{ color: isDark ? "rgba(0,212,255,0.45)" : "rgba(15,45,100,0.72)" }}>
               {f.label}
             </span>
             <span className="text-[11px] font-semibold truncate"
@@ -383,6 +416,99 @@ function ProductContextCard({ data, isDark }: { data: ParsedRCAData; isDark: boo
         ))}
       </div>
     </motion.div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Product Existence Validation Panel
+ * ─────────────────────────────────────────────────────────────────────────── */
+function ProductValidationPanel({ isDark, productName, state, onResolveNotFound, onRetry }: {
+  isDark: boolean;
+  productName: string;
+  state: {
+    status: "idle" | "checking" | "found" | "not_found" | "creating" | "created" | "selected" | "error";
+    product?: { id: string; name: string; productCode: string | null };
+    message?: string;
+  };
+  onResolveNotFound: () => void;
+  onRetry: () => void;
+}) {
+  const base = { borderRadius: 12, padding: "12px 14px", display: "flex", alignItems: "center", gap: 10 } as const;
+
+  if (state.status === "idle" || state.status === "checking") {
+    return (
+      <div className="rounded-xl px-3.5 py-3 flex items-center gap-2.5" style={{ background: isDark ? "rgba(0,212,255,0.04)" : "rgba(0,212,255,0.03)", border: "1px solid rgba(0,212,255,0.15)" }}>
+        <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }} style={{ color: isDark ? ACCENT : "#0098CC" }}>
+          <Ic n="loader" s={14} />
+        </motion.span>
+        <span className="text-[12px] font-medium" style={{ color: isDark ? "rgba(0,212,255,0.85)" : "rgba(0,112,214,0.8)" }}>
+          Checking Product Existence — &quot;{productName}&quot;…
+        </span>
+      </div>
+    );
+  }
+
+  if (state.status === "found" || state.status === "created" || state.status === "selected") {
+    const label = state.status === "created" ? "Product Created" : state.status === "selected" ? "Salesforce Product Selected" : "Existing Salesforce Product";
+    return (
+      <div className="rounded-xl px-3.5 py-3 flex items-center gap-2.5" style={{ background: "rgba(34,197,94,0.07)", border: "1px solid rgba(34,197,94,0.25)" }}>
+        <span style={{ color: "#22C55E" }}><Ic n="check-circle" s={16} /></span>
+        <div className="min-w-0">
+          <span className="text-[12px] font-semibold block" style={{ color: "#22C55E" }}>✓ {label}</span>
+          <span className="text-[10.5px]" style={{ color: isDark ? "rgba(150,180,160,0.75)" : "rgba(0,60,20,0.65)" }}>
+            {state.product?.name}{state.product?.productCode ? ` (${state.product.productCode})` : ""}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  if (state.status === "creating") {
+    return (
+      <div className="rounded-xl px-3.5 py-3 flex items-center gap-2.5" style={{ background: isDark ? "rgba(0,212,255,0.04)" : "rgba(0,212,255,0.03)", border: "1px solid rgba(0,212,255,0.15)" }}>
+        <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }} style={{ color: isDark ? ACCENT : "#0098CC" }}>
+          <Ic n="loader" s={14} />
+        </motion.span>
+        <span className="text-[12px] font-medium" style={{ color: isDark ? "rgba(0,212,255,0.85)" : "rgba(0,112,214,0.8)" }}>
+          Creating Product — &quot;{productName}&quot;…
+        </span>
+      </div>
+    );
+  }
+
+  if (state.status === "not_found") {
+    return (
+      <div style={{ ...base, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.28)" }}>
+        <span style={{ color: "#F59E0B" }}><Ic n="alert-circle" s={16} /></span>
+        <div className="flex-1 min-w-0">
+          <span className="text-[12px] font-semibold block" style={{ color: "#F59E0B" }}>✗ Product Not Found</span>
+          <span className="text-[10.5px]" style={{ color: isDark ? "rgba(200,180,140,0.75)" : "rgba(90,60,0,0.65)" }}>
+            &quot;{productName}&quot; does not exist in Salesforce — deployment is blocked until this is resolved.
+          </span>
+        </div>
+        <button onClick={onResolveNotFound}
+          className="text-[10.5px] font-semibold px-3 py-1.5 rounded-lg cursor-pointer shrink-0"
+          style={{ color: "#F59E0B", border: "1px solid rgba(245,158,11,0.4)", background: "transparent" }}>
+          Resolve
+        </button>
+      </div>
+    );
+  }
+
+  // error
+  return (
+    <div style={{ ...base, background: "rgba(255,64,102,0.07)", border: "1px solid rgba(255,64,102,0.25)" }}>
+      <span style={{ color: "#FF4066" }}><Ic n="alert-circle" s={16} /></span>
+      <div className="flex-1 min-w-0">
+        <span className="text-[12px] font-semibold block" style={{ color: "#FF4066" }}>⚠ Could Not Verify Product</span>
+        <span className="text-[10.5px]" style={{ color: isDark ? "rgba(220,180,180,0.75)" : "rgba(90,0,0,0.65)" }}>{state.message}</span>
+      </div>
+      <button onClick={onRetry}
+        className="text-[10.5px] font-semibold px-3 py-1.5 rounded-lg cursor-pointer shrink-0"
+        style={{ color: "#FF4066", border: "1px solid rgba(255,64,102,0.4)", background: "transparent" }}>
+        Retry
+      </button>
+    </div>
   );
 }
 
@@ -399,8 +525,9 @@ function AttributeCard({ attr, idx, isDark }: { attr: ParsedAttribute; idx: numb
       className="rounded-xl p-3 flex flex-col gap-2"
       style={{
         background: isDark ? "rgba(6,12,28,0.65)" : "rgba(228,241,255,0.90)",
-        border: isDark ? "1px solid rgba(0,212,255,0.1)" : "1px solid rgba(0,112,214,0.1)",
+        border: isDark ? "1px solid rgba(0,212,255,0.1)" : "1px solid rgba(0,112,214,0.22)",
         backdropFilter: "blur(8px)",
+        boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)",
       }}
     >
       <div className="flex items-start justify-between gap-2">
@@ -417,7 +544,7 @@ function AttributeCard({ attr, idx, isDark }: { attr: ParsedAttribute; idx: numb
       <div className="flex flex-wrap gap-1.5 items-center">
         {attr.configurable && (
           <span className="text-[9px] px-1.5 py-0.5 rounded font-medium"
-            style={{ background: "rgba(30,144,255,0.12)", color: "#1E90FF" }}>
+            style={{ background: "rgba(30,144,255,0.12)", color: isDark ? "#1E90FF" : "#0968D3" }}>
             Configurable
           </span>
         )}
@@ -484,11 +611,11 @@ function BatchRow({
   const borderColor = state.status === "success" ? "rgba(0,212,255,0.28)"
     : state.status === "failed" ? "rgba(255,64,102,0.28)"
     : state.status === "running" ? "rgba(0,212,255,0.28)"
-    : isDark ? "rgba(0,212,255,0.08)" : "rgba(0,112,214,0.1)";
+    : isDark ? "rgba(0,212,255,0.08)" : "rgba(0,112,214,0.22)";
 
   return (
     <div className="rounded-xl overflow-hidden"
-      style={{ border: `1px solid ${borderColor}`, background: isDark ? "rgba(4,10,22,0.72)" : "rgba(255,255,255,0.68)", backdropFilter: "blur(8px)" }}>
+      style={{ border: `1px solid ${borderColor}`, background: isDark ? "rgba(4,10,22,0.72)" : "rgba(255,255,255,0.68)", backdropFilter: "blur(8px)", boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)" }}>
 
       {/* Main row */}
       <div className="flex items-center gap-3 px-4 py-3">
@@ -578,7 +705,7 @@ function BatchRow({
                 style={{ background: isDark ? "rgba(0,0,0,0.55)" : "rgba(236,246,255,0.85)", border: isDark ? "1px solid rgba(0,212,255,0.1)" : "1px solid rgba(0,112,214,0.1)" }}>
                 <div className="flex items-center justify-between px-3 py-2"
                   style={{ borderBottom: isDark ? "1px solid rgba(0,212,255,0.08)" : "1px solid rgba(0,112,214,0.07)" }}>
-                  <span className="text-[9px] font-mono font-bold uppercase tracking-widest" style={{ color: ACCENT }}>
+                  <span className="text-[9px] font-mono font-bold uppercase tracking-widest" style={{ color: isDark ? ACCENT : "#0098CC" }}>
                     Batch {def.id} · Salesforce JSON Payload
                   </span>
                   <motion.button onClick={handleCopy}
@@ -607,7 +734,7 @@ function BatchRow({
             <div className="px-4 pb-3 mx-4 mb-3">
               <div className="rounded-lg px-3 py-2"
                 style={{ background: isDark ? "rgba(0,0,0,0.4)" : "rgba(240,248,255,0.85)", border: isDark ? "1px solid rgba(0,212,255,0.1)" : "1px solid rgba(0,71,171,0.20)", maxHeight: 160, overflowY: "auto", scrollbarWidth: "thin" }}>
-                <span className="block text-[9px] font-mono font-bold uppercase tracking-widest mb-1.5" style={{ color: ACCENT_CYAN }}>
+                <span className="block text-[9px] font-mono font-bold uppercase tracking-widest mb-1.5" style={{ color: isDark ? ACCENT_CYAN : "#0098CC" }}>
                   Execution Log
                 </span>
                 {state.logs.map((log, i) => (
@@ -659,13 +786,13 @@ function AnalysisTable({ attrs, skipped, isDark }: {
   skipped: { name: string; reason: string }[];
   isDark: boolean;
 }) {
-  const headerColor = isDark ? "rgba(0,212,255,0.45)" : "rgba(0,112,214,0.45)";
+  const headerColor = isDark ? "rgba(0,212,255,0.45)" : "rgba(15,45,100,0.72)";
   const rowBg       = isDark ? "rgba(4,10,22,0.55)"   : "rgba(222,235,255,0.85)";
-  const borderColor = isDark ? "rgba(0,212,255,0.08)"  : "rgba(0,112,214,0.08)";
+  const borderColor = isDark ? "rgba(0,212,255,0.08)"  : "rgba(0,112,214,0.22)";
 
   const cols = ["#", "Attribute Name", "Detected Type", "DisplayType", "Configurable", "Decision", "Values"];
   return (
-    <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${borderColor}` }}>
+    <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${borderColor}`, boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)" }}>
       {/* Header row */}
       <div className="grid text-[9px] font-semibold tracking-widest uppercase px-3 py-2"
         style={{
@@ -703,7 +830,7 @@ function AnalysisTable({ attrs, skipped, isDark }: {
               <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${attr.configurable ? "" : ""}`}
                 style={{
                   background: attr.configurable ? "rgba(0,212,255,0.10)" : "rgba(90,122,154,0.08)",
-                  color: attr.configurable ? "#00D4FF" : isDark ? "rgba(150,170,190,0.7)" : "rgba(80,100,120,0.7)",
+                  color: attr.configurable ? (isDark ? "#00D4FF" : "#0098CC") : isDark ? "rgba(150,170,190,0.7)" : "rgba(80,100,120,0.7)",
                   border: `1px solid ${attr.configurable ? "rgba(0,212,255,0.25)" : "rgba(90,122,154,0.18)"}`,
                 }}>
                 {attr.configurable ? "Yes" : "No"}
@@ -771,13 +898,14 @@ function RCADependencyGraph({ batchStates, isDark }: { batchStates: BatchState[]
   return (
     <div className="rounded-xl p-4 mb-4"
       style={{ background: isDark ? "rgba(0,0,0,0.45)" : "rgba(236,246,255,0.85)",
-               border: isDark ? "1px solid rgba(0,212,255,0.12)" : "1px solid rgba(0,71,171,0.20)" }}>
+               border: isDark ? "1px solid rgba(0,212,255,0.12)" : "1px solid rgba(0,71,171,0.20)",
+               boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)" }}>
       <div className="flex items-center gap-2 mb-3">
-        <span className="text-[9px] font-mono font-bold uppercase tracking-widest" style={{ color: ACCENT_CYAN }}>
+        <span className="text-[9px] font-mono font-bold uppercase tracking-widest" style={{ color: isDark ? ACCENT_CYAN : "#0098CC" }}>
           RCA Object Dependency Graph
         </span>
         <span className="text-[8px] px-1.5 py-0.5 rounded font-mono"
-          style={{ background: "rgba(0,212,255,0.1)", color: ACCENT_CYAN, border: "1px solid rgba(0,212,255,0.2)" }}>
+          style={{ background: "rgba(0,212,255,0.1)", color: isDark ? ACCENT_CYAN : "#0098CC", border: "1px solid rgba(0,212,255,0.2)" }}>
           deployment order
         </span>
       </div>
@@ -888,12 +1016,13 @@ function StorageHealthPanel({ health, isDark }: { health: StorageHealth; isDark:
         border: health.storageWarning
           ? "1px solid rgba(255,64,102,0.25)"
           : "1px solid rgba(0,212,255,0.18)",
+        boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)",
       }}
     >
       {/* Header */}
       <div className="flex items-center gap-2 mb-2.5 flex-wrap">
         <span className="text-[9px] font-mono font-bold uppercase tracking-widest"
-          style={{ color: health.storageWarning ? "#FF6080" : ACCENT_CYAN }}>
+          style={{ color: health.storageWarning ? "#FF6080" : isDark ? ACCENT_CYAN : "#0098CC" }}>
           Storage Health
         </span>
         {health.storageWarning && (
@@ -907,8 +1036,8 @@ function StorageHealthPanel({ health, isDark }: { health: StorageHealth; isDark:
       {/* Counters */}
       <div className="grid grid-cols-3 gap-2 mb-2.5">
         {[
-          { label: "Reused",  value: health.reuseCount,    color: ACCENT_CYAN },
-          { label: "Created", value: health.createCount,   color: ACCENT },
+          { label: "Reused",  value: health.reuseCount,    color: isDark ? ACCENT_CYAN : "#0098CC" },
+          { label: "Created", value: health.createCount,   color: isDark ? ACCENT : "#0098CC" },
           { label: "Errors",  value: health.storageErrors, color: health.storageErrors > 0 ? "#FF6080" : isDark ? "rgba(90,120,160,0.5)" : "rgba(0,15,55,0.65)" },
         ].map(s => (
           <div key={s.label} className="rounded-lg px-2 py-1.5 text-center"
@@ -927,7 +1056,7 @@ function StorageHealthPanel({ health, isDark }: { health: StorageHealth; isDark:
             <div key={`r-${obj}`} className="flex items-center justify-between">
               <span className="text-[9px] font-mono truncate" style={{ color: isDark ? "rgba(180,210,240,0.65)" : "rgba(0,15,55,0.78)" }}>{obj}</span>
               <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ml-2"
-                style={{ background: "rgba(0,212,255,0.1)", color: ACCENT_CYAN, border: "1px solid rgba(0,212,255,0.22)" }}>
+                style={{ background: "rgba(0,212,255,0.1)", color: isDark ? ACCENT_CYAN : "#0098CC", border: "1px solid rgba(0,212,255,0.22)" }}>
                 {count} reused
               </span>
             </div>
@@ -963,6 +1092,7 @@ function StorageHealthPanel({ health, isDark }: { health: StorageHealth; isDark:
  * Main component
  * ─────────────────────────────────────────────────────────────────────────── */
 export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
+  const notifySalesforceSuccess = useSalesforceSuccess();
   const [prompt, setPrompt] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [parsedData, setParsedData] = useState<ParsedRCAData | null>(null);
@@ -981,6 +1111,40 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
   const [cumulativeHealth, setCumulativeHealth] = useState<StorageHealth>(emptyHealth);
   const promptRef = useRef<HTMLTextAreaElement>(null);
 
+  // Product Existence Validation — gates every batch execution (Section 28).
+  const [productValidation, setProductValidation] = useState<ProductValidationState>({ status: "idle" });
+  const [showProductModal, setShowProductModal] = useState(false);
+  const [showProductSearch, setShowProductSearch] = useState(false);
+  const [productPricebookId, setProductPricebookId] = useState<string | null>(null);
+  const [productSearchTerm, setProductSearchTerm] = useState("");
+  const [productSearchResults, setProductSearchResults] = useState<CatalogProduct[]>([]);
+  const [productSearching, setProductSearching] = useState(false);
+
+  useEffect(() => {
+    if (!showProductSearch || productPricebookId) return;
+    fetch("/api/bundles/pricebook")
+      .then(r => r.json())
+      .then(d => { if (d.success) setProductPricebookId(d.pricebookId); })
+      .catch(() => {});
+  }, [showProductSearch, productPricebookId]);
+
+  useEffect(() => {
+    if (!showProductSearch || !productPricebookId) return;
+    const handle = setTimeout(() => {
+      setProductSearching(true);
+      fetch("/api/quotes/products/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pricebookId: productPricebookId, searchTerm: productSearchTerm }),
+      })
+        .then(r => r.json())
+        .then(d => setProductSearchResults(d.success ? d.products : []))
+        .catch(() => setProductSearchResults([]))
+        .finally(() => setProductSearching(false));
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [showProductSearch, productSearchTerm, productPricebookId]);
+
   const border = isDark ? "1px solid rgba(0,212,255,0.1)" : "1px solid rgba(0,112,214,0.1)";
 
   const appendLog = useCallback((msg: string) => {
@@ -996,6 +1160,9 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
     setBatchCtx({});
     setCumulativeHealth(emptyHealth());
     setAllLogs([`[${new Date().toISOString()}] Initiating RCA semantic attribute analysis…`]);
+    setProductValidation({ status: "idle" });
+    setShowProductModal(false);
+    setShowProductSearch(false);
 
     try {
       const res = await fetch("/api/sf/attributes/parse", {
@@ -1014,6 +1181,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
       setBatchPayloads(generateBatchPayloads(data.data));
       appendLog(`[SUCCESS] Generated ${data.data.attributes.length} attribute(s), ${data.data.skipped?.length ?? 0} field(s) rejected by eligibility filter`);
       setActiveTab("attributes");
+      void runProductValidation(data.data.productName);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Network error";
       setGenError(msg);
@@ -1023,8 +1191,103 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
     }
   };
 
+  /* ── Product Existence Validation ───────────────────────────────────────── */
+  const runProductValidation = useCallback(async (productName: string) => {
+    setProductValidation({ status: "checking" });
+    appendLog(`[${new Date().toISOString()}] Checking Salesforce for existing product "${productName}"…`);
+    try {
+      const res = await fetch("/api/sf/attributes/validate-product", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productName }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        const msg = data.error ?? "Could not check whether this product exists in Salesforce.";
+        setProductValidation({ status: "error", message: msg });
+        appendLog(`[ERROR] Product validation: ${msg}`);
+        return;
+      }
+      if (data.result.status === "found") {
+        setProductValidation({ status: "found", product: data.result.product });
+        appendLog(`[SUCCESS] Found existing Salesforce product: "${data.result.product.name}" (${data.result.product.id})`);
+      } else {
+        setProductValidation({ status: "not_found", candidates: data.result.candidates });
+        appendLog(`[WARN] Product "${productName}" not found in Salesforce — resolve before deploying`);
+        setShowProductModal(true);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Network error checking product existence";
+      setProductValidation({ status: "error", message: msg });
+      appendLog(`[ERROR] Product validation: ${msg}`);
+    }
+  }, [appendLog]);
+
+  const handleCreateProduct = async () => {
+    if (!parsedData) return;
+    setShowProductModal(false);
+    setProductValidation({ status: "creating" });
+    appendLog(`[${new Date().toISOString()}] Creating product "${parsedData.productName}" in Salesforce…`);
+    try {
+      const res = await fetch("/api/sf/products/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          productName: parsedData.productName,
+          productCode: parsedData.productCode,
+          family: parsedData.productFamily,
+          description: parsedData.description,
+          isActive: parsedData.isActive,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        const msg = data.error ?? "Failed to create the product in Salesforce.";
+        setProductValidation({ status: "error", message: msg });
+        appendLog(`[ERROR] Product creation failed: ${msg}`);
+        return;
+      }
+      const product: ResolvedProduct = { id: data.salesforceId, name: parsedData.productName, productCode: parsedData.productCode };
+      setProductValidation({ status: "created", product });
+      appendLog(`[SUCCESS] Product created: "${product.name}" → ${product.id}`);
+
+      const instanceUrl = loadSession()?.instanceUrl;
+      if (instanceUrl) {
+        notifySalesforceSuccess({
+          title: "Product Created Successfully",
+          message: `${product.name} has been successfully created in Salesforce.`,
+          records: [toCreatedSalesforceRecord(instanceUrl, "Product2", product.id, product.name)],
+        });
+      }
+
+      // Auto-continue into attribute creation — the user already confirmed
+      // "Yes, Create Product" and should not have to restart the flow.
+      appendLog(`[${new Date().toISOString()}] Continuing — creating attribute for "${product.name}"…`);
+      await handleDeployAll({ productIdOverride: product.id });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Network error creating product";
+      setProductValidation({ status: "error", message: msg });
+      appendLog(`[ERROR] Product creation failed: ${msg}`);
+    }
+  };
+
+  const handleSelectExistingProduct = (product: CatalogProduct) => {
+    const resolved: ResolvedProduct = { id: product.id, name: product.name, productCode: product.productCode };
+    setProductValidation({ status: "selected", product: resolved });
+    setShowProductSearch(false);
+    setProductSearchTerm("");
+    setProductSearchResults([]);
+    setParsedData(prev => prev ? { ...prev, productName: resolved.name, productCode: resolved.productCode ?? prev.productCode } : prev);
+    appendLog(`[SUCCESS] Using existing Salesforce product: "${resolved.name}" (${resolved.id})`);
+  };
+
   const handleExecuteBatch = useCallback(async (batchIndex: number) => {
     if (!parsedData) return;
+    if (!isProductResolved(productValidation)) {
+      appendLog(`[ERROR] Cannot execute Batch ${batchIndex + 1} — this attribute's Product has not been resolved yet. Resolve Product Validation above first.`);
+      return;
+    }
+    const resolvedCtx: BatchContext = { ...batchCtx, productId: productValidation.product.id };
     setBatchStates(prev => {
       const next = [...prev];
       next[batchIndex] = { status: "running", logs: [] };
@@ -1035,7 +1298,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
       const res = await fetch("/api/sf/attributes/execute-batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batchIndex, parsedData, context: batchCtx }),
+        body: JSON.stringify({ batchIndex, parsedData, context: resolvedCtx }),
       });
       const data = await res.json();
       if (Array.isArray(data.logs)) data.logs.forEach((l: string) => appendLog(l));
@@ -1058,7 +1321,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
         return next;
       });
     }
-  }, [parsedData, batchCtx, appendLog]);
+  }, [parsedData, batchCtx, appendLog, productValidation]);
 
   const handleReset = () => {
     setParsedData(null);
@@ -1067,13 +1330,23 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
     setAllLogs([]);
     setGenError(null);
     setCumulativeHealth(emptyHealth());
+    setProductValidation({ status: "idle" });
+    setShowProductModal(false);
+    setShowProductSearch(false);
   };
 
-  const handleDeployAll = async () => {
+  const handleDeployAll = async (opts?: { productIdOverride?: string }) => {
     if (!parsedData || isDeployingAll) return;
+    const resolvedProductId = opts?.productIdOverride ?? (isProductResolved(productValidation) ? productValidation.product.id : null);
+    if (!resolvedProductId) {
+      appendLog("[ERROR] Cannot deploy — this attribute's Product has not been resolved yet. Resolve Product Validation above first.");
+      setActiveTab("console");
+      return;
+    }
     setIsDeployingAll(true);
     setActiveTab("execution");
-    let currentCtx: BatchContext = batchCtx;
+    let currentCtx: BatchContext = { ...batchCtx, productId: resolvedProductId };
+    let allSucceeded = true;
 
     for (let i = 0; i < 9; i++) {
       setBatchStates(prev => {
@@ -1104,6 +1377,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
         });
         if (!succeeded) {
           appendLog(`[WARN] Batch ${i + 1} failed — stopping deployment`);
+          allSucceeded = false;
           break;
         }
       } catch (err) {
@@ -1114,7 +1388,25 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
           next[i] = { status: "failed", logs: [`[ERROR] ${msg}`] };
           return next;
         });
+        allSucceeded = false;
         break;
+      }
+    }
+
+    if (allSucceeded) {
+      const instanceUrl = loadSession()?.instanceUrl;
+      const attributeDefIds = currentCtx.attributeDefIds ?? {};
+      const names = Object.keys(attributeDefIds);
+      if (instanceUrl && names.length > 0) {
+        const records = names.map(name => toCreatedSalesforceRecord(instanceUrl, "AttributeDefinition", attributeDefIds[name], name));
+        notifySalesforceSuccess({
+          title: records.length === 1 ? "Attribute Created Successfully" : `${records.length} Attributes Created Successfully`,
+          message: records.length === 1
+            ? `${records[0].recordName} has been successfully created in Salesforce.`
+            : `${records.length} attributes were successfully created in Salesforce.`,
+          records,
+          detailsLabel: "View Created Attributes",
+        });
       }
     }
 
@@ -1124,135 +1416,127 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
   const completedBatches = batchStates.filter(b => b.status === "success").length;
   const canExecuteBatch = (i: number) => i === 0 || batchStates[i - 1].status === "success" || batchStates[i - 1].status === "failed";
 
-  /* ── Loading state ──────────────────────────────────────────────────────── */
-  if (isGenerating) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-5">
-        <motion.div animate={{ rotate: 360 }} transition={{ duration: 1.2, repeat: Infinity, ease: "linear" }}
-          style={{ color: ACCENT }}>
-          <Ic n="loader" s={38} />
-        </motion.div>
-        <div className="text-center">
-          <p className="text-[14px] font-semibold mb-1" style={{ color: isDark ? "rgba(0,212,255,0.9)" : "rgba(0,112,214,0.85)" }}>
-            Semantic AI Analysis in Progress
-          </p>
-          <p className="text-[11px]" style={{ color: isDark ? "rgba(90,120,160,0.6)" : "rgba(0,15,55,0.70)" }}>
-            Reasoning like an RCA business architect…
-          </p>
-        </div>
-        <div className="flex flex-wrap justify-center gap-2 max-w-xs">
-          {["Eligibility Filtering", "Datatype Inference", "Configurable vs Informational", "Picklist Detection"].map(s => (
-            <motion.span key={s} animate={{ opacity: [0.4, 1, 0.4] }} transition={{ duration: 1.6, repeat: Infinity, delay: Math.random() * 1 }}
-              className="text-[9px] font-mono px-2 py-1 rounded-full"
-              style={{ background: "rgba(0,212,255,0.06)", color: ACCENT, border: "1px solid rgba(0,212,255,0.15)" }}>
-              {s}
-            </motion.span>
-          ))}
-        </div>
-      </div>
-    );
-  }
+  /* ── Single-screen layout ───────────────────────────────────────────────
+   * Prompt, Product Validation, and the generated-attribute/deployment
+   * workspace all live in one continuous scroll — no route or screen swap.
+   * Sections below the prompt appear once there's something to show them. */
+  const TABS = parsedData ? [
+    { id: "attributes" as const, label: "Attributes",  icon: "list",     count: parsedData.attributes.length },
+    { id: "execution"  as const, label: "Execution",   icon: "activity", count: completedBatches > 0 ? completedBatches : undefined },
+    { id: "console"    as const, label: "Console",     icon: "terminal", count: allLogs.length > 0 ? allLogs.length : undefined },
+    { id: "product"    as const, label: "Product",     icon: "package",  count: batchCtx.productId ? 1 : undefined },
+    { id: "skipped"    as const, label: "Skipped",     icon: "info",     count: parsedData.skipped?.length ?? 0 },
+  ] : [];
 
-  /* ── Pre-generation prompt view ─────────────────────────────────────────── */
-  if (!parsedData) {
-    return (
-      <div className="flex flex-col h-full overflow-hidden">
-        {/* Studio header */}
-        <div className="px-6 py-4 shrink-0" style={{ borderBottom: border }}>
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
-              style={{ background: "linear-gradient(135deg, rgba(0,212,255,0.18) 0%, rgba(0,212,255,0.1) 100%)", border: "1px solid rgba(0,212,255,0.28)", color: ACCENT, boxShadow: "0 0 20px rgba(0,212,255,0.1)" }}>
-              <Ic n="layers" s={18} />
-            </div>
-            <div>
-              <h2 className="text-[16px] font-bold" style={{ color: isDark ? "white" : "#001F5B", letterSpacing: "-0.02em" }}>
-                RCA Attribute Creation Studio
-              </h2>
-              <p className="text-[11px]" style={{ color: isDark ? "rgba(0,212,255,0.6)" : "rgba(0,112,214,0.65)" }}>
-                AI-powered Revenue Cloud Advanced attribute generation & deployment orchestration
-              </p>
-            </div>
-            <div className="ml-auto hidden sm:flex items-center gap-2">
-              {["ProductAttributeDefinition", "8-Batch Deploy", "RCA v62.0"].map(badge => (
-                <span key={badge} className="text-[9px] font-mono px-2 py-0.5 rounded-full"
-                  style={{ background: "rgba(0,212,255,0.07)", color: ACCENT, border: "1px solid rgba(0,212,255,0.18)" }}>
-                  {badge}
-                </span>
-              ))}
-            </div>
+  return (
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* Studio header */}
+      <div className="px-6 py-4 shrink-0" style={{ borderBottom: border }}>
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+            style={{ background: "linear-gradient(135deg, rgba(0,212,255,0.18) 0%, rgba(0,212,255,0.1) 100%)", border: "1px solid rgba(0,212,255,0.28)", color: isDark ? ACCENT : "#0098CC", boxShadow: "0 0 20px rgba(0,212,255,0.1)" }}>
+            <Ic n="layers" s={18} />
+          </div>
+          <div>
+            <h2 className="text-[16px] font-bold" style={{ color: isDark ? "white" : "#001F5B", letterSpacing: "-0.02em" }}>
+              RCA Attribute Creation Studio
+            </h2>
+            <p className="text-[11px]" style={{ color: isDark ? "rgba(0,212,255,0.6)" : "rgba(0,112,214,0.65)" }}>
+              AI-powered Revenue Cloud Advanced attribute generation & deployment orchestration
+            </p>
+          </div>
+          <div className="ml-auto hidden sm:flex items-center gap-2">
+            {["ProductAttributeDefinition", "8-Batch Deploy", "RCA v62.0"].map(badge => (
+              <span key={badge} className="text-[9px] font-mono px-2 py-0.5 rounded-full"
+                style={{ background: "rgba(0,212,255,0.07)", color: isDark ? ACCENT : "#0098CC", border: "1px solid rgba(0,212,255,0.18)" }}>
+                {badge}
+              </span>
+            ))}
           </div>
         </div>
+      </div>
 
-        {/* Prompt area */}
-        <div className="flex-1 overflow-y-auto px-6 py-6" style={{ scrollbarWidth: "thin" }}>
-          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-            className="max-w-2xl mx-auto">
+      {/* Single continuous scroll body — prompt, then generation, then deployment */}
+      <div className="flex-1 overflow-y-auto px-6 py-6" style={{ scrollbarWidth: "thin" }}>
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+          className="max-w-2xl mx-auto">
 
-            <div className="text-center mb-7">
-              <motion.div animate={{ opacity: [0.6, 1, 0.6] }} transition={{ duration: 2.8, repeat: Infinity }}
-                className="inline-flex items-center gap-2 text-[10px] font-mono tracking-widest uppercase mb-4 px-3 py-1.5 rounded-full"
-                style={{ background: "rgba(0,212,255,0.07)", color: ACCENT, border: "1px solid rgba(0,212,255,0.18)" }}>
-                <Ic n="sparkles" s={11} />
+          <div className="text-center mb-7">
+            <motion.div animate={{ opacity: [0.6, 1, 0.6] }} transition={{ duration: 2.8, repeat: Infinity }}
+              className="inline-flex items-center gap-2 text-[10px] font-mono tracking-widest uppercase mb-4 px-3 py-1.5 rounded-full"
+              style={{ background: "rgba(0,212,255,0.07)", color: isDark ? ACCENT : "#0098CC", border: "1px solid rgba(0,212,255,0.18)" }}>
+              <Ic n="sparkles" s={11} />
+              AI Attribute Requirement Prompt
+            </motion.div>
+            <h3 className="text-[22px] font-black mb-2" style={{ color: isDark ? "white" : "#001F5B", letterSpacing: "-0.03em" }}>
+              Describe your product attributes
+            </h3>
+            <p className="text-[12px]" style={{ color: isDark ? "rgba(100,130,170,0.65)" : "rgba(0,15,55,0.74)" }}>
+              The AI reasons like an RCA business architect — distinguishing configurable vs informational attributes, inferring datatypes, and filtering pricing, ERP, and logistics fields.
+            </p>
+          </div>
+
+          {/* Prompt box */}
+          <div className="rounded-2xl overflow-hidden mb-5"
+            style={{ background: isDark ? "rgba(4,10,22,0.82)" : "rgba(228,238,255,0.95)", border: isDark ? "1px solid rgba(0,212,255,0.18)" : "1px solid rgba(0,112,214,0.15)", boxShadow: isDark ? "0 0 40px rgba(0,212,255,0.05)" : "0 8px 32px rgba(0,112,214,0.06)", backdropFilter: "blur(16px)" }}>
+            <div className="px-5 pt-4 pb-1 flex items-center gap-2">
+              <span style={{ color: isDark ? ACCENT : "#0098CC" }}><Ic n="sparkles" s={13} /></span>
+              <span className="text-[11px] font-semibold" style={{ color: isDark ? "rgba(0,212,255,0.8)" : "rgba(0,112,214,0.8)" }}>
                 AI Attribute Requirement Prompt
-              </motion.div>
-              <h3 className="text-[22px] font-black mb-2" style={{ color: isDark ? "white" : "#001F5B", letterSpacing: "-0.03em" }}>
-                Describe your product attributes
-              </h3>
-              <p className="text-[12px]" style={{ color: isDark ? "rgba(100,130,170,0.65)" : "rgba(0,15,55,0.74)" }}>
-                The AI reasons like an RCA business architect — distinguishing configurable vs informational attributes, inferring datatypes, and filtering pricing, ERP, and logistics fields.
-              </p>
+              </span>
             </div>
-
-            {/* Prompt box */}
-            <div className="rounded-2xl overflow-hidden mb-5"
-              style={{ background: isDark ? "rgba(4,10,22,0.82)" : "rgba(228,238,255,0.95)", border: isDark ? "1px solid rgba(0,212,255,0.18)" : "1px solid rgba(0,112,214,0.15)", boxShadow: isDark ? "0 0 40px rgba(0,212,255,0.05)" : "0 8px 32px rgba(0,112,214,0.06)", backdropFilter: "blur(16px)" }}>
-              <div className="px-5 pt-4 pb-1 flex items-center gap-2">
-                <span style={{ color: ACCENT }}><Ic n="sparkles" s={13} /></span>
-                <span className="text-[11px] font-semibold" style={{ color: isDark ? "rgba(0,212,255,0.8)" : "rgba(0,112,214,0.8)" }}>
-                  AI Attribute Requirement Prompt
-                </span>
-              </div>
-              <textarea
-                ref={promptRef}
-                value={prompt}
-                onChange={e => setPrompt(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter" && e.metaKey) handleGenerate(); }}
-                placeholder={"Describe product attributes and configurable specifications in natural language…\n\nExample: \"Create configurable laptop attributes for RAM 8GB/16GB/32GB, Storage 256GB/512GB, RGB keyboard, WiFi enabled, and weight 1.5kg.\""}
-                rows={8}
-                className="w-full bg-transparent outline-none resize-none text-[13px] px-5 py-3"
-                style={{ color: isDark ? "rgba(200,225,245,0.9)" : "rgba(0,15,45,0.88)", minHeight: 180, scrollbarWidth: "thin" }}
-              />
-              <div className="flex items-center justify-between px-5 py-3"
-                style={{ borderTop: isDark ? "1px solid rgba(0,212,255,0.08)" : "1px solid rgba(0,112,214,0.07)" }}>
-                <span className="text-[10px]" style={{ color: isDark ? "rgba(90,120,160,0.5)" : "rgba(0,31,91,0.58)" }}>
-                  ⌘+Enter to generate
-                </span>
-                <motion.button onClick={handleGenerate} disabled={!prompt.trim()}
-                  className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-[12px] font-semibold cursor-pointer"
-                  style={{
-                    background: prompt.trim() ? `linear-gradient(135deg, ${ACCENT_CYAN} 0%, ${ACCENT} 100%)` : isDark ? "rgba(0,212,255,0.06)" : "rgba(0,112,214,0.05)",
-                    color: prompt.trim() ? "rgba(0,10,20,0.9)" : isDark ? "rgba(0,212,255,0.25)" : "rgba(0,112,214,0.2)",
-                  }}
-                  whileHover={prompt.trim() ? { scale: 1.04 } : {}}
-                  whileTap={prompt.trim() ? { scale: 0.97 } : {}}>
+            <textarea
+              ref={promptRef}
+              value={prompt}
+              onChange={e => setPrompt(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && e.metaKey) handleGenerate(); }}
+              placeholder={"Describe product attributes and configurable specifications in natural language…\n\nExample: \"Create configurable laptop attributes for RAM 8GB/16GB/32GB, Storage 256GB/512GB, RGB keyboard, WiFi enabled, and weight 1.5kg.\""}
+              rows={8}
+              className="w-full bg-transparent outline-none resize-none text-[13px] px-5 py-3"
+              style={{ color: isDark ? "rgba(200,225,245,0.9)" : "rgba(0,15,45,0.88)", minHeight: 180, scrollbarWidth: "thin" }}
+            />
+            <div className="flex items-center justify-between px-5 py-3"
+              style={{ borderTop: isDark ? "1px solid rgba(0,212,255,0.08)" : "1px solid rgba(0,112,214,0.07)" }}>
+              <span className="text-[10px]" style={{ color: isDark ? "rgba(90,120,160,0.5)" : "rgba(0,31,91,0.58)" }}>
+                ⌘+Enter to generate
+              </span>
+              <motion.button onClick={handleGenerate} disabled={!prompt.trim() || isGenerating}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-[12px] font-semibold cursor-pointer"
+                style={{
+                  background: prompt.trim() ? `linear-gradient(135deg, ${ACCENT_CYAN} 0%, ${ACCENT} 100%)` : isDark ? "rgba(0,212,255,0.06)" : "rgba(0,112,214,0.05)",
+                  color: prompt.trim() ? "rgba(0,10,20,0.9)" : isDark ? "rgba(0,212,255,0.25)" : "rgba(0,112,214,0.2)",
+                }}
+                whileHover={prompt.trim() ? { scale: 1.04 } : {}}
+                whileTap={prompt.trim() ? { scale: 0.97 } : {}}>
+                {isGenerating ? (
+                  <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }}>
+                    <Ic n="loader" s={13} />
+                  </motion.span>
+                ) : (
                   <Ic n="sparkles" s={13} />
-                  Generate Attributes
-                </motion.button>
-              </div>
+                )}
+                {isGenerating ? "Analyzing…" : parsedData ? "Regenerate Attributes" : "Generate Attributes"}
+              </motion.button>
             </div>
+          </div>
 
-            {/* Error */}
-            {genError && (
-              <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
-                className="mb-5 px-4 py-3 rounded-xl flex items-start gap-2"
-                style={{ background: "rgba(255,64,102,0.07)", border: "1px solid rgba(255,64,102,0.2)" }}>
-                <span style={{ color: "#FF4066", marginTop: 1 }}><Ic n="alert-circle" s={13} /></span>
-                <span className="text-[12px]" style={{ color: "#FF4066" }}>{genError}</span>
-              </motion.div>
-            )}
+          <div className="mb-5">
+            <PromptGuide isDark={isDark} config={promptGuideConfig.attribute} onUseExample={setPrompt} />
+          </div>
 
-            {/* Feature badges */}
+          {/* Error */}
+          {genError && (
+            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+              className="mb-5 px-4 py-3 rounded-xl flex items-start gap-2"
+              style={{ background: "rgba(255,64,102,0.07)", border: "1px solid rgba(255,64,102,0.2)" }}>
+              <span style={{ color: "#FF4066", marginTop: 1 }}><Ic n="alert-circle" s={13} /></span>
+              <span className="text-[12px]" style={{ color: "#FF4066" }}>{genError}</span>
+            </motion.div>
+          )}
+
+          {/* Feature badges */}
+          {!parsedData && !isGenerating && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {[
                 { label: "Semantic AI", desc: "RCA architect reasoning" },
@@ -1262,40 +1546,70 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
               ].map(f => (
                 <div key={f.label} className="px-3 py-2.5 rounded-xl"
                   style={{ background: isDark ? "rgba(0,212,255,0.04)" : "rgba(0,212,255,0.03)", border: "1px solid rgba(0,212,255,0.1)" }}>
-                  <div className="text-[10px] font-semibold mb-0.5" style={{ color: ACCENT }}>{f.label}</div>
+                  <div className="text-[10px] font-semibold mb-0.5" style={{ color: isDark ? ACCENT : "#0098CC" }}>{f.label}</div>
                   <div className="text-[9px]" style={{ color: isDark ? "rgba(90,120,160,0.6)" : "rgba(0,15,55,0.70)" }}>{f.desc}</div>
                 </div>
               ))}
             </div>
+          )}
+        </motion.div>
+
+        {/* Inline generation-in-progress indicator — replaces the old full-screen loading view */}
+        {isGenerating && (
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+            className="max-w-2xl mx-auto mt-6 rounded-2xl p-6 flex flex-col items-center gap-4 text-center"
+            style={{ background: isDark ? "rgba(0,212,255,0.04)" : "rgba(0,212,255,0.03)", border: "1px solid rgba(0,212,255,0.15)" }}>
+            <motion.div animate={{ rotate: 360 }} transition={{ duration: 1.2, repeat: Infinity, ease: "linear" }}
+              style={{ color: isDark ? ACCENT : "#0098CC" }}>
+              <Ic n="loader" s={30} />
+            </motion.div>
+            <div>
+              <p className="text-[13px] font-semibold mb-1" style={{ color: isDark ? "rgba(0,212,255,0.9)" : "rgba(0,112,214,0.85)" }}>
+                Semantic AI Analysis in Progress
+              </p>
+              <p className="text-[11px]" style={{ color: isDark ? "rgba(90,120,160,0.6)" : "rgba(0,15,55,0.70)" }}>
+                Reasoning like an RCA business architect…
+              </p>
+            </div>
+            <div className="flex flex-wrap justify-center gap-2 max-w-xs">
+              {["Eligibility Filtering", "Datatype Inference", "Configurable vs Informational", "Picklist Detection"].map((s, i) => (
+                <motion.span key={s} animate={{ opacity: [0.4, 1, 0.4] }} transition={{ duration: 1.6, repeat: Infinity, delay: i * 0.25 }}
+                  className="text-[9px] font-mono px-2 py-1 rounded-full"
+                  style={{ background: "rgba(0,212,255,0.06)", color: isDark ? ACCENT : "#0098CC", border: "1px solid rgba(0,212,255,0.15)" }}>
+                  {s}
+                </motion.span>
+              ))}
+            </div>
           </motion.div>
-        </div>
-      </div>
-    );
-  }
+        )}
 
-  /* ── Post-generation workspace ──────────────────────────────────────────── */
-  const TABS = [
-    { id: "attributes" as const, label: "Attributes",  icon: "list",     count: parsedData.attributes.length },
-    { id: "execution"  as const, label: "Execution",   icon: "activity", count: completedBatches > 0 ? completedBatches : undefined },
-    { id: "console"    as const, label: "Console",     icon: "terminal", count: allLogs.length > 0 ? allLogs.length : undefined },
-    { id: "product"    as const, label: "Product",     icon: "package",  count: batchCtx.productId ? 1 : undefined },
-    { id: "skipped"    as const, label: "Skipped",     icon: "info",     count: parsedData.skipped?.length ?? 0 },
-  ];
+        {/* Product Existence Validation — appears once an attribute has been generated; gates deployment below */}
+        {parsedData && !isGenerating && (
+          <div className="max-w-2xl mx-auto mt-6">
+            <ProductValidationPanel
+              isDark={isDark}
+              productName={parsedData.productName}
+              state={productValidation}
+              onResolveNotFound={() => setShowProductModal(true)}
+              onRetry={() => runProductValidation(parsedData.productName)}
+            />
+          </div>
+        )}
 
-  return (
-    <div className="flex flex-col h-full overflow-hidden">
+      {parsedData && !isGenerating && (
+      <div className="mt-6">
       {/* Compact top header */}
       <div className="shrink-0 px-5 pt-3 pb-0" style={{ borderBottom: border }}>
         <div className="flex items-center gap-2 mb-2.5 flex-wrap">
           <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0"
-            style={{ background: "linear-gradient(135deg, rgba(0,212,255,0.18), rgba(0,212,255,0.1))", border: "1px solid rgba(0,212,255,0.25)", color: ACCENT }}>
+            style={{ background: "linear-gradient(135deg, rgba(0,212,255,0.18), rgba(0,212,255,0.1))", border: "1px solid rgba(0,212,255,0.25)", color: isDark ? ACCENT : "#0098CC" }}>
             <Ic n="layers" s={14} />
           </div>
           <span className="text-[13px] font-bold" style={{ color: isDark ? "white" : "#001F5B", letterSpacing: "-0.02em" }}>
             RCA Attribute Creation Studio
           </span>
           <span className="text-[9px] font-mono px-2 py-0.5 rounded-full"
-            style={{ background: "rgba(0,212,255,0.1)", color: ACCENT, border: "1px solid rgba(0,212,255,0.2)" }}>
+            style={{ background: "rgba(0,212,255,0.1)", color: isDark ? ACCENT : "#0098CC", border: "1px solid rgba(0,212,255,0.2)" }}>
             {parsedData.attributes.length} ATTRS · {completedBatches}/9 BATCHES
           </span>
           <motion.button onClick={() => setShowPreview(true)}
@@ -1306,19 +1620,21 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
             Preview JSON
           </motion.button>
           <motion.button
-            onClick={handleDeployAll}
-            disabled={isDeployingAll}
+            onClick={() => handleDeployAll()}
+            disabled={isDeployingAll || !isProductResolved(productValidation)}
+            title={!isProductResolved(productValidation) ? "Resolve Product Validation above before deploying" : undefined}
             className="flex items-center gap-1 text-[10px] font-semibold px-2.5 py-1.5 rounded-lg cursor-pointer"
             style={{
-              background: isDeployingAll
+              background: isDeployingAll || !isProductResolved(productValidation)
                 ? (isDark ? "rgba(0,212,255,0.07)" : "rgba(0,212,255,0.05)")
                 : `linear-gradient(135deg, ${ACCENT_CYAN} 0%, ${ACCENT} 100%)`,
-              color: isDeployingAll
+              color: isDeployingAll || !isProductResolved(productValidation)
                 ? (isDark ? "rgba(0,212,255,0.3)" : "rgba(0,112,214,0.25)")
                 : "rgba(0,10,20,0.9)",
+              cursor: isDeployingAll || !isProductResolved(productValidation) ? "not-allowed" : "pointer",
             }}
-            whileHover={!isDeployingAll ? { scale: 1.03 } : {}}
-            whileTap={!isDeployingAll ? { scale: 0.97 } : {}}>
+            whileHover={!isDeployingAll && isProductResolved(productValidation) ? { scale: 1.03 } : {}}
+            whileTap={!isDeployingAll && isProductResolved(productValidation) ? { scale: 0.97 } : {}}>
             {isDeployingAll ? (
               <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }}>
                 <Ic n="loader" s={10} />
@@ -1349,9 +1665,9 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
                 onClick={() => setActiveTab(tab.id)}
                 className="flex items-center gap-1.5 px-3 py-2 text-[11px] font-medium cursor-pointer rounded-t-lg"
                 style={{
-                  color: active ? ACCENT : isDark ? "rgba(90,120,160,0.65)" : "rgba(0,15,55,0.74)",
+                  color: active ? (isDark ? ACCENT : "#0098CC") : isDark ? "rgba(90,120,160,0.65)" : "rgba(0,15,55,0.74)",
                   background: active ? (isDark ? "rgba(0,212,255,0.08)" : "rgba(0,212,255,0.06)") : "transparent",
-                  borderBottom: active ? `2px solid ${ACCENT}` : "2px solid transparent",
+                  borderBottom: active ? `2px solid ${isDark ? ACCENT : "#0098CC"}` : "2px solid transparent",
                 }}
                 whileHover={!active ? { background: isDark ? "rgba(0,212,255,0.04)" : "rgba(0,212,255,0.03)" } : {}}
                 whileTap={{ scale: 0.97 }}>
@@ -1359,7 +1675,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
                 {tab.label}
                 {tab.count !== undefined && tab.count > 0 && (
                   <span className="text-[9px] px-1.5 py-0.5 rounded-full"
-                    style={{ background: active ? "rgba(0,212,255,0.18)" : isDark ? "rgba(90,120,160,0.14)" : "rgba(0,31,91,0.08)", color: active ? ACCENT : isDark ? "rgba(120,150,180,0.7)" : "rgba(0,15,55,0.74)" }}>
+                    style={{ background: active ? "rgba(0,212,255,0.18)" : isDark ? "rgba(90,120,160,0.14)" : "rgba(0,31,91,0.08)", color: active ? (isDark ? ACCENT : "#0098CC") : isDark ? "rgba(120,150,180,0.7)" : "rgba(0,15,55,0.74)" }}>
                     {tab.count}
                   </span>
                 )}
@@ -1380,7 +1696,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
               {/* Header row */}
               <div className="flex items-center gap-2 mb-3 flex-wrap">
                 <span className="text-[10px] font-semibold tracking-widest uppercase flex-1"
-                  style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(0,112,214,0.45)" }}>
+                  style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(15,45,100,0.72)" }}>
                   {attrView === "table" ? "AI Analysis Overview" : "Generated Attribute Definitions"}
                 </span>
                 {/* Datatype badges (cards view only) */}
@@ -1409,7 +1725,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
                         background: attrView === v
                           ? isDark ? "rgba(0,212,255,0.12)" : "rgba(0,212,255,0.1)"
                           : "transparent",
-                        color: attrView === v ? ACCENT : isDark ? "rgba(0,212,255,0.4)" : "rgba(0,112,214,0.45)",
+                        color: attrView === v ? (isDark ? ACCENT : "#0098CC") : isDark ? "rgba(0,212,255,0.4)" : "rgba(15,45,100,0.72)",
                       }}
                       whileTap={{ scale: 0.96 }}>
                       {v === "cards" ? "Cards" : "Analysis"}
@@ -1444,7 +1760,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
               exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.2 }}>
               <div className="flex items-center justify-between mb-3">
                 <span className="text-[10px] font-semibold tracking-widest uppercase"
-                  style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(0,112,214,0.45)" }}>
+                  style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(15,45,100,0.72)" }}>
                   Batch Execution Timeline
                 </span>
                 <span className="text-[10px] font-mono"
@@ -1475,8 +1791,8 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
               <div className="mb-4 rounded-xl p-3"
                 style={{ background: isDark ? "rgba(0,212,255,0.04)" : "rgba(0,212,255,0.03)", border: "1px solid rgba(0,212,255,0.12)" }}>
                 <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-[10px] font-medium" style={{ color: ACCENT }}>Overall Deployment Progress</span>
-                  <span className="text-[10px] font-mono font-bold" style={{ color: ACCENT }}>
+                  <span className="text-[10px] font-medium" style={{ color: isDark ? ACCENT : "#0098CC" }}>Overall Deployment Progress</span>
+                  <span className="text-[10px] font-mono font-bold" style={{ color: isDark ? ACCENT : "#0098CC" }}>
                     {Math.round((completedBatches / 9) * 100)}%
                   </span>
                 </div>
@@ -1518,7 +1834,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
               exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.2 }}>
               <div className="flex items-center gap-2 mb-3 flex-wrap">
                 <span className="text-[10px] font-semibold tracking-widest uppercase flex-1"
-                  style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(0,112,214,0.45)" }}>
+                  style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(15,45,100,0.72)" }}>
                   Deployment Console
                 </span>
                 <motion.button onClick={() => setShowGraph(v => !v)}
@@ -1592,19 +1908,19 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
             <motion.div key="product" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.2 }}>
               <span className="block text-[10px] font-semibold tracking-widest uppercase mb-3"
-                style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(0,112,214,0.45)" }}>
+                style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(15,45,100,0.72)" }}>
                 Product Preview &amp; Deployment Summary
               </span>
 
               {/* Product Info Card */}
               <div className="rounded-xl p-3 mb-3"
-                style={{ background: isDark ? "rgba(0,212,255,0.04)" : "rgba(0,212,255,0.03)", border: "1px solid rgba(0,212,255,0.18)" }}>
+                style={{ background: isDark ? "rgba(0,212,255,0.04)" : "rgba(0,212,255,0.03)", border: "1px solid rgba(0,212,255,0.18)", boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)" }}>
                 <div className="flex items-center gap-2 mb-2.5">
-                  <span style={{ color: ACCENT }}><Ic n="package" s={12} /></span>
-                  <span className="text-[10px] font-bold tracking-widest uppercase" style={{ color: ACCENT }}>Product Details</span>
+                  <span style={{ color: isDark ? ACCENT : "#0098CC" }}><Ic n="package" s={12} /></span>
+                  <span className="text-[10px] font-bold tracking-widest uppercase" style={{ color: isDark ? ACCENT : "#0098CC" }}>Product Details</span>
                   {batchCtx.productId && (
                     <span className="ml-auto text-[9px] font-mono px-2 py-0.5 rounded-full"
-                      style={{ background: "rgba(0,212,255,0.1)", color: ACCENT, border: "1px solid rgba(0,212,255,0.22)" }}>
+                      style={{ background: "rgba(0,212,255,0.1)", color: isDark ? ACCENT : "#0098CC", border: "1px solid rgba(0,212,255,0.22)" }}>
                       ID: {batchCtx.productId}
                     </span>
                   )}
@@ -1623,7 +1939,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
                   ].map(f => (
                     <div key={f.label} className="flex flex-col gap-0.5">
                       <span className="text-[9px] font-medium tracking-wider uppercase"
-                        style={{ color: isDark ? "rgba(0,212,255,0.4)" : "rgba(0,112,214,0.4)" }}>{f.label}</span>
+                        style={{ color: isDark ? "rgba(0,212,255,0.4)" : "rgba(15,45,100,0.72)" }}>{f.label}</span>
                       <span className="text-[11px] font-semibold truncate"
                         style={{ color: isDark ? "rgba(220,240,230,0.88)" : "#001F5B" }}>{f.value || "—"}</span>
                     </div>
@@ -1633,10 +1949,10 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
 
               {/* Attribute Mapping Summary */}
               <div className="rounded-xl overflow-hidden mb-3"
-                style={{ border: isDark ? "1px solid rgba(0,212,255,0.12)" : "1px solid rgba(0,71,171,0.20)" }}>
+                style={{ border: isDark ? "1px solid rgba(0,212,255,0.12)" : "1px solid rgba(0,71,171,0.20)", boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)" }}>
                 <div className="flex items-center gap-2 px-3 py-2"
                   style={{ background: isDark ? "rgba(0,212,255,0.05)" : "rgba(0,71,171,0.09)", borderBottom: isDark ? "1px solid rgba(0,212,255,0.1)" : "1px solid rgba(0,71,171,0.16)" }}>
-                  <span className="text-[9px] font-bold tracking-widest uppercase flex-1" style={{ color: ACCENT_CYAN }}>
+                  <span className="text-[9px] font-bold tracking-widest uppercase flex-1" style={{ color: isDark ? ACCENT_CYAN : "#0098CC" }}>
                     Attribute Mapping ({Object.keys(batchCtx.padIds ?? {}).length}/{parsedData.attributes.length} PADs deployed)
                   </span>
                 </div>
@@ -1656,7 +1972,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
                         </span>
                         {padId ? (
                           <span className="text-[9px] font-mono px-1.5 py-0.5 rounded shrink-0"
-                            style={{ background: "rgba(0,212,255,0.08)", color: ACCENT, border: "1px solid rgba(0,212,255,0.2)" }}>
+                            style={{ background: "rgba(0,212,255,0.08)", color: isDark ? ACCENT : "#0098CC", border: "1px solid rgba(0,212,255,0.2)" }}>
                             PAD ✓
                           </span>
                         ) : (
@@ -1667,7 +1983,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
                         )}
                         {pcaId && (
                           <span className="text-[9px] font-mono px-1.5 py-0.5 rounded shrink-0"
-                            style={{ background: "rgba(0,212,255,0.08)", color: ACCENT_CYAN, border: "1px solid rgba(0,212,255,0.18)" }}>
+                            style={{ background: "rgba(0,212,255,0.08)", color: isDark ? ACCENT_CYAN : "#0098CC", border: "1px solid rgba(0,212,255,0.18)" }}>
                             PCA ✓
                           </span>
                         )}
@@ -1739,7 +2055,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
               {!batchCtx.productId && (
                 <div className="rounded-xl p-8 text-center flex flex-col items-center gap-3"
                   style={{ background: isDark ? "rgba(0,212,255,0.03)" : "rgba(0,212,255,0.02)", border: "1px solid rgba(0,212,255,0.1)" }}>
-                  <span style={{ color: "rgba(0,212,255,0.4)" }}><Ic n="package" s={28} /></span>
+                  <span style={{ color: isDark ? "rgba(0,212,255,0.4)" : "rgba(0,112,214,0.45)" }}><Ic n="package" s={28} /></span>
                   <p className="text-[12px] font-medium" style={{ color: isDark ? "rgba(0,212,255,0.55)" : "rgba(0,112,214,0.55)" }}>
                     Product not yet deployed — run Batches 1–6 to create the product and see the preview here
                   </p>
@@ -1754,14 +2070,14 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
               exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.2 }}>
               <div className="mb-3">
                 <span className="text-[10px] font-semibold tracking-widest uppercase"
-                  style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(0,112,214,0.45)" }}>
+                  style={{ color: isDark ? "rgba(0,212,255,0.5)" : "rgba(15,45,100,0.72)" }}>
                   Skipped / Rejected Attributes
                 </span>
               </div>
               {(!parsedData.skipped || parsedData.skipped.length === 0) ? (
                 <div className="rounded-xl p-8 text-center flex flex-col items-center gap-3"
                   style={{ background: isDark ? "rgba(0,212,255,0.03)" : "rgba(0,212,255,0.02)", border: "1px solid rgba(0,212,255,0.1)" }}>
-                  <span style={{ color: ACCENT }}><Ic n="check-circle" s={28} /></span>
+                  <span style={{ color: isDark ? ACCENT : "#0098CC" }}><Ic n="check-circle" s={28} /></span>
                   <p className="text-[12px] font-medium" style={{ color: isDark ? "rgba(0,212,255,0.7)" : "rgba(0,112,214,0.7)" }}>
                     No fields rejected — all attributes passed eligibility filtering
                   </p>
@@ -1825,7 +2141,7 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
               <div className="flex items-center gap-3 px-5 py-4 shrink-0"
                 style={{ borderBottom: isDark ? "1px solid rgba(0,212,255,0.12)" : "1px solid rgba(0,112,214,0.1)" }}>
                 <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
-                  style={{ background: "linear-gradient(135deg, rgba(0,212,255,0.18), rgba(0,212,255,0.1))", border: "1px solid rgba(0,212,255,0.28)", color: ACCENT_CYAN }}>
+                  style={{ background: "linear-gradient(135deg, rgba(0,212,255,0.18), rgba(0,212,255,0.1))", border: "1px solid rgba(0,212,255,0.28)", color: isDark ? ACCENT_CYAN : "#0098CC" }}>
                   <Ic n="eye" s={15} />
                 </div>
                 <div className="flex-1 min-w-0">
@@ -1900,6 +2216,120 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
                   <Ic n="copy" s={11} />
                   Copy All JSON
                 </motion.button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      </div>
+      )}
+      </div>
+
+      {/* Product Not Found modal — the mandatory gate before any batch executes (Section 28) */}
+      <AnimatePresence>
+        {showProductModal && parsedData && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(10px)" }}>
+            <motion.div
+              initial={{ scale: 0.94, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.94, opacity: 0 }}
+              transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+              className="w-full max-w-md rounded-2xl p-6"
+              style={{
+                background: isDark ? "rgba(4,10,22,0.98)" : "rgba(255,255,255,0.98)",
+                border: isDark ? "1px solid rgba(0,212,255,0.22)" : "1px solid rgba(0,112,214,0.15)",
+                boxShadow: "0 28px 90px rgba(0,0,0,0.55)",
+              }}>
+              <div className="flex items-center gap-2 mb-3">
+                <span style={{ color: "#F59E0B" }}><Ic n="alert-circle" s={18} /></span>
+                <h3 className="text-[15px] font-bold" style={{ color: isDark ? "white" : "#001F5B" }}>Product Not Found</h3>
+              </div>
+              <p className="text-[12.5px] mb-5" style={{ color: isDark ? "rgba(170,190,220,0.82)" : "rgba(0,15,45,0.78)" }}>
+                The product &quot;{parsedData.productName}&quot; does not exist in your Salesforce organization.
+                Would you like to create this product and continue creating the attribute?
+              </p>
+              <div className="flex flex-col gap-2">
+                <motion.button onClick={handleCreateProduct}
+                  className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[12.5px] font-semibold cursor-pointer"
+                  style={{ background: `linear-gradient(135deg, ${ACCENT_CYAN} 0%, ${ACCENT} 100%)`, color: "rgba(0,10,20,0.9)" }}
+                  whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                  <Ic n="plus" s={13} /> Yes, Create Product
+                </motion.button>
+                <motion.button
+                  onClick={() => { setShowProductModal(false); setShowProductSearch(true); }}
+                  className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[12.5px] font-semibold cursor-pointer"
+                  style={{ color: isDark ? "rgba(0,212,255,0.75)" : "rgba(0,112,214,0.7)", border: isDark ? "1px solid rgba(0,212,255,0.2)" : "1px solid rgba(0,112,214,0.16)" }}
+                  whileHover={{ background: "rgba(0,212,255,0.06)" }} whileTap={{ scale: 0.98 }}>
+                  <Ic n="search" s={13} /> No, Choose Existing Product
+                </motion.button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Select an Existing Product — reuses the same pricebook-scoped search Quotes/Bundles already use */}
+      <AnimatePresence>
+        {showProductSearch && parsedData && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(10px)" }}
+            onClick={() => setShowProductSearch(false)}>
+            <motion.div
+              initial={{ scale: 0.94, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.94, opacity: 0 }}
+              transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+              className="w-full max-w-md rounded-2xl p-6"
+              style={{
+                background: isDark ? "rgba(4,10,22,0.98)" : "rgba(255,255,255,0.98)",
+                border: isDark ? "1px solid rgba(0,212,255,0.22)" : "1px solid rgba(0,112,214,0.15)",
+                boxShadow: "0 28px 90px rgba(0,0,0,0.55)",
+              }}
+              onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-[15px] font-bold" style={{ color: isDark ? "white" : "#001F5B" }}>Select an Existing Product</h3>
+                <button onClick={() => setShowProductSearch(false)} style={{ color: isDark ? "rgba(0,212,255,0.6)" : "rgba(0,112,214,0.55)", background: "transparent", border: "none", cursor: "pointer" }}>
+                  <Ic n="x" s={14} />
+                </button>
+              </div>
+              <input
+                autoFocus
+                value={productSearchTerm}
+                onChange={e => setProductSearchTerm(e.target.value)}
+                placeholder={`Search by name or code… (e.g. "${parsedData.productName}")`}
+                className="w-full text-[12.5px] px-3 py-2.5 rounded-lg outline-none mb-3"
+                style={{
+                  background: isDark ? "rgba(0,15,40,0.7)" : "rgba(255,255,255,0.95)",
+                  border: isDark ? "1px solid rgba(0,112,214,0.25)" : "1px solid rgba(0,71,171,0.18)",
+                  color: isDark ? "rgba(220,235,255,0.95)" : "rgba(0,15,60,0.9)",
+                }}
+              />
+              <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto" style={{ scrollbarWidth: "thin" }}>
+                {productSearching && (
+                  <div className="flex items-center gap-2 text-[11.5px] px-2 py-3" style={{ color: isDark ? "rgba(90,120,160,0.7)" : "rgba(0,31,91,0.6)" }}>
+                    <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }}><Ic n="loader" s={12} /></motion.span>
+                    Searching…
+                  </div>
+                )}
+                {!productSearching && productSearchResults.length === 0 && (
+                  <p className="text-[11.5px] px-2 py-3" style={{ color: isDark ? "rgba(90,120,160,0.6)" : "rgba(0,31,91,0.55)" }}>
+                    No matching products found in Salesforce.
+                  </p>
+                )}
+                {!productSearching && productSearchResults.map(p => (
+                  <button key={p.id} onClick={() => handleSelectExistingProduct(p)}
+                    className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-left cursor-pointer"
+                    style={{ border: isDark ? "1px solid rgba(0,212,255,0.12)" : "1px solid rgba(0,112,214,0.1)", background: "transparent" }}>
+                    <div className="min-w-0">
+                      <div className="text-[12px] font-semibold truncate" style={{ color: isDark ? "rgba(220,235,255,0.92)" : "rgba(0,15,45,0.88)" }}>{p.name}</div>
+                      <div className="text-[10.5px]" style={{ color: isDark ? "rgba(90,120,160,0.65)" : "rgba(0,31,91,0.58)" }}>{p.productCode ?? "—"}{p.family ? ` · ${p.family}` : ""}</div>
+                    </div>
+                    <span className="text-[11px] font-mono shrink-0" style={{ color: isDark ? ACCENT : "#0098CC" }}>${p.listPrice.toLocaleString()}</span>
+                  </button>
+                ))}
               </div>
             </motion.div>
           </motion.div>

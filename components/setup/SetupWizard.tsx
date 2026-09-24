@@ -73,7 +73,7 @@ function Field({
             background: isDark ? "rgba(0,0,0,0.22)" : "rgba(0,31,91,0.04)",
             border: focused
               ? "1px solid rgba(30,144,255,0.45)"
-              : isDark ? "1px solid rgba(30,144,255,0.12)" : "1px solid rgba(0,71,171,0.12)",
+              : isDark ? "1px solid rgba(30,144,255,0.12)" : "1px solid rgba(0,71,171,0.22)",
             color: isDark ? "rgba(200,215,230,0.95)" : "#001F5B",
             boxShadow: focused ? "0 0 0 3px rgba(30,144,255,0.08)" : "none",
             transition: "border 0.2s, box-shadow 0.2s",
@@ -169,7 +169,7 @@ function Steps({ step, isDark }: { step: number; isDark: boolean }) {
                 {done ? "✓" : n}
               </div>
               <span className="text-[12px] font-medium"
-                style={{ color: active ? (isDark ? "white" : "#001F5B") : "rgba(155,185,220,0.9)" }}>
+                style={{ color: active ? (isDark ? "white" : "#001F5B") : isDark ? "rgba(155,185,220,0.9)" : "rgba(15,45,100,0.55)" }}>
                 {label}
               </span>
             </div>
@@ -458,7 +458,7 @@ export function SetupWizard() {
         <div className="relative z-10 flex flex-col items-center text-center px-10 max-w-lg">
           {/* Left panel is always dark — force the on-dark lockup */}
           <BrandLockup isDark height={72} className="mb-8" />
-          <OmnionMascot size={240} mood="float" particleColor={isDark ? undefined : "#010B1E"} />
+          <OmnionMascot size={240} mood="float" particleColor={isDark ? undefined : "#EAF6FF"} />
           <div className="text-[11px] font-medium tracking-widest uppercase mb-3 mt-2"
             style={{ color: "rgba(30,144,255,0.7)" }}>
             Almost there
@@ -524,7 +524,7 @@ export function SetupWizard() {
             <button
               onClick={handleSignOut}
               className="text-[11px] font-medium cursor-pointer hover:opacity-75 shrink-0 ml-3"
-              style={{ color: "#3AABFF", textDecoration: "underline", textUnderlineOffset: "2px" }}
+              style={{ color: isDark ? "#3AABFF" : "#1789B0", textDecoration: "underline", textUnderlineOffset: "2px" }}
             >
               Sign out
             </button>
@@ -536,7 +536,7 @@ export function SetupWizard() {
               background: isDark ? "rgba(5,12,25,0.7)" : "rgba(255,255,255,0.9)",
               backdropFilter: "blur(24px)",
               WebkitBackdropFilter: "blur(24px)",
-              border: isDark ? "1px solid rgba(30,144,255,0.18)" : "1px solid rgba(0,71,171,0.12)",
+              border: isDark ? "1px solid rgba(30,144,255,0.18)" : "1px solid rgba(0,71,171,0.22)",
               boxShadow: isDark
                 ? "0 24px 80px rgba(0,0,0,0.6)"
                 : "0 24px 80px rgba(0,31,91,0.12)",
@@ -555,7 +555,7 @@ export function SetupWizard() {
                 style={{ color: isDark ? "white" : "#001F5B", letterSpacing: "-0.025em" }}>
                 Setup
               </h2>
-              <p className="text-sm mb-6" style={{ color: isDark ? "rgba(185,208,235,0.85)" : "rgba(0,31,91,0.62)" }}>
+              <p className="text-sm mb-6" style={{ color: isDark ? "rgba(185,208,235,0.85)" : "rgba(15,45,100,0.72)" }}>
                 Complete these to continue to the platform.
               </p>
 
@@ -571,12 +571,12 @@ export function SetupWizard() {
                     transition={{ duration: 0.25 }}
                     className="flex flex-col gap-4"
                   >
-                    <p className="text-[12px] leading-relaxed" style={{ color: isDark ? "rgba(185,208,235,0.82)" : "rgba(0,31,91,0.62)" }}>
+                    <p className="text-[12px] leading-relaxed" style={{ color: isDark ? "rgba(185,208,235,0.82)" : "rgba(15,45,100,0.72)" }}>
                       OmniVerse signs you into Salesforce through your own Connected App. Create one (~2 min) and paste its credentials below.
                     </p>
 
                     {/* Collapsible guide */}
-                    <div className="rounded-xl overflow-hidden" style={{ border: isDark ? "1px solid rgba(30,144,255,0.14)" : "1px solid rgba(0,71,171,0.12)" }}>
+                    <div className="rounded-xl overflow-hidden" style={{ border: isDark ? "1px solid rgba(30,144,255,0.14)" : "1px solid rgba(0,71,171,0.22)" }}>
                       <button
                         type="button"
                         onClick={() => setShowGuide((v) => !v)}
@@ -599,7 +599,7 @@ export function SetupWizard() {
                             <code className="flex-1 truncate rounded-md px-2 py-1.5 text-[11px] font-mono" style={{ background: isDark ? "rgba(0,0,0,0.3)" : "rgba(0,31,91,0.06)", color: isDark ? "rgba(200,215,230,0.95)" : "#001F5B" }}>
                               {callbackUrl}
                             </code>
-                            <button type="button" onClick={copyCallback} className="text-[11px] font-medium px-2.5 py-1.5 rounded-md cursor-pointer shrink-0" style={{ color: "#3AABFF", border: "1px solid rgba(30,144,255,0.3)" }}>
+                            <button type="button" onClick={copyCallback} className="text-[11px] font-medium px-2.5 py-1.5 rounded-md cursor-pointer shrink-0" style={{ color: isDark ? "#3AABFF" : "#1789B0", border: "1px solid rgba(30,144,255,0.3)" }}>
                               {copied ? "Copied!" : "Copy"}
                             </button>
                           </div>
@@ -625,7 +625,7 @@ export function SetupWizard() {
                       mono
                       rightNode={<EyeButton show={showSecret} onToggle={() => setShowSecret(!showSecret)} />}
                     />
-                    <p className="text-[11px]" style={{ color: isDark ? "rgba(160,188,220,0.8)" : "rgba(0,31,91,0.6)" }}>
+                    <p className="text-[11px]" style={{ color: isDark ? "rgba(160,188,220,0.8)" : "rgba(15,45,100,0.72)" }}>
                       Stored securely server-side (httpOnly), never exposed to the browser.
                     </p>
                     {error && <p className="text-[12px]" style={{ color: "#FF7575" }}>{error}</p>}
@@ -639,7 +639,7 @@ export function SetupWizard() {
                       type="button"
                       onClick={() => { setError(""); setShowTokenFallback(true); setStep(2); }}
                       className="text-[11px] cursor-pointer hover:opacity-75 self-center"
-                      style={{ color: isDark ? "rgba(90,122,154,0.7)" : "rgba(74,106,160,0.6)", textDecoration: "underline", textUnderlineOffset: "2px" }}
+                      style={{ color: isDark ? "rgba(90,122,154,0.7)" : "rgba(15,45,100,0.72)", textDecoration: "underline", textUnderlineOffset: "2px" }}
                     >
                       Skip — connect with an access token instead
                     </button>
@@ -698,7 +698,7 @@ export function SetupWizard() {
                     <button
                       onClick={() => { setError(""); setStep(1); }}
                       className="text-[11px] cursor-pointer hover:opacity-75 self-center"
-                      style={{ color: isDark ? "rgba(90,122,154,0.6)" : "rgba(74,106,160,0.55)", textDecoration: "underline", textUnderlineOffset: "2px" }}
+                      style={{ color: isDark ? "rgba(90,122,154,0.6)" : "rgba(15,45,100,0.72)", textDecoration: "underline", textUnderlineOffset: "2px" }}
                     >
                       Back to Connected App
                     </button>
@@ -733,7 +733,7 @@ export function SetupWizard() {
                       mono
                       rightNode={<EyeButton show={showKey} onToggle={() => setShowKey(!showKey)} />}
                     />
-                    <p className="text-[11px]" style={{ color: isDark ? "rgba(160,188,220,0.82)" : "rgba(0,31,91,0.6)" }}>
+                    <p className="text-[11px]" style={{ color: isDark ? "rgba(160,188,220,0.82)" : "rgba(15,45,100,0.72)" }}>
                       Used for AI generation. Stored securely server-side, never exposed to the browser.
                     </p>
                     {error && <p className="text-[12px]" style={{ color: "#FF7575" }}>{error}</p>}
@@ -746,7 +746,7 @@ export function SetupWizard() {
                     <button
                       onClick={() => { setError(""); setStep(2); }}
                       className="text-[11px] cursor-pointer hover:opacity-75 self-center"
-                      style={{ color: isDark ? "rgba(90,122,154,0.6)" : "rgba(74,106,160,0.55)", textDecoration: "underline", textUnderlineOffset: "2px" }}
+                      style={{ color: isDark ? "rgba(90,122,154,0.6)" : "rgba(15,45,100,0.72)", textDecoration: "underline", textUnderlineOffset: "2px" }}
                     >
                       Back to Salesforce
                     </button>

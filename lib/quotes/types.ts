@@ -130,6 +130,8 @@ export interface SellingModelOption {
   isActive: boolean;
   requiresBillingFrequency: boolean;
   type: SellingModelType;
+  /** True when `id` is a synthetic placeholder (`toDirectOption`'s `direct:<id>`), not a real ProductSellingModelOption Id — never send `id` to Salesforce as a reference value when this is true; `sellingModelId` (the ProductSellingModel Id) is always real regardless. */
+  isSynthetic?: boolean;
 }
 
 export interface SellingModelResolution {
@@ -557,7 +559,10 @@ export interface QuoteLineItemDraft {
   unitPrice: number; // manual-pricing orgs only; ignored/overwritten by repricing otherwise
   billingFrequency: string | null;
   subscriptionTerm: number | null;
+  /** The ProductSellingModelOption's own Id — real Salesforce Id only, NEVER a synthetic `toDirectOption` placeholder (callers must null this out rather than send a fake id). */
   sellingModelOptionId: string | null;
+  /** The (parent) ProductSellingModel's Id — always a real Salesforce Id when a selling model was resolved, independent of whether a ProductSellingModelOption row exists. Optional: this type is also aliased as OrderLineItemDraft (lib/orders/types.ts), whose own creation path doesn't populate it — Quote code always sets it explicitly. */
+  sellingModelId?: string | null;
   attributeValues: Record<string, string>; // attributeId -> value
   pricingInclusion: boolean; // display-only suppression, never affects payload
   pricebookStatus: PricebookResolutionStatus;
@@ -600,6 +605,9 @@ export interface QuoteLineItemFieldSchema {
   netTotalPriceField: FieldRef | null;
   /** Revenue Cloud's own read-only pricing-run status (e.g. "Fresh"/"Stale"/"Error") — never written by this app, resolved purely for diagnostics/display so a stale-vs-repriced line is distinguishable. Null on orgs with no such field. */
   pricingStatusField: FieldRef | null;
+  /** Reference to the PARENT ProductSellingModel (Revenue Cloud's standard QuoteLineItem.SellingModelId shape) — write target is the draft's `sellingModelId`, always a real Id. Distinct from sellingModelOptionField below; a real org can have either, both, or neither. */
+  sellingModelField: FieldRef | null;
+  /** Reference to the CHILD ProductSellingModelOption — write target is the draft's `sellingModelOptionId`, which is null whenever resolution only produced a synthetic (non-queryable) option id, never a fabricated reference. */
   sellingModelOptionField: FieldRef | null;
   billingFrequencyField: FieldRef | null;
   subscriptionTermField: FieldRef | null;
@@ -608,6 +616,8 @@ export interface QuoteLineItemFieldSchema {
   pricingModel: PricingModel;
   /** The full Describe-based evidence behind `pricingModel` — never discard this after computing the model, so a wrong classification can be diagnosed from real org metadata instead of guessed at again. */
   pricingModelDiagnosis: PricingModelDiagnosis;
+  /** Required+createable QuoteLineItem fields with no explicit mapping above (mirrors QuoteLineRelationshipFieldSchema.requiredFieldsNotMapped) — an org-specific required field this curated list doesn't know about would otherwise be silently omitted from every create payload, which can succeed at the raw API layer while leaving Salesforce's own Revenue Cloud configuration/pricing validation (e.g. native "Refresh Prices") unable to make sense of the record. */
+  requiredFieldsNotMapped: FieldRef[];
 }
 
 export interface QuoteLineItemAttributeFieldSchema {

@@ -132,6 +132,15 @@ export async function resolveBillingFrequency(
   lineItemObject: LineItemObjectName = "QuoteLineItem",
 ): Promise<BillingFrequencyResolution> {
   const attempts: { step: string; outcome: string }[] = [];
+  // §TEMP DIAGNOSTIC (remove once Antivirus-class Billing Frequency
+  // failures are confirmed resolved): logs the exact resolution outcome —
+  // which of the 6 sources matched (or none), the raw Salesforce value,
+  // and the normalized value actually returned. Never logs credentials/tokens.
+  console.log(`[BILLING FREQUENCY SOURCE] productId=${productId} sellingModelId=${sellingModelId ?? "null"} sellingModelName=${sellingModelName ?? "null"} lineItemObject=${lineItemObject} — resolution starting.`);
+  function logAndReturn(result: BillingFrequencyResolution): BillingFrequencyResolution {
+    console.log(`[BILLING FREQUENCY SOURCE] productId=${productId} sellingModelId=${sellingModelId ?? "null"} -> source=${result.source ?? "none"} value=${result.value ?? "null"} fieldApiName=${result.fieldApiName ?? "null"}. attempts=${JSON.stringify(result.attempts)}`);
+    return result;
+  }
   // Resolve directly against whichever object THIS call is actually for —
   // QuoteLineItem.BillingFrequency and OrderItem.BillingFrequency are
   // different fields with potentially different active picklist values, so
@@ -141,7 +150,7 @@ export async function resolveBillingFrequency(
   const qliFrequencyField = resolveField(lineItemDescribe, "BillingFrequency", /^billing frequency$/i)?.name ?? null;
   if (!qliFrequencyField) {
     attempts.push({ step: "resolve-metadata", outcome: `No BillingFrequency field resolved on ${lineItemObject} in this org — cannot resolve or write a value at all.` });
-    return { value: null, source: null, fieldApiName: null, attempts, activeOptions: [] };
+    return logAndReturn({ value: null, source: null, fieldApiName: null, attempts, activeOptions: [] });
   }
 
   // Resolve this object's own BillingFrequency real active picklist values
@@ -152,7 +161,7 @@ export async function resolveBillingFrequency(
   const qliPicklist = findPicklistFieldByLabel(lineItemDescribe, "BillingFrequency", /^billing frequency$/i);
   if (!qliPicklist) {
     attempts.push({ step: "resolve-metadata", outcome: `${lineItemObject}.BillingFrequency is not describable as a picklist in this org — cannot validate candidate values against active options.` });
-    return { value: null, source: null, fieldApiName: qliFrequencyField, attempts, activeOptions: [] };
+    return logAndReturn({ value: null, source: null, fieldApiName: qliFrequencyField, attempts, activeOptions: [] });
   }
 
   // 1. The resolved ProductSellingModel's own dedicated BillingFrequency
@@ -171,7 +180,7 @@ export async function resolveBillingFrequency(
           const mapped = mapToActiveBillingFrequency(raw, psmField, qliPicklist);
           if (mapped) {
             attempts.push({ step: "selling-model", outcome: mapped === raw ? `Found on ProductSellingModel.${psmField.name} = "${raw}".` : `Found on ProductSellingModel.${psmField.name} = "${raw}" — mapped to active ${lineItemObject}.BillingFrequency value "${mapped}".` });
-            return { value: mapped, source: "selling-model", fieldApiName: qliFrequencyField, attempts, activeOptions: qliPicklist.activeOptions };
+            return logAndReturn({ value: mapped, source: "selling-model", fieldApiName: qliFrequencyField, attempts, activeOptions: qliPicklist.activeOptions });
           }
           attempts.push({ step: "selling-model", outcome: `ProductSellingModel.${psmField.name} = "${raw}", but this could not be confidently mapped to any of ${lineItemObject}.BillingFrequency's currently active values (${qliPicklist.activeOptions.map(o => o.value).join(", ")}) — not used.` });
         } else {
@@ -194,7 +203,7 @@ export async function resolveBillingFrequency(
     const matched = matchCadenceToActiveOption(sellingModelName, qliPicklist);
     if (matched) {
       attempts.push({ step: "selling-model-name", outcome: `Selling Model name "${sellingModelName}" -> matched cadence token "${matched.matchedCadence}" -> active ${lineItemObject}.BillingFrequency value "${matched.value}".` });
-      return { value: matched.value, source: "selling-model-name", fieldApiName: qliFrequencyField, attempts, activeOptions: qliPicklist.activeOptions };
+      return logAndReturn({ value: matched.value, source: "selling-model-name", fieldApiName: qliFrequencyField, attempts, activeOptions: qliPicklist.activeOptions });
     }
     attempts.push({ step: "selling-model-name", outcome: `Selling Model name "${sellingModelName}" did not match a recognized cadence word, or no active BillingFrequency option corresponds to it.` });
   } else {
@@ -216,7 +225,7 @@ export async function resolveBillingFrequency(
         const matched = matchCadenceToActiveOption(cadenceRaw, qliPicklist);
         if (matched) {
           attempts.push({ step: "cadence-mapping", outcome: `Cadence "${cadenceRaw}" -> matched cadence token "${matched.matchedCadence}" -> picklist value "${matched.value}".` });
-          return { value: matched.value, source: "cadence-mapping", fieldApiName: qliFrequencyField, attempts, activeOptions: qliPicklist.activeOptions };
+          return logAndReturn({ value: matched.value, source: "cadence-mapping", fieldApiName: qliFrequencyField, attempts, activeOptions: qliPicklist.activeOptions });
         }
         attempts.push({ step: "cadence-mapping", outcome: `ProductSellingModel cadence value "${cadenceRaw}" did not map to any active BillingFrequency option.` });
       } else {
@@ -245,7 +254,7 @@ export async function resolveBillingFrequency(
         const mapped = mapToActiveBillingFrequency(raw, productField, qliPicklist);
         if (mapped) {
           attempts.push({ step: "product", outcome: mapped === raw ? `Found on Product.${productField.name} = "${raw}".` : `Found on Product.${productField.name} = "${raw}" — mapped to active ${lineItemObject}.BillingFrequency value "${mapped}".` });
-          return { value: mapped, source: "product", fieldApiName: qliFrequencyField, attempts, activeOptions: qliPicklist.activeOptions };
+          return logAndReturn({ value: mapped, source: "product", fieldApiName: qliFrequencyField, attempts, activeOptions: qliPicklist.activeOptions });
         }
         attempts.push({ step: "product", outcome: `Product.${productField.name} = "${raw}", but this could not be confidently mapped to any of ${lineItemObject}.BillingFrequency's currently active values (${qliPicklist.activeOptions.map(o => o.value).join(", ")}) — not used.` });
       } else {
@@ -277,7 +286,7 @@ export async function resolveBillingFrequency(
         const stillActive = qliPicklist.activeOptions.some(o => o.value === raw);
         if (stillActive) {
           attempts.push({ step: "existing-qli", outcome: `Found on an existing ${lineItemObject} = "${raw}".` });
-          return { value: raw, source: "existing-qli", fieldApiName: qliFrequencyField, attempts, activeOptions: qliPicklist.activeOptions };
+          return logAndReturn({ value: raw, source: "existing-qli", fieldApiName: qliFrequencyField, attempts, activeOptions: qliPicklist.activeOptions });
         }
         attempts.push({ step: "existing-qli", outcome: `Found on an existing ${lineItemObject} = "${raw}", but that value is no longer among ${lineItemObject}.BillingFrequency's active options (${qliPicklist.activeOptions.map(o => o.value).join(", ")}) — not used.` });
       } else {
@@ -298,7 +307,7 @@ export async function resolveBillingFrequency(
       if (value) {
         const via = picklist.defaultValue ? "org-marked default" : "sole active picklist value";
         attempts.push({ step: "org-default", outcome: `Resolved via ${via}: "${value}".` });
-        return { value, source: "org-default", fieldApiName: qliFrequencyField, attempts, activeOptions: qliPicklist.activeOptions };
+        return logAndReturn({ value, source: "org-default", fieldApiName: qliFrequencyField, attempts, activeOptions: qliPicklist.activeOptions });
       }
       attempts.push({ step: "org-default", outcome: `No org-marked default and ${picklist.activeOptions.length} active option(s) exist (need exactly 1 for an unambiguous auto-pick).` });
     } else {
@@ -308,7 +317,7 @@ export async function resolveBillingFrequency(
     attempts.push({ step: "org-default", outcome: `Query failed: ${err instanceof Error ? err.message : "unknown error"}.` });
   }
 
-  return { value: null, source: null, fieldApiName: qliFrequencyField, attempts, activeOptions: qliPicklist.activeOptions };
+  return logAndReturn({ value: null, source: null, fieldApiName: qliFrequencyField, attempts, activeOptions: qliPicklist.activeOptions });
 }
 
 /**

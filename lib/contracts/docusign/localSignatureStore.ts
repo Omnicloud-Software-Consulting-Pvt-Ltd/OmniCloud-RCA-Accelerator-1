@@ -68,7 +68,9 @@ function freshState(contractId: string, contentVersionId: string, documentName: 
   return {
     id: newId(), contractId, sourceContentVersionId: contentVersionId, sourceDocumentName: documentName,
     status: "Draft", recipients: [], timeline: [], emailSubject: null, emailBody: null,
-    envelopeId: null, envelopeStatus: null, sentDateTime: null, signedContentVersionId: null, createdAt: now, updatedAt: now,
+    envelopeId: null, envelopeStatus: null, sentDateTime: null, signedContentVersionId: null,
+    senderName: null, senderEmail: null, senderUserId: null, senderCopyRequested: null,
+    createdAt: now, updatedAt: now,
   };
 }
 
@@ -130,24 +132,93 @@ export async function assertReadyToSend(contractId: string, contentVersionId: st
 
 /**
  * Records a REAL send result from app/api/contracts/[id]/signature/send —
- * this function never talks to DocuSign and never invents an envelope Id
- * itself. Called only after that route has actually returned success. Only
- * locks THIS document's row — every other document on the same Contract
- * keeps its own independent Draft/Ready to Send/Sent state.
+ * this function never talks to DocuSign and never invents an envelope Id,
+ * sender identity, or recipient status itself; every field here is exactly
+ * what that route returned (which itself only ever surfaces DocuSign's own
+ * responses). Called only after that route has actually returned success.
+ * Only locks THIS document's row — every other document on the same
+ * Contract keeps its own independent Draft/Ready to Send/Sent state.
+ *
+ * `recipientStatuses` are matched to this document's existing recipients by
+ * `recipientId === String(order)` — the SAME correlation
+ * correctRecipientEmail() and the "Correct & Resend" UI already rely on,
+ * since buildEnvelopeSigners() assigns recipientId as the 1-based sorted
+ * position of `order`.
  */
-export async function recordSent(contractId: string, contentVersionId: string, envelopeId: string, envelopeStatus: string, sentDateTime: string | null): Promise<SignatureRequest> {
+export async function recordSent(
+  contractId: string,
+  contentVersionId: string,
+  input: {
+    envelopeId: string;
+    envelopeStatus: string;
+    sentDateTime: string | null;
+    senderName: string | null;
+    senderEmail: string | null;
+    senderUserId: string | null;
+    senderCopyRequested: boolean;
+    recipientStatuses: { recipientId: string; status: string | null }[];
+  },
+): Promise<SignatureRequest> {
   const current = requireRow(readAll(), contractId, contentVersionId);
   if (current.envelopeId) throw new Error("This document has already been sent for signature.");
 
   const entry: SignatureTimelineEntry = {
     stage: "Sent",
-    at: sentDateTime ?? new Date().toISOString(),
-    detail: `Envelope ${envelopeId} sent via DocuSign.`,
+    at: input.sentDateTime ?? new Date().toISOString(),
+    detail: `Envelope ${input.envelopeId} sent via DocuSign.`,
     source: "system",
-    dedupeKey: `sent:${envelopeId}`,
+    dedupeKey: `sent:${input.envelopeId}`,
   };
+  const statusByRecipientId = new Map(input.recipientStatuses.map(r => [r.recipientId, r.status]));
+  const recipients = current.recipients.map(r => {
+    const status = statusByRecipientId.get(String(r.order));
+    return status !== undefined ? { ...r, status } : r;
+  });
   return persist({
-    ...current, envelopeId, envelopeStatus, sentDateTime, status: "Sent",
+    ...current,
+    envelopeId: input.envelopeId, envelopeStatus: input.envelopeStatus, sentDateTime: input.sentDateTime, status: "Sent",
+    senderName: input.senderName, senderEmail: input.senderEmail, senderUserId: input.senderUserId, senderCopyRequested: input.senderCopyRequested,
+    recipients,
     timeline: [...current.timeline, entry],
+  });
+}
+
+/**
+ * Reflects a recipient email correction that already succeeded against
+ * DocuSign (POST .../correct-recipient) — this store never calls DocuSign
+ * itself, it only records the result so the Signatures tab shows the
+ * corrected address on reload instead of the original bounced one. Matched
+ * by recipient order/role (the same fields DocuSign's recipientId was
+ * derived from at send time), not by the old email, since that's exactly
+ * what's being replaced.
+ */
+export async function correctRecipientEmail(contractId: string, contentVersionId: string, order: number, newEmail: string): Promise<SignatureRequest> {
+  const current = requireRow(readAll(), contractId, contentVersionId);
+  const recipients = current.recipients.map(r => (r.order === order ? { ...r, email: newEmail } : r));
+  return persist({ ...current, recipients });
+}
+
+/**
+ * Merges server-authoritative status (from POST
+ * /api/contracts/docusign/envelopes/[envelopeId]/refresh, which the DocuSign
+ * Connect webhook keeps in sync too) into this browser's local record — the
+ * only way `status` ever advances past "Sent" here, since this store itself
+ * never talks to DocuSign. Timeline entries are deduplicated by
+ * `dedupeKey` so re-running Refresh never duplicates a line.
+ */
+export async function applyServerSync(
+  contractId: string,
+  contentVersionId: string,
+  update: { stage: SignatureStage; envelopeStatus: string | null; timeline: SignatureTimelineEntry[]; signedContentVersionId: string | null },
+): Promise<SignatureRequest> {
+  const current = requireRow(readAll(), contractId, contentVersionId);
+  const existingKeys = new Set(current.timeline.map(e => e.dedupeKey));
+  const merged = [...current.timeline, ...update.timeline.filter(e => !existingKeys.has(e.dedupeKey))];
+  return persist({
+    ...current,
+    status: update.stage,
+    envelopeStatus: update.envelopeStatus,
+    timeline: merged,
+    signedContentVersionId: update.signedContentVersionId ?? current.signedContentVersionId,
   });
 }

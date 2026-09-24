@@ -72,11 +72,11 @@ export async function deleteContentDocument(client: SalesforceClient, contentDoc
 }
 
 /** Proxy download (§4.4) — the app has no browser-level Salesforce session cookie, so the file streams through this server rather than a direct Salesforce URL. */
-export async function downloadContentVersion(client: SalesforceClient, contentVersionId: string): Promise<{ buffer: Buffer; filename: string; contentType: string }> {
+export async function downloadContentVersion(client: SalesforceClient, contentVersionId: string): Promise<{ buffer: Buffer; filename: string; contentType: string; fileExtension: string }> {
   const record = await client.getRecord("ContentVersion", contentVersionId, ["Title", "FileExtension"]);
   const { buffer, contentType } = await client.getBinary(`/sobjects/ContentVersion/${contentVersionId}/VersionData`);
   const ext = ((record.FileExtension as string) || "pdf").toLowerCase();
   const title = (record.Title as string) || "document";
   const filename = title.toLowerCase().endsWith(`.${ext}`) ? title : `${title}.${ext}`;
-  return { buffer, filename, contentType: contentType === "application/octet-stream" && ext === "pdf" ? "application/pdf" : contentType };
+  return { buffer, filename, contentType: contentType === "application/octet-stream" && ext === "pdf" ? "application/pdf" : contentType, fileExtension: ext };
 }

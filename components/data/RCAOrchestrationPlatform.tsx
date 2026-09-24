@@ -149,21 +149,21 @@ function uid() {
   return Math.random().toString(36).slice(2, 9);
 }
 
-function batchColor(s: BatchState["status"]) {
+function batchColor(s: BatchState["status"], isDark: boolean) {
   switch (s) {
     case "running":  return "#1E90FF";
     case "success":  return "#00D4FF";
     case "error":    return "#E84444";
-    default:         return "rgba(100,140,180,0.4)";
+    default:         return isDark ? "rgba(100,140,180,0.4)" : "rgba(0,31,91,0.45)";
   }
 }
 
-function logColor(l: LogEntry["level"]) {
+function logColor(l: LogEntry["level"], isDark: boolean) {
   switch (l) {
     case "success":  return "#00D4FF";
     case "error":    return "#E84444";
     case "warning":  return "#3AABFF";
-    default:         return "rgba(140,180,220,0.8)";
+    default:         return isDark ? "rgba(140,180,220,0.8)" : "rgba(0,31,91,0.72)";
   }
 }
 
@@ -229,8 +229,8 @@ function TabBar({ activeTab, onTabChange, isDark }: {
           border: "1px solid rgba(30,144,255,0.3)",
         }}
       >
-        <span style={{ color: "#1E90FF" }}><Ic n="cpu" s={12} /></span>
-        <span className="text-[10px] font-bold tracking-widest" style={{ color: "#1E90FF" }}>RCA PLATFORM</span>
+        <span style={{ color: isDark ? "#1E90FF" : "#0968D3" }}><Ic n="cpu" s={12} /></span>
+        <span className="text-[10px] font-bold tracking-widest" style={{ color: isDark ? "#1E90FF" : "#0968D3" }}>RCA PLATFORM</span>
       </div>
 
       {TABS.map(tab => {
@@ -244,7 +244,7 @@ function TabBar({ activeTab, onTabChange, isDark }: {
               background: isActive
                 ? isDark ? "linear-gradient(135deg, rgba(30,144,255,0.22) 0%, rgba(0,212,255,0.14) 100%)" : "rgba(30,144,255,0.14)"
                 : "transparent",
-              color: isActive ? "#00D4FF" : isDark ? "rgba(120,160,200,0.65)" : "rgba(0,31,91,0.62)",
+              color: isActive ? (isDark ? "#00D4FF" : "#0098CC") : isDark ? "rgba(120,160,200,0.65)" : "rgba(0,31,91,0.62)",
               border: isActive
                 ? "1px solid rgba(30,144,255,0.35)"
                 : "1px solid transparent",
@@ -253,7 +253,7 @@ function TabBar({ activeTab, onTabChange, isDark }: {
               background: isActive
                 ? isDark ? "linear-gradient(135deg, rgba(30,144,255,0.28) 0%, rgba(0,212,255,0.18) 100%)" : "rgba(30,144,255,0.18)"
                 : isDark ? "rgba(30,144,255,0.07)" : "rgba(0,71,171,0.10)",
-              color: isActive ? "#00D4FF" : isDark ? "rgba(160,200,240,0.8)" : "rgba(0,31,91,0.85)",
+              color: isActive ? (isDark ? "#00D4FF" : "#0098CC") : isDark ? "rgba(160,200,240,0.8)" : "rgba(0,31,91,0.85)",
             }}
             whileTap={{ scale: 0.97 }}
           >
@@ -264,7 +264,7 @@ function TabBar({ activeTab, onTabChange, isDark }: {
                 className="text-[8px] font-bold px-1 py-0.5 rounded-full tracking-wide"
                 style={{
                   background: isActive ? "rgba(0,212,255,0.2)" : isDark ? "rgba(30,144,255,0.12)" : "rgba(0,71,171,0.12)",
-                  color: isActive ? "#00D4FF" : isDark ? "rgba(30,144,255,0.65)" : "rgba(0,71,171,0.7)",
+                  color: isActive ? (isDark ? "#00D4FF" : "#0098CC") : isDark ? "rgba(30,144,255,0.65)" : "rgba(0,71,171,0.7)",
                   border: `1px solid ${isActive ? "rgba(0,212,255,0.3)" : "rgba(30,144,255,0.2)"}`,
                 }}
               >
@@ -360,7 +360,7 @@ function DependencyEnginePanel({ isDark }: { isDark: boolean }) {
       {/* Header */}
       <div className="px-6 py-4 shrink-0" style={{ borderBottom: isDark ? "1px solid rgba(30,144,255,0.1)" : "1px solid rgba(0,71,171,0.14)" }}>
         <div className="flex items-center gap-3 mb-1">
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, rgba(30,144,255,0.22), rgba(0,212,255,0.14))", border: "1px solid rgba(30,144,255,0.28)", color: "#1E90FF" }}>
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, rgba(30,144,255,0.22), rgba(0,212,255,0.14))", border: "1px solid rgba(30,144,255,0.28)", color: isDark ? "#1E90FF" : "#0968D3" }}>
             <Ic n="git-branch" s={18} />
           </div>
           <div>
@@ -375,8 +375,8 @@ function DependencyEnginePanel({ isDark }: { isDark: boolean }) {
             { label: "Circular",       value: String(rules.filter(r => r.isCircular).length)  },
             { label: "Types",          value: "4"                                              },
           ].map(s => (
-            <div key={s.label} className="flex flex-col px-3 py-2 rounded-lg" style={{ background: isDark ? "rgba(30,144,255,0.07)" : "rgba(0,71,171,0.07)", border }}>
-              <span className="text-[15px] font-bold" style={{ color: "#1E90FF", letterSpacing: "-0.02em" }}>{s.value}</span>
+            <div key={s.label} className="flex flex-col px-3 py-2 rounded-lg" style={{ background: isDark ? "rgba(30,144,255,0.07)" : "rgba(0,71,171,0.07)", border, boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)" }}>
+              <span className="text-[15px] font-bold" style={{ color: isDark ? "#1E90FF" : "#0968D3", letterSpacing: "-0.02em" }}>{s.value}</span>
               <span className="text-[9px] mt-0.5" style={{ color: textMuted }}>{s.label}</span>
             </div>
           ))}
@@ -399,7 +399,7 @@ function DependencyEnginePanel({ isDark }: { isDark: boolean }) {
                     background: addMode === m
                       ? "linear-gradient(135deg, rgba(30,144,255,0.25), rgba(0,212,255,0.16))"
                       : "transparent",
-                    color: addMode === m ? "#00D4FF" : textMuted,
+                    color: addMode === m ? (isDark ? "#00D4FF" : "#0098CC") : textMuted,
                   }}
                 >
                   {m === "nl" ? "Natural Language" : "Manual"}
@@ -439,7 +439,7 @@ function DependencyEnginePanel({ isDark }: { isDark: boolean }) {
                   {nlLoading ? <><Ic n="refresh" s={12} />Parsing…</> : <><Ic n="git-branch" s={12} />Parse Rule</>}
                 </motion.button>
 
-                <div className="mt-1 p-3 rounded-xl" style={{ background: isDark ? "rgba(30,144,255,0.06)" : "rgba(0,71,171,0.05)", border }}>
+                <div className="mt-1 p-3 rounded-xl" style={{ background: isDark ? "rgba(30,144,255,0.06)" : "rgba(0,71,171,0.05)", border, boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)" }}>
                   <p className="text-[9px] font-bold tracking-widest uppercase mb-1.5" style={{ color: isDark ? "rgba(30,144,255,0.5)" : "rgba(0,71,171,0.65)" }}>Supported Patterns</p>
                   {[
                     ["DEPENDS ON", "X depends on Y"],
@@ -448,7 +448,7 @@ function DependencyEnginePanel({ isDark }: { isDark: boolean }) {
                     ["AUTO ADD",   "auto-add X to Y"],
                   ].map(([type, ex]) => (
                     <div key={type} className="flex items-center gap-2 mb-1">
-                      <span className="text-[8px] font-bold px-1 rounded" style={{ background: "rgba(30,144,255,0.15)", color: "#3AABFF" }}>{type}</span>
+                      <span className="text-[8px] font-bold px-1 rounded" style={{ background: "rgba(30,144,255,0.15)", color: isDark ? "#3AABFF" : "#1789B0" }}>{type}</span>
                       <span className="text-[10px] font-mono" style={{ color: textMuted }}>{ex}</span>
                     </div>
                   ))}
@@ -546,7 +546,8 @@ function DependencyEnginePanel({ isDark }: { isDark: boolean }) {
                     background: isDark ? glassPanel : "rgba(228,240,255,0.88)",
                     border: rule.isCircular
                       ? "1px solid rgba(232,68,68,0.3)"
-                      : isDark ? "1px solid rgba(30,144,255,0.1)" : "1px solid rgba(0,71,171,0.14)",
+                      : isDark ? "1px solid rgba(30,144,255,0.1)" : "1px solid rgba(0,71,171,0.22)",
+                    boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)",
                     opacity: rule.active ? 1 : 0.5,
                   }}
                 >
@@ -786,7 +787,7 @@ function NestedBundlePanel({ isDark }: { isDark: boolean }) {
       {/* Header */}
       <div className="px-6 py-4 shrink-0" style={{ borderBottom: isDark ? "1px solid rgba(30,144,255,0.1)" : "1px solid rgba(0,71,171,0.14)" }}>
         <div className="flex items-center gap-3 mb-1">
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, rgba(30,144,255,0.22), rgba(0,212,255,0.14))", border: "1px solid rgba(30,144,255,0.28)", color: "#1E90FF" }}>
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, rgba(30,144,255,0.22), rgba(0,212,255,0.14))", border: "1px solid rgba(30,144,255,0.28)", color: isDark ? "#1E90FF" : "#0968D3" }}>
             <Ic n="layers" s={18} />
           </div>
           <div>
@@ -801,8 +802,8 @@ function NestedBundlePanel({ isDark }: { isDark: boolean }) {
             { label: "Bundles",     value: String(bundleCount) },
             { label: "RCA Type",    value: "Bundle"            },
           ].map(s => (
-            <div key={s.label} className="flex flex-col px-3 py-2 rounded-lg" style={{ background: isDark ? "rgba(30,144,255,0.07)" : "rgba(0,71,171,0.07)", border }}>
-              <span className="text-[15px] font-bold" style={{ color: "#1E90FF", letterSpacing: "-0.02em" }}>{s.value}</span>
+            <div key={s.label} className="flex flex-col px-3 py-2 rounded-lg" style={{ background: isDark ? "rgba(30,144,255,0.07)" : "rgba(0,71,171,0.07)", border, boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)" }}>
+              <span className="text-[15px] font-bold" style={{ color: isDark ? "#1E90FF" : "#0968D3", letterSpacing: "-0.02em" }}>{s.value}</span>
               <span className="text-[9px] mt-0.5" style={{ color: textMuted }}>{s.label}</span>
             </div>
           ))}
@@ -817,7 +818,7 @@ function NestedBundlePanel({ isDark }: { isDark: boolean }) {
             <motion.button
               onClick={() => { setAddParentId(null); setNewName(""); }}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold cursor-pointer"
-              style={{ background: "rgba(30,144,255,0.14)", color: "#1E90FF", border: "1px solid rgba(30,144,255,0.28)" }}
+              style={{ background: "rgba(30,144,255,0.14)", color: isDark ? "#1E90FF" : "#0968D3", border: "1px solid rgba(30,144,255,0.28)" }}
               whileHover={{ scale: 1.02 }}
             >
               <Ic n="plus" s={11} />Add Root Bundle
@@ -834,7 +835,11 @@ function NestedBundlePanel({ isDark }: { isDark: boolean }) {
 
           <div
             className="p-4 rounded-xl"
-            style={{ background: isDark ? "rgba(4,10,24,0.6)" : "rgba(222,235,255,0.85)", border }}
+            style={{
+              background: isDark ? "rgba(4,10,24,0.6)" : "rgba(222,235,255,0.85)",
+              border,
+              boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)",
+            }}
           >
             {tree.map(node => (
               <TreeNodeView key={node.id} node={node} depth={0} />
@@ -955,7 +960,7 @@ function CommercializationPanel({ isDark }: { isDark: boolean }) {
 
   const textPrimary = isDark ? "rgba(210,230,250,0.92)" : "rgba(0,10,40,0.88)";
   const textMuted   = isDark ? "rgba(90,130,180,0.65)"  : "rgba(0,31,91,0.62)";
-  const border      = isDark ? "1px solid rgba(30,144,255,0.12)" : "1px solid rgba(0,71,171,0.16)";
+  const border      = isDark ? "1px solid rgba(30,144,255,0.12)" : "1px solid rgba(0,71,171,0.22)";
   const inputBg     = isDark ? "rgba(30,144,255,0.05)"  : "rgba(235,245,255,0.95)";
   const inputBorder = isDark ? "rgba(30,144,255,0.18)"  : "rgba(0,71,171,0.22)";
 
@@ -1004,7 +1009,8 @@ function CommercializationPanel({ isDark }: { isDark: boolean }) {
         className="flex items-center gap-3 px-3 py-2.5 rounded-xl mb-2"
         style={{
           background: isDark ? "rgba(4,10,24,0.75)" : "rgba(228,240,255,0.88)",
-          border: isDark ? "1px solid rgba(30,144,255,0.1)" : "1px solid rgba(0,71,171,0.14)",
+          border: isDark ? "1px solid rgba(30,144,255,0.1)" : "1px solid rgba(0,71,171,0.22)",
+          boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)",
         }}
       >
         <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: col, boxShadow: `0 0 6px ${col}60` }} />
@@ -1030,7 +1036,7 @@ function CommercializationPanel({ isDark }: { isDark: boolean }) {
       {/* Header */}
       <div className="px-6 py-4 shrink-0" style={{ borderBottom: isDark ? "1px solid rgba(30,144,255,0.1)" : "1px solid rgba(0,71,171,0.14)" }}>
         <div className="flex items-center gap-3 mb-1">
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, rgba(30,144,255,0.22), rgba(0,212,255,0.14))", border: "1px solid rgba(30,144,255,0.28)", color: "#1E90FF" }}>
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, rgba(30,144,255,0.22), rgba(0,212,255,0.14))", border: "1px solid rgba(30,144,255,0.28)", color: isDark ? "#1E90FF" : "#0968D3" }}>
             <Ic n="zap" s={18} />
           </div>
           <div>
@@ -1045,8 +1051,8 @@ function CommercializationPanel({ isDark }: { isDark: boolean }) {
             { label: "Selling Models", value: String(sellingModels.length) },
             { label: "Reused",         value: String([...catalogs, ...categories, ...sellingModels].filter(r => r.isExisting).length) },
           ].map(s => (
-            <div key={s.label} className="flex flex-col px-3 py-2 rounded-lg" style={{ background: isDark ? "rgba(30,144,255,0.07)" : "rgba(0,71,171,0.07)", border }}>
-              <span className="text-[15px] font-bold" style={{ color: "#1E90FF", letterSpacing: "-0.02em" }}>{s.value}</span>
+            <div key={s.label} className="flex flex-col px-3 py-2 rounded-lg" style={{ background: isDark ? "rgba(30,144,255,0.07)" : "rgba(0,71,171,0.07)", border, boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)" }}>
+              <span className="text-[15px] font-bold" style={{ color: isDark ? "#1E90FF" : "#0968D3", letterSpacing: "-0.02em" }}>{s.value}</span>
               <span className="text-[9px] mt-0.5" style={{ color: textMuted }}>{s.label}</span>
             </div>
           ))}
@@ -1055,9 +1061,9 @@ function CommercializationPanel({ isDark }: { isDark: boolean }) {
 
       <div className="flex-1 overflow-y-auto px-6 py-5" style={{ scrollbarWidth: "thin" }}>
         {/* AI Commercialization Analyzer */}
-        <div className="mb-6 p-5 rounded-2xl" style={{ background: isDark ? "rgba(30,144,255,0.07)" : "rgba(210,230,255,0.88)", border }}>
+        <div className="mb-6 p-5 rounded-2xl" style={{ background: isDark ? "rgba(30,144,255,0.07)" : "rgba(210,230,255,0.88)", border, boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)" }}>
           <div className="flex items-center gap-2 mb-3">
-            <span style={{ color: "#1E90FF" }}><Ic n="sparkles" s={14} /></span>
+            <span style={{ color: isDark ? "#1E90FF" : "#0968D3" }}><Ic n="sparkles" s={14} /></span>
             <p className="text-[11px] font-bold tracking-widest uppercase" style={{ color: isDark ? "rgba(30,144,255,0.7)" : "rgba(0,71,171,0.8)" }}>AI Selling Model Analyzer</p>
           </div>
           <div className="flex gap-2">
@@ -1127,7 +1133,7 @@ function CommercializationPanel({ isDark }: { isDark: boolean }) {
               <button
                 onClick={addCatalog}
                 className="px-2.5 py-1.5 rounded-lg cursor-pointer"
-                style={{ background: "rgba(30,144,255,0.16)", color: "#1E90FF", border: "1px solid rgba(30,144,255,0.28)" }}
+                style={{ background: "rgba(30,144,255,0.16)", color: isDark ? "#1E90FF" : "#0968D3", border: "1px solid rgba(30,144,255,0.28)" }}
               >
                 <Ic n="plus" s={12} />
               </button>
@@ -1152,7 +1158,7 @@ function CommercializationPanel({ isDark }: { isDark: boolean }) {
               <button
                 onClick={addCategory}
                 className="px-2.5 py-1.5 rounded-lg cursor-pointer"
-                style={{ background: "rgba(30,144,255,0.16)", color: "#1E90FF", border: "1px solid rgba(30,144,255,0.28)" }}
+                style={{ background: "rgba(30,144,255,0.16)", color: isDark ? "#1E90FF" : "#0968D3", border: "1px solid rgba(30,144,255,0.28)" }}
               >
                 <Ic n="plus" s={12} />
               </button>
@@ -1177,7 +1183,7 @@ function CommercializationPanel({ isDark }: { isDark: boolean }) {
               <button
                 onClick={addModel}
                 className="px-2.5 py-1.5 rounded-lg cursor-pointer"
-                style={{ background: "rgba(30,144,255,0.16)", color: "#1E90FF", border: "1px solid rgba(30,144,255,0.28)" }}
+                style={{ background: "rgba(30,144,255,0.16)", color: isDark ? "#1E90FF" : "#0968D3", border: "1px solid rgba(30,144,255,0.28)" }}
               >
                 <Ic n="plus" s={12} />
               </button>
@@ -1302,7 +1308,7 @@ function DeploymentConsolePanel({ isDark }: { isDark: boolean }) {
 
   const textPrimary = isDark ? "rgba(210,230,250,0.92)" : "rgba(0,10,40,0.88)";
   const textMuted   = isDark ? "rgba(90,130,180,0.65)"  : "rgba(0,31,91,0.62)";
-  const border      = isDark ? "1px solid rgba(30,144,255,0.12)" : "1px solid rgba(0,71,171,0.16)";
+  const border      = isDark ? "1px solid rgba(30,144,255,0.12)" : "1px solid rgba(0,71,171,0.22)";
 
   const successCount = batches.filter(b => b.status === "success").length;
   const errorCount   = batches.filter(b => b.status === "error").length;
@@ -1314,7 +1320,7 @@ function DeploymentConsolePanel({ isDark }: { isDark: boolean }) {
       <div className="px-6 py-4 shrink-0" style={{ borderBottom: isDark ? "1px solid rgba(30,144,255,0.1)" : "1px solid rgba(0,71,171,0.14)" }}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, rgba(30,144,255,0.22), rgba(0,212,255,0.14))", border: "1px solid rgba(30,144,255,0.28)", color: "#1E90FF" }}>
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, rgba(30,144,255,0.22), rgba(0,212,255,0.14))", border: "1px solid rgba(30,144,255,0.28)", color: isDark ? "#1E90FF" : "#0968D3" }}>
               <Ic n="rocket" s={18} />
             </div>
             <div>
@@ -1349,7 +1355,7 @@ function DeploymentConsolePanel({ isDark }: { isDark: boolean }) {
               className="flex items-center gap-2 px-5 py-2 rounded-xl text-[12px] font-bold cursor-pointer"
               style={{
                 background: isRunning ? "rgba(30,144,255,0.2)" : "linear-gradient(135deg, #1E90FF 0%, #00D4FF 100%)",
-                color: isRunning ? "rgba(0,212,255,0.6)" : "rgba(0,8,20,0.92)",
+                color: isRunning ? (isDark ? "rgba(0,212,255,0.6)" : "rgba(0,112,214,0.65)") : "rgba(0,8,20,0.92)",
                 border: isRunning ? "1px solid rgba(30,144,255,0.25)" : "none",
               }}
               whileHover={{ scale: isRunning ? 1 : 1.03 }}
@@ -1367,12 +1373,12 @@ function DeploymentConsolePanel({ isDark }: { isDark: boolean }) {
         {/* Stats */}
         <div className="flex gap-3 mt-3">
           {[
-            { label: "Completed",  value: `${successCount}/9`,                     color: "#00D4FF" },
-            { label: "Errors",     value: String(errorCount),                       color: errorCount > 0 ? "#E84444" : "#00D4FF" },
-            { label: "Running",    value: runningBatch ? `Batch ${runningBatch.batch}` : "—", color: "#1E90FF" },
-            { label: "Status",     value: deployDone ? "Done" : isRunning ? "Live" : "Ready", color: deployDone ? "#00D4FF" : isRunning ? "#1E90FF" : textMuted },
+            { label: "Completed",  value: `${successCount}/9`,                     color: isDark ? "#00D4FF" : "#0098CC" },
+            { label: "Errors",     value: String(errorCount),                       color: errorCount > 0 ? "#E84444" : isDark ? "#00D4FF" : "#0098CC" },
+            { label: "Running",    value: runningBatch ? `Batch ${runningBatch.batch}` : "—", color: isDark ? "#1E90FF" : "#0968D3" },
+            { label: "Status",     value: deployDone ? "Done" : isRunning ? "Live" : "Ready", color: deployDone ? (isDark ? "#00D4FF" : "#0098CC") : isRunning ? (isDark ? "#1E90FF" : "#0968D3") : textMuted },
           ].map(s => (
-            <div key={s.label} className="flex flex-col px-3 py-2 rounded-lg" style={{ background: isDark ? "rgba(30,144,255,0.07)" : "rgba(0,71,171,0.07)", border }}>
+            <div key={s.label} className="flex flex-col px-3 py-2 rounded-lg" style={{ background: isDark ? "rgba(30,144,255,0.07)" : "rgba(0,71,171,0.07)", border, boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)" }}>
               <span className="text-[15px] font-bold" style={{ color: s.color, letterSpacing: "-0.02em" }}>{s.value}</span>
               <span className="text-[9px] mt-0.5" style={{ color: textMuted }}>{s.label}</span>
             </div>
@@ -1414,7 +1420,8 @@ function DeploymentConsolePanel({ isDark }: { isDark: boolean }) {
                     background: isDark
                       ? batch.status === "running" ? "rgba(30,144,255,0.12)" : "rgba(4,10,24,0.7)"
                       : batch.status === "running" ? "rgba(30,144,255,0.09)" : "rgba(222,235,255,0.85)",
-                    border: `1px solid ${batchColor(batch.status)}${batch.status === "pending" ? "30" : "45"}`,
+                    border: `1px solid ${batchColor(batch.status, isDark)}${batch.status === "pending" ? "30" : "45"}`,
+                    boxShadow: isDark ? "none" : "0 1px 2px rgba(15,35,80,0.06), 0 6px 20px rgba(15,35,80,0.08)",
                   }}
                 >
                   {/* Status indicator */}
@@ -1428,12 +1435,12 @@ function DeploymentConsolePanel({ isDark }: { isDark: boolean }) {
                   ) : (
                     <div
                       className="w-2 h-2 rounded-full shrink-0"
-                      style={{ background: batchColor(batch.status), opacity: batch.status === "pending" ? 0.35 : 1 }}
+                      style={{ background: batchColor(batch.status, isDark), opacity: batch.status === "pending" ? 0.35 : 1 }}
                     />
                   )}
 
                   {/* Batch number */}
-                  <span className="text-[9px] font-mono font-bold shrink-0 w-5" style={{ color: batchColor(batch.status) }}>B{batch.batch}</span>
+                  <span className="text-[9px] font-mono font-bold shrink-0 w-5" style={{ color: batchColor(batch.status, isDark) }}>B{batch.batch}</span>
 
                   {/* Name */}
                   <span className="flex-1 text-[11px] font-medium truncate" style={{ color: textPrimary }}>{batch.name}</span>
@@ -1458,12 +1465,12 @@ function DeploymentConsolePanel({ isDark }: { isDark: boolean }) {
             style={{ borderBottom: isDark ? "1px solid rgba(30,144,255,0.08)" : "1px solid rgba(0,71,171,0.12)" }}
           >
             <div className="flex items-center gap-2">
-              <span style={{ color: "#1E90FF" }}><Ic n="terminal" s={13} /></span>
+              <span style={{ color: isDark ? "#1E90FF" : "#0968D3" }}><Ic n="terminal" s={13} /></span>
               <span className="text-[10px] font-bold tracking-widest uppercase" style={{ color: isDark ? "rgba(30,144,255,0.65)" : "rgba(0,71,171,0.8)" }}>Live Execution Logs</span>
               {isRunning && (
                 <motion.span
                   className="text-[9px] font-mono px-1.5 py-0.5 rounded"
-                  style={{ background: "rgba(30,144,255,0.14)", color: "#1E90FF", border: "1px solid rgba(30,144,255,0.28)" }}
+                  style={{ background: "rgba(30,144,255,0.14)", color: isDark ? "#1E90FF" : "#0968D3", border: "1px solid rgba(30,144,255,0.28)" }}
                   animate={{ opacity: [0.5, 1, 0.5] }}
                   transition={{ duration: 1, repeat: Infinity }}
                 >
@@ -1471,7 +1478,7 @@ function DeploymentConsolePanel({ isDark }: { isDark: boolean }) {
                 </motion.span>
               )}
               {deployDone && (
-                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded" style={{ background: "rgba(0,212,255,0.12)", color: "#00D4FF", border: "1px solid rgba(0,212,255,0.28)" }}>
+                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded" style={{ background: "rgba(0,212,255,0.12)", color: isDark ? "#00D4FF" : "#0098CC", border: "1px solid rgba(0,212,255,0.28)" }}>
                   COMPLETE
                 </span>
               )}
@@ -1501,24 +1508,24 @@ function DeploymentConsolePanel({ isDark }: { isDark: boolean }) {
                 </span>
                 <span
                   className="shrink-0 font-bold"
-                  style={{ color: batchColor(log.batch === 0 ? "pending" : "running"), minWidth: 24 }}
+                  style={{ color: batchColor(log.batch === 0 ? "pending" : "running", isDark), minWidth: 24 }}
                 >
                   {log.batch > 0 ? `B${log.batch}` : "  "}
                 </span>
                 <span
                   className="shrink-0 font-bold px-1 rounded text-[9px]"
                   style={{
-                    background: `${logColor(log.level)}14`,
-                    color: logColor(log.level),
-                    border: `1px solid ${logColor(log.level)}28`,
+                    background: `${logColor(log.level, isDark)}14`,
+                    color: logColor(log.level, isDark),
+                    border: `1px solid ${logColor(log.level, isDark)}28`,
                     minWidth: 48, textAlign: "center",
                   }}
                 >
                   {log.level.toUpperCase()}
                 </span>
-                <span className="flex-1 leading-relaxed" style={{ color: logColor(log.level) }}>{log.msg}</span>
+                <span className="flex-1 leading-relaxed" style={{ color: logColor(log.level, isDark) }}>{log.msg}</span>
                 {log.sfId && (
-                  <span className="shrink-0 text-[9px] px-1.5 py-0.5 rounded" style={{ background: "rgba(30,144,255,0.12)", color: "#3AABFF", border: "1px solid rgba(30,144,255,0.22)" }}>
+                  <span className="shrink-0 text-[9px] px-1.5 py-0.5 rounded" style={{ background: "rgba(30,144,255,0.12)", color: isDark ? "#3AABFF" : "#1789B0", border: "1px solid rgba(30,144,255,0.22)" }}>
                     {log.sfId}
                   </span>
                 )}

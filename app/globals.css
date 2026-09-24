@@ -182,6 +182,10 @@
   --transition-slow:      500ms cubic-bezier(0.16, 1, 0.3, 1);
   --transition-cinematic: 800ms cubic-bezier(0.16, 1, 0.3, 1);
 
+  /* Fast response + smooth settling — the one curve every micro-interaction
+     (button/card/nav/input hover, press, focus) should converge on. */
+  --ease-premium: cubic-bezier(0.22, 1, 0.36, 1);
+
   /* Blur */
   --blur-glass:  12px;
   --blur-heavy:  24px;
@@ -218,6 +222,20 @@
   /* Brand colors (resolved) */
   --color-brand: #1E90FF;
   --color-accent: #00D4FF;
+
+  /* Surfaces / borders / inputs / shadow — centralized theme tokens */
+  --background:         var(--bg-void);
+  --foreground:         var(--text-primary);
+  --surface:            var(--bg-surface);
+  --surface-secondary:  var(--bg-elevated);
+  --surface-hover:      rgba(30, 144, 255, 0.07);
+  --border:             var(--glass-border);
+  --border-hover:       rgba(30, 144, 255, 0.34);
+  --accent-hover:       #3AABFF;
+  --accent-soft:        rgba(0, 212, 255, 0.14);
+  --shadow:             0 8px 32px rgba(0, 0, 0, 0.45);
+  --input-background:   rgba(5, 12, 25, 0.6);
+  --input-border:       rgba(30, 144, 255, 0.22);
 }
 
 /* === LIGHT MODE === */
@@ -235,19 +253,33 @@
   --glass-border: rgba(0, 71, 171, 0.24);
   --glass-shine:  rgba(255, 255, 255, 0.95);
 
-  /* Stronger glows for AI elements */
-  --glow-primary: rgba(16, 112, 204, 0.35);
-  --glow-cyan:    rgba(0, 152, 204, 0.30);
-  --glow-deep:    rgba(0, 52, 128, 0.28);
+  /* Softer, more restrained glows — light backgrounds read glow as smudge past ~0.25 */
+  --glow-primary: rgba(16, 112, 204, 0.22);
+  --glow-cyan:    rgba(0, 152, 204, 0.18);
+  --glow-deep:    rgba(0, 52, 128, 0.16);
 
   /* Light mode text — high contrast, fully readable */
   --text-primary:   rgba(0, 10, 40, 0.96);
   --text-secondary: rgba(0, 35, 98, 0.90);
-  --text-muted:     rgba(0, 55, 140, 0.75);
+  --text-muted:     rgba(20, 50, 110, 0.85);
   --text-disabled:  rgba(50, 95, 165, 0.52);
 
   --color-brand: #1070CC;
   --color-accent: #0098CC;
+
+  /* Surfaces / borders / inputs / shadow — centralized theme tokens */
+  --background:         var(--bg-void);
+  --foreground:         var(--text-primary);
+  --surface:            #FFFFFF;
+  --surface-secondary:  #F3F8FF;
+  --surface-hover:      rgba(16, 112, 204, 0.05);
+  --border:             rgba(15, 45, 95, 0.14);
+  --border-hover:       rgba(16, 112, 204, 0.32);
+  --accent-hover:       #0077C2;
+  --accent-soft:        rgba(0, 152, 204, 0.10);
+  --shadow:             0 1px 2px rgba(15, 35, 80, 0.06), 0 8px 24px rgba(15, 35, 80, 0.08);
+  --input-background:   #FFFFFF;
+  --input-border:       rgba(15, 45, 95, 0.20);
 }
 
 /* ============================================================
@@ -283,9 +315,48 @@ body {
 }
 
 :focus-visible {
-  outline: 2px solid #1E90FF;
+  outline: 2px solid var(--color-accent) !important;
   outline-offset: 2px;
   border-radius: 4px;
+}
+
+/* ============================================================
+   BASELINE MICRO-INTERACTION TRANSITIONS
+   Every state change on an interactive element should glide, not snap —
+   fast response, smooth settling. Purely additive: components still control
+   their own resting/hover/focus values, this just makes the change between
+   them animate instead of jumping.
+   ============================================================ */
+/* transform is deliberately excluded here — Framer Motion owns transform-based
+   press/hover physics on its own components, and a competing CSS transition
+   on the same inline-styled property fights the spring instead of helping it. */
+button,
+a,
+input,
+textarea,
+select,
+[role="button"],
+.cursor-pointer {
+  transition: background-color 200ms var(--ease-premium),
+              border-color 200ms var(--ease-premium),
+              box-shadow 200ms var(--ease-premium),
+              color 200ms var(--ease-premium),
+              filter 200ms var(--ease-premium),
+              opacity 200ms var(--ease-premium);
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none !important;
+  border-color: var(--color-accent) !important;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button, a, input, textarea, select, [role="button"] {
+    transition-duration: 1ms !important;
+  }
 }
 
 /* Custom scrollbar */
@@ -403,5 +474,206 @@ body {
 @utility scan-line {
   position: relative;
   overflow: hidden;
+}
+
+/* ============================================================
+   OMNI AI CURSOR
+   Global magical blue/cyan cursor overlay — see components/cursor
+   ============================================================ */
+html.custom-cursor-active,
+html.custom-cursor-active * {
+  cursor: none !important;
+}
+
+.omni-cursor {
+  position: fixed;
+  inset: 0;
+  z-index: 999999;
+  pointer-events: none;
+  transition: opacity 200ms ease;
+}
+
+.omni-cursor.is-hidden {
+  opacity: 0;
+}
+
+.omni-cursor__trail {
+  position: fixed;
+  top: 0;
+  left: 0;
+  translate: -50% -50%;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--color-accent) 0%, transparent 70%);
+  filter: blur(3px);
+  pointer-events: none;
+  will-change: transform;
+}
+.omni-cursor__trail:nth-of-type(1) { width: 14px; height: 14px; opacity: 0.09; }
+.omni-cursor__trail:nth-of-type(2) { width: 10px; height: 10px; opacity: 0.15; }
+
+.omni-cursor__glow {
+  position: fixed;
+  top: 0;
+  left: 0;
+  translate: -50% -50%;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--glow-cyan) 0%, var(--glow-primary) 45%, transparent 75%);
+  filter: blur(2px);
+  opacity: 0.55;
+  pointer-events: none;
+  will-change: transform, width, height, opacity;
+  transition: width 220ms var(--ease-expo-out), height 220ms var(--ease-expo-out), opacity 220ms ease;
+}
+.omni-cursor__glow[data-variant="hover"] {
+  width: 54px;
+  height: 54px;
+  opacity: 0.75;
+}
+.omni-cursor__glow[data-variant="text"] {
+  width: 20px;
+  height: 20px;
+  opacity: 0.4;
+}
+.omni-cursor__glow.is-idle {
+  animation: glow-breathe 4s ease-in-out infinite;
+}
+
+.omni-cursor__core {
+  position: fixed;
+  top: 0;
+  left: 0;
+  translate: -50% -50%;
+  width: 9px;
+  height: 9px;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.omni-cursor__core-dot {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffffff 0%, var(--color-accent) 35%, var(--color-brand) 100%);
+  box-shadow: 0 0 8px rgba(0, 212, 255, 0.85), 0 0 16px var(--glow-primary);
+  transition: transform 180ms var(--ease-spring), width 180ms ease, height 180ms ease,
+    border-radius 180ms ease, background 180ms ease;
+}
+.omni-cursor__core[data-variant="hover"] .omni-cursor__core-dot {
+  transform: scale(1.5);
+}
+.omni-cursor__core[data-variant="text"] .omni-cursor__core-dot {
+  width: 2px;
+  height: 16px;
+  border-radius: 2px;
+  transform: translate(3.5px, -8px);
+  background: linear-gradient(180deg, var(--color-accent), var(--color-brand));
+  box-shadow: 0 0 6px var(--glow-cyan);
+}
+
+.omni-cursor__hover-ring {
+  position: absolute;
+  inset: -14px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 212, 255, 0.45);
+  opacity: 0;
+}
+.omni-cursor__core[data-variant="hover"] .omni-cursor__hover-ring {
+  opacity: 1;
+  animation: cursor-hover-pulse 1.5s ease-out infinite;
+}
+
+@keyframes cursor-hover-pulse {
+  0%   { transform: scale(0.55); opacity: 0.55; }
+  70%  { transform: scale(1.5);  opacity: 0; }
+  100% { transform: scale(1.5);  opacity: 0; }
+}
+
+.omni-cursor__burst {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+.omni-cursor__flash {
+  position: fixed;
+  top: 0;
+  left: 0;
+  translate: -50% -50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #ffffff 0%, var(--color-accent) 60%, transparent 100%);
+  box-shadow: 0 0 10px var(--glow-cyan);
+  pointer-events: none;
+}
+.omni-cursor__ripple {
+  position: fixed;
+  top: 0;
+  left: 0;
+  translate: -50% -50%;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--color-accent);
+  pointer-events: none;
+}
+.omni-cursor__particle {
+  position: fixed;
+  top: 0;
+  left: 0;
+  translate: -50% -50%;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  box-shadow: 0 0 4px var(--glow-cyan);
+  pointer-events: none;
+}
+
+/* Light theme: a bright white-hot core and low-alpha glow read as washed out
+   against a white page, so trade luminance-contrast for color-contrast + a
+   thin dark edge that keeps the cursor crisply defined on light surfaces. */
+.light .omni-cursor__trail:nth-of-type(1) { opacity: 0.14; }
+.light .omni-cursor__trail:nth-of-type(2) { opacity: 0.22; }
+.light .omni-cursor__flash {
+  box-shadow: 0 0 10px rgba(0, 152, 204, 0.9), 0 0 0 1px rgba(10, 40, 90, 0.25);
+}
+
+.light .omni-cursor__glow {
+  opacity: 0.68;
+}
+.light .omni-cursor__glow[data-variant="hover"] {
+  opacity: 0.85;
+}
+.light .omni-cursor__glow[data-variant="text"] {
+  opacity: 0.5;
+}
+
+.light .omni-cursor__core-dot {
+  background: radial-gradient(circle at 35% 30%, #eafcff 0%, var(--color-accent) 45%, var(--color-brand) 100%);
+  box-shadow: 0 0 0 1px rgba(10, 40, 90, 0.35), 0 0 10px rgba(0, 152, 204, 0.9), 0 0 16px var(--glow-primary);
+}
+.light .omni-cursor__core[data-variant="text"] .omni-cursor__core-dot {
+  box-shadow: 0 0 0 1px rgba(10, 40, 90, 0.3), 0 0 6px rgba(0, 152, 204, 0.8);
+}
+.light .omni-cursor__hover-ring {
+  border-color: rgba(9, 104, 211, 0.55);
+}
+.light .omni-cursor__ripple {
+  box-shadow: 0 0 0 1px rgba(10, 40, 90, 0.25);
+}
+.light .omni-cursor__particle {
+  box-shadow: 0 0 4px var(--glow-cyan), 0 0 0 0.5px rgba(10, 40, 90, 0.3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.custom-cursor-active,
+  html.custom-cursor-active * {
+    cursor: auto !important;
+  }
+  .omni-cursor {
+    display: none;
+  }
 }
 
