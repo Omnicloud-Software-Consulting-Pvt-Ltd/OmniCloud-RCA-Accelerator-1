@@ -48,6 +48,7 @@ import {
 import { buildAttributeCanvas, buildScheduleVariableDiagnostic, buildFinalCanvasStructuralAudit } from "./canvasBuilder";
 import { deployExpressionSetDefinition } from "./deploy";
 import { validateExpressionSetUniquenessAgainstOrg, diagnosePostDeployFailure, resolveNextAvailableExpressionSetVersion, type OrgUniquenessResult } from "./orgUniquenessValidation";
+import { scanForInvalidSalesforceReferenceIds } from "./salesforceIdValidation";
 import { activateExpressionSetVersion } from "./activation";
 import { refreshListPriceDecisionTable, refreshAttributeDiscountEntries } from "./decisionTableRefresh";
 import { verifySalesforceState, resolveExpressionSetId, resolveExpressionSetVersionId, buildConnectExpressionSetPath } from "./verifySalesforceState";
@@ -1100,20 +1101,28 @@ export async function runCreateAttributePricingPipeline(
     const decisionLabel: Record<OrgUniquenessResult["decision"], string> = {
       "create-new-expression-set": `✓ New ExpressionSet + Version ${nextVersionResolution?.versionNumber ?? 1} will be created.`,
       "create-new-version": `✓ New Version ${nextVersionResolution?.versionNumber ?? "(unresolved)"} will be added to the existing ExpressionSet — the existing version(s) are NOT touched.`,
+      // §TBP-20260923-210132-FAD5, Part 1/Case 4 — mirrors lib/pricing-rules/tier-based/create/
+      // createPipeline.ts's own enforcement ("same lifecycle logic," Part 8 test 12): a "Create Pricing
+      // Procedure" operation never legitimately lands here (the version-number resolution above always
+      // targets a fresh, independently-collision-checked identity) — draft or active, this is now always
+      // treated as a hard failure below, never a silent "update in place."
       "update-existing-version": activeCollision
         ? `✕ This build's generated identity matches an EXISTING, ACTIVE version (${uniqueness.matchedVersionId}) — Salesforce would reject an update to it outright. See conflicts below.`
-        : `ℹ This build's generated identity still matches an EXISTING (Draft) version (${uniqueness.matchedVersionId}) — that version will be updated in place, not a new one added. If a new version was intended, this usually means the version-number resolution above could not run (see warnings).`,
+        : `✕ This build's generated identity still matches an EXISTING (Draft) version (${uniqueness.matchedVersionId}) — a Create Pricing Procedure operation must never update an existing version in place. This usually means the version-number resolution above could not run (see warnings). See conflicts below.`,
       "duplicate-version-conflict": "✕ Conflict — see below.",
       "version-identity-unknown": "✕ Version identity could not be determined on this org (no comparable field on ExpressionSetVersion) — refusing to deploy an unverifiable identity. See conflicts below.",
     };
-    step(steps, "deploy-pricing-procedure", uniqueness.decision === "update-existing-version" ? "info" : "success", `→ Expression Set Version lifecycle: ${decisionLabel[uniqueness.decision]}`);
+    step(steps, "deploy-pricing-procedure", uniqueness.decision === "create-new-expression-set" || uniqueness.decision === "create-new-version" ? "success" : "error", `→ Expression Set Version lifecycle: ${decisionLabel[uniqueness.decision]}`);
   } catch (err) {
     warnings.push(`Org-wide uniqueness pre-flight could not complete: ${err instanceof Error ? err.message : String(err)} — proceeding to deploy anyway; a real conflict will still be caught by Salesforce itself.`);
   }
-  if (uniqueness && !uniqueness.ok) {
+  const wouldUpdateExisting = uniqueness?.decision === "update-existing-version";
+  if (uniqueness && (!uniqueness.ok || wouldUpdateExisting)) {
     const failure = buildLogicalFailure(
       "deploy-pricing-procedure",
-      `This Expression Set/Version identity conflicts with an existing record in the org: ${uniqueness.conflicts.map(c => `${c.identifier} (${c.conflictingMetadataType} ${c.existingRecordId})`).join("; ")}.`,
+      wouldUpdateExisting && uniqueness.ok
+        ? `This Expression Set/Version identity ("${targetIdentity}") matches an existing ExpressionSetVersion (${uniqueness.matchedVersionId}) under ExpressionSet ${uniqueness.existingExpressionSetId} — refusing to update an existing version in place for a Create Pricing Procedure operation.`
+        : `This Expression Set/Version identity conflicts with an existing record in the org: ${uniqueness.conflicts.map(c => `${c.identifier} (${c.conflictingMetadataType} ${c.existingRecordId})`).join("; ")}.`,
     );
     step(steps, "deploy-pricing-procedure", "error", failure.reason);
     return fail({
@@ -1227,6 +1236,27 @@ export async function runCreateAttributePricingPipeline(
     steps, "deploy-pricing-procedure", "success",
     `✓ Payload verification: PASS — Resolved Version: ${resolvedCandidate.versionNumber ?? "(n/a)"} | Resolved Rank: ${resolvedCandidate.rank ?? "(n/a)"} | Outbound Version: ${outboundVersionNumber ?? "(n/a)"} | Outbound Rank: ${outboundRank ?? "(n/a)"} | Identity: ${outboundFullName ?? "(n/a)"}.`,
   );
+
+  // §TBP-20260923-210132-FAD5, Part 4/8 test 12 — mirrors the Tier-Based/Volume-Based create pipelines'
+  // own fail-closed scan exactly ("same lifecycle logic"): the FINAL serialized metadata is checked for
+  // any fabricated/invalid Salesforce reference Id BEFORE the Metadata API is ever called.
+  const idValidation = scanForInvalidSalesforceReferenceIds(canvas.finalFileXml);
+  if (!idValidation.ok) {
+    const failure = buildLogicalFailure(
+      "deploy-pricing-procedure",
+      `INVALID_SALESFORCE_REFERENCE_ID: ${idValidation.violations.length} invalid Salesforce reference value(s) found in the final metadata — refusing to deploy. ${idValidation.violations.map(v => `field="${v.field}" value="${v.value}" nearName="${v.nearbyName ?? "(unknown)"}"`).join("; ")}`,
+    );
+    step(steps, "deploy-pricing-procedure", "error", failure.reason);
+    return fail({
+      failure, warnings,
+      createdValues, existingValuesReused: reusedValues,
+      priceAdjustmentScheduleId: native.scheduleId, ruleIds: native.ruleIds, conditionIds: native.conditionIds, adjustmentIds: native.adjustmentIds,
+      parentStepValidation: canvas.parentStepValidation, duplicateStepNames: canvas.duplicateStepNames, deployPayloadFingerprint,
+      attributeDiscountBranchSelection: canvas.attributeDiscountBranchSelection, expressionSetDonorInspection,
+    });
+  }
+  step(steps, "deploy-pricing-procedure", "info", idValidation.reportText);
+
   step(steps, "deploy-pricing-procedure", "info", "→ Creating Expression Set Version.");
   emit("deploy-pricing-procedure", "running");
   const deployResult = await deployExpressionSetDefinition(client, apiName, canvas.finalFileXml, canvas.donorFileName);

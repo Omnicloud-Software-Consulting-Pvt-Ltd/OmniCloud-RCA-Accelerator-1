@@ -625,6 +625,71 @@ export async function resolveNextAvailableExpressionSetVersion(
   );
 }
 
+/**
+ * §TBP-20260923-210132-FAD5 — Part 5: "Implement one authoritative identity object... Resolve this ONCE.
+ * After resolution, every later stage must consume this object... There must be ONE source of truth."
+ *
+ * A THIN wrapper over `resolveNextAvailableExpressionSetVersion` (already the org-verified, independently
+ * re-checked, never-guessing resolver used throughout this module) — never a second/competing resolution
+ * mechanism. Formalizes its output into the single object every downstream stage (canvas build, the
+ * lifecycle decision log, the post-build verification) must consume verbatim, instead of each stage
+ * deriving its own version of "the identity" from `apiName`/`versionNumber` independently — which is
+ * exactly how the live bug happened: candidate resolution correctly proved "..._V2" collision-free, but a
+ * LATER, independent recomputation inside the canvas builder (donor-suffix-shape-dependent) silently
+ * produced the bare apiName instead, and every stage after that point believed a different identity.
+ *
+ * This is a CREATE-flow resolver only — every real caller in this codebase (`runCreateTierPricingPipeline`,
+ * `runCreateVolumePricingPipeline`, the Attribute-Based create pipeline) is a "Create Pricing Procedure"
+ * operation, never an "update an existing procedure" one (no such pipeline exists in this codebase).
+ * `existingExpressionSetVersionId` is therefore ALWAYS `null` here — Case 4's own rule ("do not
+ * automatically update an existing Draft unless the user explicitly requested an update operation; for a
+ * Create Pricing Procedure operation, create a new unique version") is enforced by construction: this plan
+ * never designates an existing version as an update target at all.
+ */
+export type ExpressionSetLifecycleAction = "CREATE_NEW_EXPRESSION_SET" | "CREATE_NEW_VERSION";
+
+export interface ExpressionSetIdentityPlan {
+  expressionSetApiName: string;
+  /** The version's own per-version identity — identical to `fullName`, exposed under both names to match
+   * the exact shape requested (Part 5) without ambiguity about which is which. */
+  expressionSetVersionApiName: string;
+  versionNumber: number;
+  fullName: string;
+  rank: number | null;
+  existingExpressionSetId: string | null;
+  /** Always `null` for this CREATE-only resolver — see the function doc comment above. */
+  existingExpressionSetVersionId: string | null;
+  lifecycleAction: ExpressionSetLifecycleAction;
+  reason: string;
+  /** The full underlying resolution (attempt history, inventory, rank data) — never re-derived by a
+   * caller; always available in case deeper diagnostics are needed. */
+  resolution: ResolveNextAvailableVersionResult;
+}
+
+export async function resolveExpressionSetIdentityPlan(
+  client: SalesforceClient,
+  apiName: string,
+): Promise<ExpressionSetIdentityPlan> {
+  const resolution = await resolveNextAvailableExpressionSetVersion(client, apiName);
+  const existingExpressionSetId = resolution.inventory.existingExpressionSetId;
+  const lifecycleAction: ExpressionSetLifecycleAction = existingExpressionSetId ? "CREATE_NEW_VERSION" : "CREATE_NEW_EXPRESSION_SET";
+  const reason = existingExpressionSetId
+    ? `Reusing existing ExpressionSet ${existingExpressionSetId} — creating new Version ${resolution.versionNumber} (identity "${resolution.identity}"); existing version(s) are not modified.`
+    : `No existing ExpressionSet found for ApiName "${apiName}" — creating a new ExpressionSet and Version ${resolution.versionNumber} (identity "${resolution.identity}").`;
+  return {
+    expressionSetApiName: apiName,
+    expressionSetVersionApiName: resolution.identity,
+    versionNumber: resolution.versionNumber,
+    fullName: resolution.identity,
+    rank: resolution.rank,
+    existingExpressionSetId,
+    existingExpressionSetVersionId: null,
+    lifecycleAction,
+    reason,
+    resolution,
+  };
+}
+
 export async function validateExpressionSetUniquenessAgainstOrg(
   client: SalesforceClient,
   args: OrgUniquenessCheckArgs,

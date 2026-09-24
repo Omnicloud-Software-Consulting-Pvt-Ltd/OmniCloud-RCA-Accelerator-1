@@ -25,11 +25,14 @@ import type { SalesforceClient } from "@/lib/salesforce/client";
 import {
   extractStepGraph, getTagValue, escapeXml, type PhysicalStepNode,
   getTopLevelParameterBlocks, getNestedCustomElementParameterBlocks,
-  getParamName, getParamValue,
+  getParamName, getParamValue, extractFlatBlocks,
 } from "@/lib/pricing-rules/attribute-based/create/xmlBlocks";
 import { computeRequiredOccurrenceIndexes, pruneXmlToRequiredOccurrences, findDanglingParentStepReferences } from "@/lib/pricing-rules/attribute-based/create/pricingCanvasPruning";
 import { compareExpressionSetSchema, compareStepStructure, type StepStructureReport } from "@/lib/pricing-rules/attribute-based/create/schemaDiff";
-import { injectVersionNumberAndRank, regenerateVersionedFullName } from "@/lib/pricing-rules/attribute-based/create/versionEnvelopeFields";
+import {
+  injectVersionNumberAndRank, regenerateVersionedFullName, stripEnvelopeSalesforceIds,
+  protectXmlBlocks, restoreXmlBlocks,
+} from "@/lib/pricing-rules/attribute-based/create/versionEnvelopeFields";
 import {
   resolvePriceBookEntriesV2DecisionTable, resolveTieredAdjustmentEntriesDecisionTable,
   formatExactDecisionTableFailure, formatDecisionTableMappingDiagnostic,
@@ -109,6 +112,104 @@ export function validateFieldReferenceParamPreserved(
   }
   if (!type || type.trim() === "") {
     return { fatal: `${errorCode}: the final composed canvas's "${paramName}" parameter has no <type> (datatype/binding-kind) — Salesforce requires this; refusing to deploy.\n${diagnostic}`, diagnostic };
+  }
+  return { fatal: null, diagnostic };
+}
+
+/**
+ * §TBP-20260924-064323-C4D9 — "Specify a valid data type for the LowerBoundField variable." Byte-for-byte
+ * PARAMETER preservation (`validateFieldReferenceParamPreserved` above) proves the `<parameters>` block
+ * itself survived unchanged — it does NOT prove the thing that parameter's `<value>` REFERENCES BY NAME
+ * (a `<variables>` declaration, living in the envelope region — see `protectVariableBlocks` above) also
+ * survived, still under the SAME name, still carrying a real datatype. This function traces that second
+ * link explicitly: if the parameter's value matches the `<name>` of a `<variables>` block declared
+ * anywhere in the donor, it locates that SAME-named variable in the final assembled file and reports
+ * whether it's still there and still carries type/dataType metadata — never assumed from the parameter's
+ * own preservation alone.
+ */
+export interface FieldReferenceVariableAudit {
+  paramName: string;
+  donorParamFragment: string | null;
+  finalParamFragment: string | null;
+  /** The variable name the parameter's `<value>` appears to reference — null when that value doesn't
+   * match any `<variables>` declaration found in the donor (e.g. it's a literal, not a variable reference). */
+  referencedVariableName: string | null;
+  donorVariableFragment: string | null;
+  finalVariableFragment: string | null;
+}
+
+function findVariableBlockByName(fullXml: string, variableName: string): string | null {
+  return extractFlatBlocks(fullXml, "variables").find(b => getTagValue(b, "name") === variableName) ?? null;
+}
+
+/** Any sub-tag whose name contains "type" (case-insensitive) inside a `<variables>` block — e.g.
+ * `<dataType>`/`<type>`/`<objectType>`, whichever this org's real schema actually uses; never assumed to
+ * be one specific tag name, since no real donor sample of this exact block shape is available to confirm it. */
+function extractAnyTypeLikeTagValue(variableBlock: string): { tag: string; value: string } | null {
+  const re = /<([A-Za-z][\w]*)>([^<]*)<\/\1>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(variableBlock))) {
+    if (/type/i.test(m[1]) && m[2].trim() !== "") return { tag: m[1], value: m[2].trim() };
+  }
+  return null;
+}
+
+export function auditFieldReferenceVariable(
+  paramName: string,
+  donorVtdFullXml: string,
+  finalVtdFullXml: string,
+  donorFullFileXml: string,
+  finalFullFileXml: string,
+): FieldReferenceVariableAudit {
+  const donorParam = findNamedParameterBlock(donorVtdFullXml, paramName);
+  const finalParam = findNamedParameterBlock(finalVtdFullXml, paramName);
+  const referencedValue = donorParam ? getParamValue(donorParam) : null;
+  const referencedVariableName = referencedValue && findVariableBlockByName(donorFullFileXml, referencedValue) ? referencedValue : null;
+  return {
+    paramName,
+    donorParamFragment: donorParam,
+    finalParamFragment: finalParam,
+    referencedVariableName,
+    donorVariableFragment: referencedVariableName ? findVariableBlockByName(donorFullFileXml, referencedVariableName) : null,
+    finalVariableFragment: referencedVariableName ? findVariableBlockByName(finalFullFileXml, referencedVariableName) : null,
+  };
+}
+
+/**
+ * §Part 8 — semantic (not merely byte-for-byte) validation: if the donor proves `paramName`'s value is a
+ * reference to a declared variable, that SAME variable must still exist, under the SAME name, in the
+ * final canvas, and must still carry SOME type/dataType-shaped metadata. Fails closed with
+ * `errorCode` (e.g. "LOWER_BOUND_FIELD_INVALID_DATATYPE") — never silently trusts that parameter-level
+ * preservation alone proves the reference still resolves to something valid.
+ */
+export function validateFieldReferenceVariableSemantics(
+  audit: FieldReferenceVariableAudit,
+  errorCode: string,
+): { fatal: string | null; diagnostic: string } {
+  const diagnostic =
+    `${audit.paramName} referenced variable: ${audit.referencedVariableName ?? "(not a variable reference — value does not match any declared <variables> name)"}\n` +
+    `  donor variable fragment: ${audit.donorVariableFragment ?? "(none)"}\n` +
+    `  final variable fragment: ${audit.finalVariableFragment ?? "(none)"}`;
+
+  if (!audit.referencedVariableName) return { fatal: null, diagnostic };
+  if (!audit.finalVariableFragment) {
+    return {
+      fatal: `${errorCode}: "${audit.paramName}" references variable "${audit.referencedVariableName}", which the donor declares (${audit.donorVariableFragment}) but which no longer exists in the final composed canvas — the reference is dangling; Salesforce cannot resolve a data type for a variable that isn't declared.\n${diagnostic}`,
+      diagnostic,
+    };
+  }
+  const finalTypeInfo = extractAnyTypeLikeTagValue(audit.finalVariableFragment);
+  if (!finalTypeInfo) {
+    return {
+      fatal: `${errorCode}: "${audit.paramName}" references variable "${audit.referencedVariableName}", which exists in the final canvas but declares no type/dataType-shaped field at all (fragment: ${audit.finalVariableFragment}) — refusing to deploy a variable reference with no resolvable data type.\n${diagnostic}`,
+      diagnostic,
+    };
+  }
+  if (audit.donorVariableFragment && audit.donorVariableFragment !== audit.finalVariableFragment) {
+    return {
+      fatal: `${errorCode}: "${audit.paramName}"'s referenced variable "${audit.referencedVariableName}" changed between donor and final canvas — donor: ${audit.donorVariableFragment} | final: ${audit.finalVariableFragment}. This pipeline never intentionally edits a <variables> declaration; any difference is corruption.\n${diagnostic}`,
+      diagnostic,
+    };
   }
   return { fatal: null, diagnostic };
 }
@@ -349,7 +450,18 @@ export interface CanvasBuildResult {
 
 export async function buildTierCanvas(
   client: SalesforceClient,
-  ctx: { procedureName: string; apiName: string; description?: string; versionNumber?: number; rank?: number | null; onProgress?: (phase: "template-retrieved") => void },
+  ctx: {
+    procedureName: string; apiName: string; description?: string; versionNumber?: number; rank?: number | null;
+    /** §TBP-20260923-210132-FAD5 — the AUTHORITATIVE, already-resolved ExpressionSetVersion identity
+     * (e.g. "Keyboard_Tier_Based_Pricing_Procedure_V2"), computed ONCE by
+     * `resolveExpressionSetIdentityPlan` (orgUniquenessValidation.ts) before this function ever runs. When
+     * provided, `<fullName>` is set to this value VERBATIM — this function never independently
+     * reconstructs the identity from the donor's own suffix shape or from `apiName`/`versionNumber` alone.
+     * Omitted only by a caller that hasn't been updated to resolve a plan (falls back to the donor-suffix-
+     * mirroring `regenerateVersionedFullName` behavior for backward compatibility). */
+    fullName?: string;
+    onProgress?: (phase: "template-retrieved") => void;
+  },
 ): Promise<CanvasBuildResult> {
   const fatalErrors: string[] = [];
   const warnings: string[] = [];
@@ -711,6 +823,37 @@ export async function buildTierCanvas(
   // can only ever remove what the per-step pass already proved safe to remove — never a broader class.
   const idFreeSteps = stepsRegion.replace(/<id>[0-9A-Za-z]{15,18}<\/id>\s*/g, "");
 
+  // §TBP-20260923-210132-FAD5 — root-cause gap found for the "U#190f.3fffffff / couldn't find a record
+  // with the ID (ExpressionSetDefinitionVersion)" failure: EVERY `<id>` strip up to this point (`stripIds`,
+  // `idFreeSteps`) only ever operates on the STEPS region. The ENVELOPE region (`envelopeBefore`/
+  // `envelopeAfter` below — everything in `<versions>` OUTSIDE `<steps>`, where the donor's OWN
+  // ExpressionSetVersion/definition-version record references legitimately live) was never touched by any
+  // Id-stripping pass at all, so a donor's own internal version-identity reference — valid for the DONOR's
+  // existing record, meaningless (or actively colliding) for a brand-new version being created — could
+  // survive verbatim into every deployed version this pipeline ever produced. Uses the exact same narrow,
+  // proven-safe pattern as `stripIds` (only a genuine 15-18-char alphanumeric Salesforce Id) — never the
+  // broader pattern that caused the LowerBoundField regression — applied here for the first time to the
+  // envelope region specifically.
+  const envelopeBeforeIdFree = stripEnvelopeSalesforceIds(envelopeBefore);
+  const envelopeAfterIdFree = stripEnvelopeSalesforceIds(envelopeAfter);
+
+  // §TBP-20260924-064323-C4D9 — "Specify a valid data type for the LowerBoundField variable." A
+  // `<variables>` element's own `<name>` (a variable declaration — the thing a step's parameter, e.g.
+  // VolumeTierDiscount's LowerBoundField/UpperBoundField, can REFERENCE by name) lives in this same
+  // envelope region and would otherwise be caught by the generic `<name>`/`<label>`/`<description>`
+  // regeneration below, overwriting EVERY variable's own name with the SAME apiName/label — silently
+  // detaching any parameter that references it BY NAME from its own declaration (the declaration survives,
+  // renamed; the reference still points to the OLD name; Salesforce reports "no valid data type" because
+  // the name the reference resolves to no longer declares one). Mirrors
+  // lib/pricing-rules/attribute-based/create/canvasBuilder.ts's own proven fix for this EXACT class of bug
+  // (documented there against the same envelope-wide regeneration hazard) — never previously ported here.
+  // Every `<variables>...</variables>` block is swapped out for an opaque, never-XML-shaped placeholder
+  // token BEFORE any regeneration runs, and restored byte-for-byte afterward — this is a preservation
+  // fix, never a rewrite: no variable's own name/dataType/value is ever changed by this pipeline.
+  const protectedVariableBlocks = new Map<string, string>();
+  const envelopeBeforeProtected = protectXmlBlocks(envelopeBeforeIdFree, "variables", protectedVariableBlocks);
+  const envelopeAfterProtected = protectXmlBlocks(envelopeAfterIdFree, "variables", protectedVariableBlocks);
+
   /**
    * §Active ExpressionSetVersion identity collision investigation (9QMak000000t6nxGAA) — `<fullName>` is
    * the ExpressionSetVersion's OWN per-version identity and carries a numeric version suffix in real
@@ -734,19 +877,26 @@ export async function buildTierCanvas(
     let out = envelope;
     out = out.replace(/<label>[\s\S]*?<\/label>/, `<label>${escapeXml(ctx.procedureName)}</label>`);
     if (ctx.description) out = out.replace(/<description>[\s\S]*?<\/description>/, `<description>${escapeXml(ctx.description)}</description>`);
-    out = out.replace(/<fullName>([\s\S]*?)<\/fullName>/g, (_m, donorValue: string) => `<fullName>${escapeXml(regenerateVersionedFullName(donorValue, ctx.apiName, ctx.versionNumber))}</fullName>`);
+    // §TBP-20260923-210132-FAD5 — Part 5, single source of truth: when the caller has already resolved an
+    // authoritative identity (`ctx.fullName`, from `resolveExpressionSetIdentityPlan`), it is used VERBATIM
+    // — this function never independently reconstructs it from the donor's own suffix shape in that case.
+    // `regenerateVersionedFullName` remains only as a fallback for a caller that hasn't resolved a plan.
+    out = out.replace(/<fullName>([\s\S]*?)<\/fullName>/g, (_m, donorValue: string) => `<fullName>${escapeXml(ctx.fullName ?? regenerateVersionedFullName(donorValue, ctx.apiName, ctx.versionNumber))}</fullName>`);
     out = out.replace(/<developerName>[\s\S]*?<\/developerName>/, `<developerName>${escapeXml(ctx.apiName)}</developerName>`);
     out = out.replace(/<name>[\s\S]*?<\/name>/, `<name>${escapeXml(ctx.apiName)}</name>`);
     out = out.replace(/<expressionSetDefinition>[\s\S]*?<\/expressionSetDefinition>/, `<expressionSetDefinition>${escapeXml(ctx.apiName)}</expressionSetDefinition>`);
     return out;
   }
-  let regeneratedBefore = regenerate(envelopeBefore);
-  let regeneratedAfter = regenerate(envelopeAfter);
+  let regeneratedBefore = regenerate(envelopeBeforeProtected);
+  let regeneratedAfter = regenerate(envelopeAfterProtected);
 
   const injected = injectVersionNumberAndRank(regeneratedBefore, regeneratedAfter, { versionNumber: ctx.versionNumber, rank: ctx.rank }, Number(process.env.PRICING_RULES_DEPLOY_API_VERSION ?? 62));
   regeneratedBefore = injected.envelopeBefore;
   regeneratedAfter = injected.envelopeAfter;
   warnings.push(...injected.warnings);
+
+  regeneratedBefore = restoreXmlBlocks(regeneratedBefore, protectedVariableBlocks);
+  regeneratedAfter = restoreXmlBlocks(regeneratedAfter, protectedVariableBlocks);
 
   const identityBearingTags = ["fullName", "developerName", "name", "expressionSetDefinition"];
   for (const tag of identityBearingTags) {
@@ -786,6 +936,29 @@ export async function buildTierCanvas(
   warnings.push(`LowerBoundField/UpperBoundField preservation diagnostic (donor vs. final composed canvas):\n${lowerBoundFieldCheck.diagnostic}\n${upperBoundFieldCheck.diagnostic}`);
   if (lowerBoundFieldCheck.fatal) fatalErrors.push(lowerBoundFieldCheck.fatal);
   if (upperBoundFieldCheck.fatal) fatalErrors.push(upperBoundFieldCheck.fatal);
+
+  // §TBP-20260924-064323-C4D9 — "Specify a valid data type for the LowerBoundField variable," live run
+  // TBP-20260924-064323-C4D9 (donor Keyboard_Tier_Based_Pricing_Procedure). Byte-for-byte parameter
+  // preservation above does NOT prove the VARIABLE that parameter's value references (if any) also
+  // survived under the same name with a valid data type — this traces that second link explicitly and
+  // logs exactly the fragments requested, before deployment.
+  const lowerBoundVariableAudit = auditFieldReferenceVariable("LowerBoundField", vtdNode.full, finalVtdNode.full, donorFileXml, assembledFileXml);
+  const upperBoundVariableAudit = auditFieldReferenceVariable("UpperBoundField", vtdNode.full, finalVtdNode.full, donorFileXml, assembledFileXml);
+  client.logDebug("xml-diagnostic", `LOWER_BOUND_FIELD_DONOR:\n${lowerBoundVariableAudit.donorParamFragment ?? "(not declared in donor)"}`);
+  client.logDebug("xml-diagnostic", `LOWER_BOUND_FIELD_FINAL:\n${lowerBoundVariableAudit.finalParamFragment ?? "(not present in final canvas)"}`);
+  client.logDebug("xml-diagnostic", `LOWER_BOUND_FIELD_REFERENCED_VARIABLE_DONOR:\n${lowerBoundVariableAudit.donorVariableFragment ?? "(no variable reference detected, or donor declares none by that name)"}`);
+  client.logDebug("xml-diagnostic", `LOWER_BOUND_FIELD_REFERENCED_VARIABLE_FINAL:\n${lowerBoundVariableAudit.finalVariableFragment ?? "(not present in final canvas)"}`);
+  client.logDebug("xml-diagnostic", `UPPER_BOUND_FIELD_DONOR:\n${upperBoundVariableAudit.donorParamFragment ?? "(not declared in donor)"}`);
+  client.logDebug("xml-diagnostic", `UPPER_BOUND_FIELD_FINAL:\n${upperBoundVariableAudit.finalParamFragment ?? "(not present in final canvas)"}`);
+  client.logDebug("xml-diagnostic", `UPPER_BOUND_FIELD_REFERENCED_VARIABLE_DONOR:\n${upperBoundVariableAudit.donorVariableFragment ?? "(no variable reference detected, or donor declares none by that name)"}`);
+  client.logDebug("xml-diagnostic", `UPPER_BOUND_FIELD_REFERENCED_VARIABLE_FINAL:\n${upperBoundVariableAudit.finalVariableFragment ?? "(not present in final canvas)"}`);
+
+  const lowerBoundVariableSemantics = validateFieldReferenceVariableSemantics(lowerBoundVariableAudit, "LOWER_BOUND_FIELD_INVALID_DATATYPE");
+  const upperBoundVariableSemantics = validateFieldReferenceVariableSemantics(upperBoundVariableAudit, "UPPER_BOUND_FIELD_INVALID_DATATYPE");
+  warnings.push(`LowerBoundField/UpperBoundField referenced-variable semantic diagnostic:\n${lowerBoundVariableSemantics.diagnostic}\n${upperBoundVariableSemantics.diagnostic}`);
+  if (lowerBoundVariableSemantics.fatal) fatalErrors.push(lowerBoundVariableSemantics.fatal);
+  if (upperBoundVariableSemantics.fatal) fatalErrors.push(upperBoundVariableSemantics.fatal);
+
   if (fatalErrors.length > 0) return { success: false, fatalErrors, warnings };
 
   // §Live-org fix — identity-based re-verification against the FINAL, reparsed, post-prune/post-patch XML.

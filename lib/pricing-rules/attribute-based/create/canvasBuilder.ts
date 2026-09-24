@@ -102,7 +102,7 @@ import {
   pruneXmlToRequiredOccurrences,
 } from "./pricingCanvasPruning";
 import { SHARED_SIGNAL_ACTION_TYPES, resolveAttributeBasedPricingDonor, resolveConnectedAncestor, buildNoCoherentDonorDiagnostic, type ConnectionMechanism } from "./donorInspection";
-import { injectVersionNumberAndRank } from "./versionEnvelopeFields";
+import { injectVersionNumberAndRank, regenerateVersionedFullName } from "./versionEnvelopeFields";
 
 /* ── Constants (framework-level context variable names — safe to hardcode; NOT product/org-specific literals) ── */
 
@@ -2242,26 +2242,14 @@ export async function buildAttributeCanvas(
     const newDescription = escapeXml(ctx.description);
     regenerateEnvelopeTag("description", () => newDescription);
   }
-  regenerateEnvelopeTag("fullName", donorValue => {
-    // §Widened to also capture an optional literal "V"/"v" letter as part of the separator — this org's
-    // own real base donor is itself named "pricingProcedure_V1" (a "_V{n}" suffix, not a bare "_{n}"),
-    // confirmed by live evidence across many turns. The narrower `[._-](\d+)$` pattern never matched that
-    // shape at all (there's no `._-` character immediately before the "1" — it's preceded by "V"), so it
-    // silently fell through to the no-suffix branch, meaning every generated fullName carried NO version
-    // suffix regardless of `ctx.versionNumber` — a second, independent contributor to the confirmed live
-    // bug where every repeated build reused the exact same identity as the already-active version.
-    const suffixMatch = donorValue.match(/^(.*?)([._-][Vv]?)(\d+)$/);
-    if (!suffixMatch) return escapeXml(ctx.apiName);
-    const separator = suffixMatch[2];
-    // §Section 6 — when the caller resolved a next-version-number, the generated version's OWN identity
-    // targets that version instead of reproducing whatever numeric suffix the donor happened to have.
-    // This is the actual fix for repeated creation always updating the same existing version in place:
-    // that always regenerated the SAME suffix (the donor's own), which Salesforce necessarily reads back
-    // as "this is the same version." Never inferred from a string here — `ctx.versionNumber` is the
-    // caller's own org-verified next-version resolution, computed before this function ever runs.
-    const suffixDigits = ctx.versionNumber !== undefined ? String(ctx.versionNumber) : suffixMatch[3];
-    return escapeXml(`${ctx.apiName}${separator}${suffixDigits}`);
-  });
+  // §TBP-20260923-210132-FAD5 — delegates to the SAME shared function tier-based/volume-based use
+  // (versionEnvelopeFields.ts's `regenerateVersionedFullName`), which GUARANTEES a version suffix
+  // whenever `ctx.versionNumber` is resolved — even when the donor's own fullName has no recognizable
+  // suffix pattern of its own to mirror. The prior inline copy here fell back to the bare `ctx.apiName`
+  // in exactly that case, silently discarding a correctly-resolved version number (the identity-drift
+  // root cause confirmed live: candidate resolution proved "..._V2" free of collisions, but the deployed
+  // identity reverted to the bare apiName and matched an existing Draft version instead).
+  regenerateEnvelopeTag("fullName", donorValue => escapeXml(regenerateVersionedFullName(donorValue, ctx.apiName, ctx.versionNumber)));
   regenerateEnvelopeTag("developerName", () => escapeXml(ctx.apiName));
   regenerateEnvelopeTag("name", () => escapeXml(ctx.apiName));
   regenerateEnvelopeTag("expressionSetDefinition", () => escapeXml(ctx.apiName));

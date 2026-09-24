@@ -18,7 +18,10 @@ import {
 } from "@/lib/pricing-rules/attribute-based/create/xmlBlocks";
 import { computeRequiredOccurrenceIndexes, pruneXmlToRequiredOccurrences, findDanglingParentStepReferences } from "@/lib/pricing-rules/attribute-based/create/pricingCanvasPruning";
 import { compareExpressionSetSchema, compareStepStructure, type StepStructureReport } from "@/lib/pricing-rules/attribute-based/create/schemaDiff";
-import { injectVersionNumberAndRank, regenerateVersionedFullName } from "@/lib/pricing-rules/attribute-based/create/versionEnvelopeFields";
+import {
+  injectVersionNumberAndRank, regenerateVersionedFullName, stripEnvelopeSalesforceIds,
+  protectXmlBlocks, restoreXmlBlocks,
+} from "@/lib/pricing-rules/attribute-based/create/versionEnvelopeFields";
 import {
   resolvePriceBookEntriesV2DecisionTable, resolveVolumeDiscountEntriesDecisionTable,
   formatExactDecisionTableFailure, formatDecisionTableMappingDiagnostic,
@@ -189,7 +192,15 @@ export interface CanvasBuildResult {
 
 export async function buildVolumeCanvas(
   client: SalesforceClient,
-  ctx: { procedureName: string; apiName: string; description?: string; versionNumber?: number; rank?: number | null; onProgress?: (phase: "template-retrieved") => void },
+  ctx: {
+    procedureName: string; apiName: string; description?: string; versionNumber?: number; rank?: number | null;
+    /** §TBP-20260923-210132-FAD5 — the AUTHORITATIVE, already-resolved ExpressionSetVersion identity,
+     * computed ONCE by `resolveExpressionSetIdentityPlan` (orgUniquenessValidation.ts) before this function
+     * runs. When provided, `<fullName>` is set to this value VERBATIM — never independently reconstructed
+     * from the donor's own suffix shape. Omitted only by a caller that hasn't resolved a plan. */
+    fullName?: string;
+    onProgress?: (phase: "template-retrieved") => void;
+  },
 ): Promise<CanvasBuildResult> {
   const fatalErrors: string[] = [];
   const warnings: string[] = [];
@@ -520,6 +531,25 @@ export async function buildVolumeCanvas(
 
   const idFreeSteps = stepsRegion.replace(/<id>[\s\S]*?<\/id>/g, "");
 
+  // §TBP-20260923-210132-FAD5 — mirrors lib/pricing-rules/tier-based/create/canvasBuilder.ts's own fix:
+  // the ENVELOPE region (`envelopeBefore`/`envelopeAfter` — everything in `<versions>` OUTSIDE `<steps>`,
+  // where the donor's OWN ExpressionSetVersion/definition-version record references legitimately live) was
+  // never touched by any Id-stripping pass at all, so a donor's own internal version-identity reference
+  // could survive verbatim into every deployed version. Uses the same narrow, proven-safe pattern as
+  // `stripIds` (only a genuine 15-18-char alphanumeric Salesforce Id).
+  const envelopeBeforeIdFree = stripEnvelopeSalesforceIds(envelopeBefore);
+  const envelopeAfterIdFree = stripEnvelopeSalesforceIds(envelopeAfter);
+
+  // §TBP-20260924-064323-C4D9 — mirrors lib/pricing-rules/tier-based/create/canvasBuilder.ts's own fix:
+  // a `<variables>` element's own `<name>` (a variable declaration a step's parameter can reference by
+  // name — e.g. VolumeDiscount's LowerBoundField/UpperBoundField) lives in this same envelope region and
+  // would otherwise be caught by the generic `<name>`/`<label>`/`<description>` regeneration below,
+  // detaching any parameter that references it BY NAME from its own declaration. Protected exactly like
+  // attribute-based/create/canvasBuilder.ts's own already-proven fix for this class of bug.
+  const protectedVariableBlocks = new Map<string, string>();
+  const envelopeBeforeProtected = protectXmlBlocks(envelopeBeforeIdFree, "variables", protectedVariableBlocks);
+  const envelopeAfterProtected = protectXmlBlocks(envelopeAfterIdFree, "variables", protectedVariableBlocks);
+
   /**
    * §Active ExpressionSetVersion identity collision investigation (9QMak000000t6nxGAA) — mirrors
    * lib/pricing-rules/tier-based/create/canvasBuilder.ts's own fix exactly: `<fullName>` is the
@@ -539,19 +569,24 @@ export async function buildVolumeCanvas(
     let out = envelope;
     out = out.replace(/<label>[\s\S]*?<\/label>/, `<label>${escapeXml(ctx.procedureName)}</label>`);
     if (ctx.description) out = out.replace(/<description>[\s\S]*?<\/description>/, `<description>${escapeXml(ctx.description)}</description>`);
-    out = out.replace(/<fullName>([\s\S]*?)<\/fullName>/g, (_m, donorValue: string) => `<fullName>${escapeXml(regenerateVersionedFullName(donorValue, ctx.apiName, ctx.versionNumber))}</fullName>`);
+    // §Part 5, single source of truth — when the caller has already resolved an authoritative identity
+    // (`ctx.fullName`), it is used VERBATIM; this function never independently reconstructs it.
+    out = out.replace(/<fullName>([\s\S]*?)<\/fullName>/g, (_m, donorValue: string) => `<fullName>${escapeXml(ctx.fullName ?? regenerateVersionedFullName(donorValue, ctx.apiName, ctx.versionNumber))}</fullName>`);
     out = out.replace(/<developerName>[\s\S]*?<\/developerName>/, `<developerName>${escapeXml(ctx.apiName)}</developerName>`);
     out = out.replace(/<name>[\s\S]*?<\/name>/, `<name>${escapeXml(ctx.apiName)}</name>`);
     out = out.replace(/<expressionSetDefinition>[\s\S]*?<\/expressionSetDefinition>/, `<expressionSetDefinition>${escapeXml(ctx.apiName)}</expressionSetDefinition>`);
     return out;
   }
-  let regeneratedBefore = regenerate(envelopeBefore);
-  let regeneratedAfter = regenerate(envelopeAfter);
+  let regeneratedBefore = regenerate(envelopeBeforeProtected);
+  let regeneratedAfter = regenerate(envelopeAfterProtected);
 
   const injected = injectVersionNumberAndRank(regeneratedBefore, regeneratedAfter, { versionNumber: ctx.versionNumber, rank: ctx.rank }, Number(process.env.PRICING_RULES_DEPLOY_API_VERSION ?? 62));
   regeneratedBefore = injected.envelopeBefore;
   regeneratedAfter = injected.envelopeAfter;
   warnings.push(...injected.warnings);
+
+  regeneratedBefore = restoreXmlBlocks(regeneratedBefore, protectedVariableBlocks);
+  regeneratedAfter = restoreXmlBlocks(regeneratedAfter, protectedVariableBlocks);
 
   const identityBearingTags = ["fullName", "developerName", "name", "expressionSetDefinition"];
   for (const tag of identityBearingTags) {

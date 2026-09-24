@@ -33,16 +33,76 @@
  *
  * Preserves the donor's own separator style (e.g. "_V", "_v", "_", ".", "-") when a numeric suffix is
  * found in the donor's own `fullName`; targets `versionNumber` (the caller's org-verified next-version
- * resolution) rather than reproducing the donor's own suffix digits. Never invents a suffix when the
- * donor's own fullName has none at all — matching the attribute-based canvas builder's own equivalent
- * inline logic, never guessing a separator style that isn't evidenced.
+ * resolution) rather than reproducing the donor's own suffix digits.
+ *
+ * §TBP-20260923-210132-FAD5 — "U#190f.3fffffff" / identity-drift-to-bare-apiName follow-up. The PRIOR
+ * version of this function fell back to the BARE `apiName` (no suffix at all) whenever the DONOR's own
+ * `fullName` happened to carry no numeric suffix of its own to mirror — which reproduces the exact bug
+ * this function exists to fix (every version of the same procedure again shares one identical `fullName`)
+ * the moment a donor without a suffix gets selected (e.g. donor-chaining from this app's own prior output,
+ * or any donor whose fullName convention doesn't happen to end in a number). Confirmed via the live run:
+ * candidate resolution correctly proved "..._V2" free of collisions, but the DEPLOYED identity silently
+ * reverted to the bare apiName later in the same run, matching an existing Draft version and triggering
+ * an unintended "update in place." Whenever a `versionNumber` has actually been resolved (this function is
+ * called with a real number, not `undefined`), a version suffix is REQUIRED — Salesforce has no other way
+ * to distinguish this version from any other sharing the same ExpressionSet — so this now GUARANTEES one
+ * is present: the donor's own separator style is still preferred when evidenced, but "_V" (the only
+ * separator ever actually observed on a real donor in this codebase — see
+ * "Rev_Mgmt_Default_Pricing_Procedure2_V1") is used as the default rather than emitting no suffix at all.
+ * `versionNumber === undefined` (no resolution ran at all) is the ONLY case that still mirrors the donor's
+ * own suffix (or lack of one) verbatim — this function is never the reason a genuinely-unresolved build
+ * looks different from its donor.
  */
 export function regenerateVersionedFullName(donorValue: string, apiName: string, versionNumber: number | undefined): string {
   const suffixMatch = donorValue.match(/^(.*?)([._-][Vv]?)(\d+)$/);
-  if (!suffixMatch) return apiName;
-  const separator = suffixMatch[2];
-  const suffixDigits = versionNumber !== undefined ? String(versionNumber) : suffixMatch[3];
-  return `${apiName}${separator}${suffixDigits}`;
+  if (versionNumber === undefined) {
+    return suffixMatch ? `${apiName}${suffixMatch[2]}${suffixMatch[3]}` : apiName;
+  }
+  const separator = suffixMatch ? suffixMatch[2] : "_V";
+  return `${apiName}${separator}${versionNumber}`;
+}
+
+/**
+ * §TBP-20260924-064323-C4D9 — "Specify a valid data type for the LowerBoundField variable." A
+ * `<variables>` element's own `<name>` (a variable declaration a step's parameter can reference by name)
+ * lives in the SAME envelope region as the version's own identity tags (`<fullName>`/`<name>`/etc.) and
+ * would otherwise be caught by their generic regeneration, silently detaching any parameter that
+ * references it by name from its own declaration. Generic over `tagName` so it protects ANY
+ * self-contained block a caller needs shielded from a blanket envelope-wide regex — mirrors
+ * lib/pricing-rules/attribute-based/create/canvasBuilder.ts's own already-proven, previously-inline
+ * `protectBlocks`/`restoreBlocks` pair exactly (never ported to a shared location before this — extracted
+ * here so it's directly unit-testable, and so Tier-Based/Volume-Based can use the identical, proven logic
+ * rather than a second hand-written copy). `blocks` is caller-owned (one fresh `Map` per build) so nested/
+ * concurrent protect-then-restore cycles never share state.
+ */
+export function protectXmlBlocks(text: string, tagName: string, blocks: Map<string, string>): string {
+  return text.replace(new RegExp(`<${tagName}(?:\\s[^>]*)?>[\\s\\S]*?<\\/${tagName}>`, "g"), match => {
+    const token = `__PROTECTED_${tagName.toUpperCase()}_BLOCK_${blocks.size}__`;
+    blocks.set(token, match);
+    return token;
+  });
+}
+
+/** Restores every block `protectXmlBlocks` swapped out, from the SAME `blocks` map, byte-for-byte. */
+export function restoreXmlBlocks(text: string, blocks: Map<string, string>): string {
+  let out = text;
+  for (const [token, original] of blocks) out = out.split(token).join(original);
+  return out;
+}
+
+/**
+ * §TBP-20260923-210132-FAD5, Part 3/6 — donor Id hygiene for the ENVELOPE region specifically (the
+ * `<versions>` metadata OUTSIDE `<steps>`, where a donor's own ExpressionSetVersion/definition-version
+ * record references legitimately live). Every existing `<id>` strip in this codebase (`stripIds` in both
+ * canvas builders) only ever operated on the STEPS region — the envelope was never touched by any
+ * Id-stripping pass at all, so a donor's own internal version-identity reference (Category B/C per the
+ * requested audit: an existing Salesforce record Id, valid for the DONOR's own record, meaningless for a
+ * brand-new version being created) could survive verbatim into every deployed version. Uses the exact
+ * same narrow, proven-safe pattern as `stripIds` — only a genuine 15-18-char alphanumeric Salesforce
+ * Id — never a broader pattern that could also remove a legitimate non-Id semantic value.
+ */
+export function stripEnvelopeSalesforceIds(envelope: string): string {
+  return envelope.replace(/<id>[0-9A-Za-z]{15,18}<\/id>\s*/g, "");
 }
 
 export interface VersionNumberAndRankCandidate {

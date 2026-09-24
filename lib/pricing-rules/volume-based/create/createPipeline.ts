@@ -23,7 +23,11 @@ import {
 import { buildVolumeCanvas } from "./canvasBuilder";
 import { refreshVolumeTierDecisionTable } from "./decisionTableRefresh";
 import { deployExpressionSetDefinition } from "@/lib/pricing-rules/attribute-based/create/deploy";
-import { validateExpressionSetUniquenessAgainstOrg, diagnosePostDeployFailure, resolveNextAvailableExpressionSetVersion, type OrgUniquenessResult } from "@/lib/pricing-rules/attribute-based/create/orgUniquenessValidation";
+import {
+  validateExpressionSetUniquenessAgainstOrg, diagnosePostDeployFailure, resolveExpressionSetIdentityPlan,
+  type OrgUniquenessResult, type ExpressionSetIdentityPlan,
+} from "@/lib/pricing-rules/attribute-based/create/orgUniquenessValidation";
+import { scanForInvalidSalesforceReferenceIds } from "@/lib/pricing-rules/attribute-based/create/salesforceIdValidation";
 import { activateExpressionSetVersion } from "@/lib/pricing-rules/attribute-based/create/activation";
 import { refreshListPriceDecisionTable } from "@/lib/pricing-rules/attribute-based/create/decisionTableRefresh";
 import { resolveExpressionSetId, resolveExpressionSetVersionId, verifyVolumeSalesforceState } from "./verifySalesforceState";
@@ -241,16 +245,23 @@ export async function runCreateVolumePricingPipeline(
 
   const apiName = deriveApiName(input.procedureName);
 
-  /* ── Resolve the next available Expression Set Version BEFORE canvas build ── */
-  step(steps, "build-expression-set", "info", "→ Resolving existing Expression Set versions.");
-  let nextVersionResolution: Awaited<ReturnType<typeof resolveNextAvailableExpressionSetVersion>> | null = null;
+  /* ── Resolve the ONE authoritative ExpressionSet identity plan BEFORE canvas build ──
+   * §TBP-20260923-210132-FAD5, Part 5/8 test 11 — mirrors lib/pricing-rules/tier-based/create/
+   * createPipeline.ts's own identity-plan resolution exactly ("same lifecycle logic"). See that file for
+   * the full rationale. A failure here is FATAL — never "proceed without a version override."
+   */
+  step(steps, "build-expression-set", "info", "→ Resolving the authoritative ExpressionSet/ExpressionSetVersion identity plan.");
+  let identityPlan: ExpressionSetIdentityPlan;
   try {
-    nextVersionResolution = await resolveNextAvailableExpressionSetVersion(client, apiName);
-    step(steps, "build-expression-set", "success", `✓ Final candidate identity: ${nextVersionResolution.identity} (Version ${nextVersionResolution.versionNumber}${nextVersionResolution.rankFieldExists ? `, Rank ${nextVersionResolution.rank ?? "(none)"}` : ""}).`);
+    identityPlan = await resolveExpressionSetIdentityPlan(client, apiName);
+    step(
+      steps, "build-expression-set", "success",
+      `✓ Identity plan resolved: ${identityPlan.lifecycleAction} — fullName "${identityPlan.fullName}" (Version ${identityPlan.versionNumber}${identityPlan.resolution.rankFieldExists ? `, Rank ${identityPlan.rank ?? "(none)"}` : ""}).`,
+    );
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    warnings.push(`Could not resolve an unused Expression Set version identity: ${message} — proceeding without a version override.`);
-    step(steps, "build-expression-set", "info", `ℹ Version lifecycle resolution failed (${message}) — proceeding without a version override.`);
+    const failure = buildFailureDiagnostics("build-expression-set", err);
+    step(steps, "build-expression-set", "error", failure.reason);
+    return fail({ failure, priceAdjustmentScheduleId: scheduleId, tierIds });
   }
 
   let expressionSetDonorInspection: Awaited<ReturnType<typeof inspectAllExpressionSetDefinitionDonors>> | undefined;
@@ -266,13 +277,23 @@ export async function runCreateVolumePricingPipeline(
   try {
     canvas = await buildVolumeCanvas(client, {
       procedureName: input.procedureName, apiName, description: input.description,
-      versionNumber: nextVersionResolution?.versionNumber, rank: nextVersionResolution?.rank,
+      versionNumber: identityPlan.versionNumber, rank: identityPlan.rank, fullName: identityPlan.fullName,
       onProgress: phase => {
         if (phase === "template-retrieved") emit("build-expression-set", "running", "Template retrieved — building canvas.");
       },
     });
   } catch (err) {
     const failure = buildFailureDiagnostics("build-expression-set", err);
+    step(steps, "build-expression-set", "error", failure.reason);
+    return fail({ failure, priceAdjustmentScheduleId: scheduleId, tierIds, expressionSetDonorInspection });
+  }
+
+  // §Part 5 enforcement — single-source-of-truth invariant.
+  if (canvas.success && canvas.outboundVersionFields?.fullName !== identityPlan.fullName) {
+    const failure = buildLogicalFailure(
+      "build-expression-set",
+      `IDENTITY_PLAN_VIOLATION: the resolved identity plan targets fullName "${identityPlan.fullName}", but the composed canvas's actual outbound fullName is "${canvas.outboundVersionFields?.fullName ?? "(not found)"}" — refusing to deploy an identity that drifted from the single source of truth.`,
+    );
     step(steps, "build-expression-set", "error", failure.reason);
     return fail({ failure, priceAdjustmentScheduleId: scheduleId, tierIds, expressionSetDonorInspection });
   }
@@ -305,38 +326,41 @@ export async function runCreateVolumePricingPipeline(
   /* ── Org-uniqueness pre-flight ── */
   const generatedFullNames = (canvas.generatedIdentifiers ?? []).filter(g => g.tag === "fullName").map(g => g.value);
   const generatedLabel = (canvas.generatedIdentifiers ?? []).find(g => g.tag === "label")?.value ?? null;
-  const targetIdentity = generatedFullNames[0] ?? apiName;
+  const targetIdentity = identityPlan.fullName;
   let uniqueness: OrgUniquenessResult | null = null;
   try {
     uniqueness = await validateExpressionSetUniquenessAgainstOrg(client, { apiName, generatedFullNames, generatedLabel });
-    // §Active ExpressionSetVersion identity collision investigation — requirement 7: "Return the exact
-    // ExpressionSet and ExpressionSetVersion selected for deployment in the execution log." Mirrors
-    // lib/pricing-rules/tier-based/create/createPipeline.ts's own decision-labeled logging exactly.
     const activeCollision = uniqueness.conflicts.some(c => c.identifier === "Active ExpressionSetVersion identity collision");
     const decisionLabel: Record<OrgUniquenessResult["decision"], string> = {
-      "create-new-expression-set": `✓ No existing ExpressionSet found for ApiName "${apiName}" — a new ExpressionSet + Version ${nextVersionResolution?.versionNumber ?? 1} (identity "${targetIdentity}") will be created.`,
-      "create-new-version": `✓ Reusing existing ExpressionSet ${uniqueness.existingExpressionSetId} — new Version ${nextVersionResolution?.versionNumber ?? "(unresolved)"} (identity "${targetIdentity}") will be added; existing version(s) are NOT touched.`,
+      "create-new-expression-set": `✓ No existing ExpressionSet found for ApiName "${apiName}" — a new ExpressionSet + Version ${identityPlan.versionNumber} (identity "${targetIdentity}") will be created.`,
+      "create-new-version": `✓ Reusing existing ExpressionSet ${uniqueness.existingExpressionSetId} — new Version ${identityPlan.versionNumber} (identity "${targetIdentity}") will be added; existing version(s) are NOT touched.`,
       "update-existing-version": activeCollision
         ? `✕ Target identity "${targetIdentity}" matches an EXISTING, ACTIVE ExpressionSetVersion ${uniqueness.matchedVersionId} under ExpressionSet ${uniqueness.existingExpressionSetId} — Salesforce would reject an update to it outright. See conflicts below.`
-        : `ℹ Target identity "${targetIdentity}" matches an existing (Draft) ExpressionSetVersion ${uniqueness.matchedVersionId} under ExpressionSet ${uniqueness.existingExpressionSetId} — that version will be updated in place, not a new one added.`,
+        : `✕ Target identity "${targetIdentity}" matches an existing (Draft) ExpressionSetVersion ${uniqueness.matchedVersionId} under ExpressionSet ${uniqueness.existingExpressionSetId} — a Create Pricing Procedure operation must never update an existing version in place. See conflicts below.`,
       "duplicate-version-conflict": `✕ Target identity "${targetIdentity}" collides with an ExpressionSetVersion belonging to a DIFFERENT ExpressionSet — see conflicts below.`,
       "version-identity-unknown": "✕ Version identity could not be determined on this org (no comparable field on ExpressionSetVersion) — refusing to deploy an unverifiable identity. See conflicts below.",
     };
-    step(steps, "deploy-pricing-procedure", uniqueness.decision === "update-existing-version" && !activeCollision ? "info" : "success", `→ Expression Set Version lifecycle: ${decisionLabel[uniqueness.decision]}`);
+    step(steps, "deploy-pricing-procedure", uniqueness.decision === "create-new-expression-set" || uniqueness.decision === "create-new-version" ? "success" : "error", `→ Expression Set Version lifecycle: ${decisionLabel[uniqueness.decision]}`);
   } catch (err) {
     warnings.push(`Org-wide uniqueness pre-flight could not complete: ${err instanceof Error ? err.message : String(err)} — proceeding to deploy anyway.`);
   }
-  if (uniqueness && !uniqueness.ok) {
-    const failure = buildLogicalFailure("deploy-pricing-procedure", `This Expression Set/Version identity conflicts with an existing record in the org: ${uniqueness.conflicts.map(c => `${c.identifier} (${c.conflictingMetadataType} ${c.existingRecordId})`).join("; ")}.`);
+  const wouldUpdateExisting = uniqueness?.decision === "update-existing-version";
+  if (uniqueness && (!uniqueness.ok || wouldUpdateExisting)) {
+    const failure = buildLogicalFailure(
+      "deploy-pricing-procedure",
+      wouldUpdateExisting && uniqueness.ok
+        ? `This Expression Set/Version identity ("${targetIdentity}") matches an existing ExpressionSetVersion (${uniqueness.matchedVersionId}) under ExpressionSet ${uniqueness.existingExpressionSetId} — refusing to update an existing version in place for a Create Pricing Procedure operation.`
+        : `This Expression Set/Version identity conflicts with an existing record in the org: ${uniqueness.conflicts.map(c => `${c.identifier} (${c.conflictingMetadataType} ${c.existingRecordId})`).join("; ")}.`,
+    );
     step(steps, "deploy-pricing-procedure", "error", failure.reason);
     return fail({ failure, warnings, priceAdjustmentScheduleId: scheduleId, tierIds, expressionSetDonorInspection });
   }
 
   /* ── Payload fingerprint check ── */
-  const resolvedCandidate = { fullName: targetIdentity, versionNumber: nextVersionResolution?.versionNumber ?? null, expressionSetDefinition: apiName, rank: nextVersionResolution?.rank ?? null };
+  const resolvedCandidate = { fullName: targetIdentity, versionNumber: identityPlan.versionNumber, expressionSetDefinition: apiName, rank: identityPlan.rank };
   const fieldMismatches: string[] = [];
   if (canvas.outboundVersionFields?.fullName !== resolvedCandidate.fullName) fieldMismatches.push(`fullName (resolved="${resolvedCandidate.fullName}", outbound="${canvas.outboundVersionFields?.fullName ?? "(not found)"}")`);
-  if (resolvedCandidate.versionNumber !== null && canvas.outboundVersionFields?.versionNumber !== String(resolvedCandidate.versionNumber)) fieldMismatches.push(`versionNumber (resolved="${resolvedCandidate.versionNumber}", outbound="${canvas.outboundVersionFields?.versionNumber ?? "(not found)"}")`);
+  if (canvas.outboundVersionFields?.versionNumber !== String(resolvedCandidate.versionNumber)) fieldMismatches.push(`versionNumber (resolved="${resolvedCandidate.versionNumber}", outbound="${canvas.outboundVersionFields?.versionNumber ?? "(not found)"}")`);
   if (canvas.outboundVersionFields?.expressionSetDefinition !== resolvedCandidate.expressionSetDefinition) fieldMismatches.push(`expressionSetDefinition (resolved="${resolvedCandidate.expressionSetDefinition}", outbound="${canvas.outboundVersionFields?.expressionSetDefinition ?? "(not found)"}")`);
   if (resolvedCandidate.rank !== null && canvas.outboundVersionFields?.rank !== String(resolvedCandidate.rank)) fieldMismatches.push(`rank (resolved="${resolvedCandidate.rank}", outbound="${canvas.outboundVersionFields?.rank ?? "(not found)"}")`);
   if (fieldMismatches.length > 0) {
@@ -351,6 +375,48 @@ export async function runCreateVolumePricingPipeline(
     return fail({ failure, warnings, priceAdjustmentScheduleId: scheduleId, tierIds, deployPayloadFingerprint, expressionSetDonorInspection });
   }
   step(steps, "deploy-pricing-procedure", "success", "✓ Payload verification passed.");
+
+  // §Part 4 — fail-closed scan of the FINAL serialized metadata for any fabricated/invalid Salesforce
+  // reference Id, BEFORE the Metadata API is ever called.
+  const idValidation = scanForInvalidSalesforceReferenceIds(canvas.finalFileXml);
+  if (!idValidation.ok) {
+    const failure = buildLogicalFailure(
+      "deploy-pricing-procedure",
+      `INVALID_SALESFORCE_REFERENCE_ID: ${idValidation.violations.length} invalid Salesforce reference value(s) found in the final metadata — refusing to deploy. ${idValidation.violations.map(v => `field="${v.field}" value="${v.value}" nearName="${v.nearbyName ?? "(unknown)"}"`).join("; ")}`,
+    );
+    step(steps, "deploy-pricing-procedure", "error", failure.reason);
+    return fail({ failure, warnings, priceAdjustmentScheduleId: scheduleId, tierIds, deployPayloadFingerprint, expressionSetDonorInspection });
+  }
+
+  // §Part 7 — pre-deploy structured lifecycle/reference log.
+  const preDeployLog = [
+    "ExpressionSet Lifecycle",
+    "-----------------------",
+    `ExpressionSet API Name: ${identityPlan.expressionSetApiName}`,
+    `ExpressionSet Id: ${identityPlan.existingExpressionSetId ?? "(none — will be created)"}`,
+    `Selected Version API Name: ${identityPlan.expressionSetVersionApiName}`,
+    `Selected Version Number: ${identityPlan.versionNumber}`,
+    `Selected Version Id: ${identityPlan.existingExpressionSetVersionId ?? "(none — a new version, never an update target)"}`,
+    `Lifecycle Action: ${identityPlan.lifecycleAction}`,
+    "",
+    "ExpressionSetDefinition",
+    "-----------------------",
+    `Definition identity: ${apiName}`,
+    `Definition Id: ${identityPlan.existingExpressionSetId ?? "(none — will be created)"}`,
+    `Definition Version identity: ${identityPlan.fullName}`,
+    "Definition Version Id/reference: (omitted — creating a new DefinitionVersion; never carrying a donor's own record Id forward)",
+    "",
+    "Final Metadata",
+    "--------------",
+    `fullName: ${canvas.outboundVersionFields?.fullName ?? "(not found)"}`,
+    `ExpressionSetVersion identity: ${targetIdentity}`,
+    "ExpressionSetDefinitionVersion references:",
+    "  (none embedded — this deploy creates a new version and never references an existing DefinitionVersion by Id)",
+    "",
+    idValidation.reportText,
+  ].join("\n");
+  step(steps, "deploy-pricing-procedure", "info", preDeployLog);
+  client.logDebug("xml-diagnostic", preDeployLog);
 
   /* ── deploy-pricing-procedure ── */
   emit("deploy-pricing-procedure", "running");
