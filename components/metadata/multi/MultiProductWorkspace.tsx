@@ -41,6 +41,8 @@ interface MultiProductDraft {
   productTypeRaw: string;
   isActive: boolean;
   unitOfMeasure: string;
+  /** Product2.BasedOnId — name/code of an existing Active Product Classification. */
+  classification: string;
   productOwner: string;
   priceBook: string;
   basePrice: string;
@@ -52,7 +54,7 @@ interface MultiProductDraft {
 const EMPTY_DRAFT: MultiProductDraft = {
   productName: "", productCode: "", status: "Draft", description: "",
   family: "", category: "", catalog: "", sellingModel: "One Time",
-  productType: "simple", productTypeRaw: "", isActive: true, unitOfMeasure: "Each",
+  productType: "simple", productTypeRaw: "", isActive: true, unitOfMeasure: "Each", classification: "",
   productOwner: "", priceBook: "Standard Price Book", basePrice: "", currencyIsoCode: "",
   taxIncluded: null,
 };
@@ -71,9 +73,15 @@ function fromAiProduct(p: ProductPayload, intent: ProductIntentMap | undefined):
     productType: p.productType?.toLowerCase() === "bundle" ? "bundle" : "simple",
     productTypeRaw: intent?.productType.value ?? "",
     isActive: p.isActive !== false,
+    status: p.isActive !== false ? "Active" : "Draft",
     productOwner: p.productOwner ?? "",
+    // Each product keeps its OWN extracted price; a priced product with no named
+    // Price Book goes to the Standard Price Book (what /save resolves it to anyway).
     basePrice: p.basePrice ?? "",
+    priceBook: p.priceBook || "Standard Price Book",
     currencyIsoCode: p.currencyIsoCode ?? "",
+    unitOfMeasure: p.unitOfMeasure || "Each",
+    classification: p.classification ?? "",
     taxIncluded: intent?.taxIncluded.value ?? null,
   };
 }
@@ -94,6 +102,8 @@ function toPayload(d: MultiProductDraft): ProductPayload {
     basePrice: d.basePrice || undefined,
     productType: d.productType === "bundle" ? "bundle" : undefined,
     currencyIsoCode: d.currencyIsoCode || undefined,
+    unitOfMeasure: d.unitOfMeasure || undefined,
+    classification: d.classification || undefined,
   };
 }
 
@@ -155,7 +165,7 @@ const STATUS_META: Record<ReviewStatus, { label: string; color: string; icon: st
   unchecked: { label: "Not yet checked",   color: "#5A78A0", icon: "info" },
 };
 
-async function createOneProduct(payload: ProductPayload): Promise<{ id?: string; error?: string }> {
+async function createOneProduct(payload: ProductPayload): Promise<{ id?: string; error?: string; note?: string }> {
   try {
     const res = await fetch("/api/sf/products/save", {
       method: "POST",
@@ -164,7 +174,15 @@ async function createOneProduct(payload: ProductPayload): Promise<{ id?: string;
     });
     const data = await res.json() as ProductDeployResult;
     if (!res.ok || !data.success) return { error: data.error ?? "Salesforce rejected this product." };
-    return { id: data.salesforceId };
+    // The Product2 exists at this point, so it's reported as created — but a price that
+    // didn't persist (or any other failed/skipped step) is surfaced on the row instead of
+    // being swallowed, which is how a missing price used to look like a clean success.
+    const problems = [
+      ...data.errors.map(e => e.step === "pricebookEntry" ? `Price NOT saved: ${e.error}` : `${e.step}: ${e.error}`),
+      ...data.skipped.map(s => `Skipped ${s.step}: ${s.reason}`),
+      ...(data.warnings ?? []),
+    ];
+    return { id: data.salesforceId, ...(problems.length ? { note: problems.join(" · ") } : {}) };
   } catch {
     return { error: "Network error — could not reach Salesforce." };
   }
@@ -699,7 +717,10 @@ function ProductReviewCard({ index, total, draft, intent, status, issues, onChan
           <FSelect value={draft.sellingModel} onChange={v => onChange({ sellingModel: v })} options={optionsWithCurrent(SELLING_MODELS, draft.sellingModel)} />
         </FieldWrap>
         <FieldWrap label="Unit of Measure">
-          <FSelect value={draft.unitOfMeasure} onChange={v => onChange({ unitOfMeasure: v })} options={UNIT_OF_MEASURES} />
+          <FSelect value={draft.unitOfMeasure} onChange={v => onChange({ unitOfMeasure: v })} options={optionsWithCurrent(UNIT_OF_MEASURES, draft.unitOfMeasure)} />
+        </FieldWrap>
+        <FieldWrap label="Product Classification">
+          <FInput value={draft.classification} onChange={v => onChange({ classification: v })} placeholder="e.g. Computer" />
         </FieldWrap>
         <FieldWrap label="Product Type (as stated)">
           <FInput value={draft.productTypeRaw} onChange={v => onChange({ productTypeRaw: v })} placeholder="e.g. Physical" />
@@ -744,7 +765,7 @@ function ProductReviewCard({ index, total, draft, intent, status, issues, onChan
         <FieldWrap label="Price Book">
           <FInput value={draft.priceBook} onChange={v => onChange({ priceBook: v })} placeholder="Standard Price Book" />
         </FieldWrap>
-        <FieldWrap label="Base Price (USD)">
+        <FieldWrap label="Base Price">
           <FInput value={draft.basePrice} onChange={v => onChange({ basePrice: v })} placeholder="0.00" type="number" />
         </FieldWrap>
         <FieldWrap label="Currency">

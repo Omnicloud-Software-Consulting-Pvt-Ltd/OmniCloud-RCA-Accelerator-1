@@ -41,7 +41,9 @@ JSON structure:
       "taxIncluded": null,
       "isActive": null,
       "productOwner": null,
-      "description": null
+      "description": null,
+      "unitOfMeasure": null,
+      "classification": null
     }
   ]
 }
@@ -81,9 +83,9 @@ sellingModel — ONLY if the prompt describes billing/recurrence for THIS produc
     "Term Based - Yearly"      → fixed-term contract billed yearly/annually
   Unstated frequency: "subscription"/"recurring"/"ongoing" → "Evergreen - Monthly"; "contract"/"lease"/"term" → "Term Based - Monthly".
 
-basePrice — ONLY if a price is stated for THIS product ("$1200", "$1,200", "price 1200", "base price 1200", "selling price 1200", "1200 including tax", "1200 before tax"). Output the plain numeric string only. If none, null.
+basePrice — ONLY if a price is stated for THIS product ("$1200", "$1,200", "₹50,000", "Rs. 20,000", "5,00,000", "price 1200", "base price 1200", "selling price 1200", "Laptop - ₹50,000", "a Monitor for ₹20,000", "1200 including tax", "1200 before tax"). Output the plain numeric string only, with ALL currency symbols and grouping commas removed ("₹50,000" → "50000", "5,00,000" → "500000"). Never round or convert. Each product keeps ITS OWN price — never reuse one product's price for another. If none is stated for this product, null.
 
-currencyIsoCode — ONLY if a currency is named or unambiguous from a symbol (€→EUR, £→GBP, $→USD). If a price is given with no currency indicator, null (never assume USD). If no price, null.
+currencyIsoCode — ONLY if a currency is named or unambiguous from a symbol (€→EUR, £→GBP, $→USD, ₹/Rs/rupees/INR→INR) for THIS product's price. If a price is given with no currency indicator, null (never assume USD). If no price, null.
 
 taxIncluded — a SEPARATE flag from basePrice; never fold into the price number.
   • "including tax"/"tax included"/"with tax" → true
@@ -96,6 +98,10 @@ isActive — ONLY if the prompt says active/inactive/status for THIS product.
   • Not mentioned → null (do not default to true yourself)
 
 productOwner — ONLY if a specific name/email is given for this product. Otherwise null.
+
+unitOfMeasure — ONLY if explicitly stated for this product ("unit of measure Hour", "UoM GB", "priced per user"). Title Case unit name. If not mentioned, null — do NOT default to "Each".
+
+classification — ONLY if a product classification is explicitly named for this product ("classification Computer", "product classification Software"). Use the user's exact wording. Otherwise null.
 
 description — ONLY if the prompt has an actual descriptive sentence for this product beyond restating its field values. If the prompt is just a flat list of field values, null — do NOT synthesize one.
 
@@ -110,6 +116,10 @@ Output:
 Prompt: "Create: Laptop Pro 15, family Computers, category Laptops, price 1200. Wireless Mouse, family Accessories, category Computer Accessories, price 40. Office Monitor 27, family Displays, category Monitors, price 300."
 Output:
 {"products":[{"productName":"Laptop Pro 15","productCode":null,"family":"Computers","category":"Laptops","catalog":null,"productType":null,"sellingModel":null,"basePrice":"1200","currencyIsoCode":null,"taxIncluded":null,"isActive":null,"productOwner":null,"description":null},{"productName":"Wireless Mouse","productCode":null,"family":"Accessories","category":"Computer Accessories","catalog":null,"productType":null,"sellingModel":null,"basePrice":"40","currencyIsoCode":null,"taxIncluded":null,"isActive":null,"productOwner":null,"description":null},{"productName":"Office Monitor 27","productCode":null,"family":"Displays","category":"Monitors","catalog":null,"productType":null,"sellingModel":null,"basePrice":"300","currencyIsoCode":null,"taxIncluded":null,"isActive":null,"productOwner":null,"description":null}]}
+
+Prompt: "Create a Laptop for ₹50,000, a Monitor for ₹20,000, and a Keyboard for ₹3,000."
+Output:
+{"products":[{"productName":"Laptop","productCode":null,"family":null,"category":null,"catalog":null,"productType":null,"sellingModel":null,"basePrice":"50000","currencyIsoCode":"INR","taxIncluded":null,"isActive":null,"productOwner":null,"description":null,"unitOfMeasure":null,"classification":null},{"productName":"Monitor","productCode":null,"family":null,"category":null,"catalog":null,"productType":null,"sellingModel":null,"basePrice":"20000","currencyIsoCode":"INR","taxIncluded":null,"isActive":null,"productOwner":null,"description":null,"unitOfMeasure":null,"classification":null},{"productName":"Keyboard","productCode":null,"family":null,"category":null,"catalog":null,"productType":null,"sellingModel":null,"basePrice":"3000","currencyIsoCode":"INR","taxIncluded":null,"isActive":null,"productOwner":null,"description":null,"unitOfMeasure":null,"classification":null}]}
 
 Prompt: "Add a monthly Salesforce CRM Enterprise subscription and a one-time Enterprise Support Contract billed quarterly."
 Output:
@@ -129,6 +139,8 @@ interface RawMultiProduct {
   isActive?: boolean | null;
   productOwner?: string | null;
   description?: string | null;
+  unitOfMeasure?: string | null;
+  classification?: string | null;
 }
 
 export interface GenerateMultiProductResponse {
@@ -213,6 +225,8 @@ export async function POST(req: NextRequest) {
         priceBook: null,
         productType: p.productType,
         currencyIsoCode: p.currencyIsoCode,
+        unitOfMeasure: p.unitOfMeasure,
+        classification: p.classification,
         taxIncluded: p.taxIncluded,
       };
       return buildProductIntent(rawFields);

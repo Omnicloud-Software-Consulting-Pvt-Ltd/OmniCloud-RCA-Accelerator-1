@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { SalesforceClient, SESSION_COOKIE, decodeSession, clientFromSession } from "@/lib/salesforce/client";
 import { addBundleComponent } from "@/lib/bundles/server/relationships";
 import { checkBundleDuplicate } from "@/lib/bundles/server/duplicateCheck";
+import { isContinuableBundleDuplicate } from "@/lib/duplicateDetection";
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Types
@@ -329,9 +330,12 @@ export async function POST(req: NextRequest) {
 
   let bundle: ParsedBundle;
   let depRules: DepRule[] = [];
+  /** Set only when the user explicitly chose "Continue" in the duplicate modal — the Id of the existing bundle they confirmed. */
+  let confirmedExistingBundleId: string | null = null;
   try {
     const body = await req.json();
     bundle = body.bundle;
+    if (typeof body.confirmedExistingBundleId === "string" && body.confirmedExistingBundleId) confirmedExistingBundleId = body.confirmedExistingBundleId;
     if (!bundle?.bundleName) throw new Error("bundle.bundleName is required");
     if (Array.isArray(body.depRules)) depRules = body.depRules;
   } catch (err) {
@@ -354,13 +358,26 @@ export async function POST(req: NextRequest) {
        * batch runs, and only against the ROOT bundle name/code the user
        * actually asked to create — nested bundles and leaf/dependency
        * products keep their existing legitimate reuse-by-name behavior
-       * (§16), which is not a duplicate error. Never bypassable. */
+       * (§16), which is not a duplicate error.
+       *
+       * The ONLY way past an exact match is the user's explicit "Continue"
+       * decision, and only when it names the very record that conflicts
+       * right now AND that record is already a Bundle (exact name) — then
+       * the root is that existing bundle (reuse/update, never a second
+       * same-named record). A confirmation for a different Id, a Code-only
+       * match, or a plain Product collision still blocks. */
+      let confirmedRootId: string | null = null;
       try {
         const duplicate = await checkBundleDuplicate(sfClient, { name: bundle.bundleName, code: bundle.bundleCode });
         if (duplicate.isDuplicate) {
-          send({ type: "duplicate", ...duplicate });
-          controller.close();
-          return;
+          const confirmed = confirmedExistingBundleId === duplicate.recordId && isContinuableBundleDuplicate(duplicate);
+          if (!confirmed) {
+            send({ type: "duplicate", ...duplicate });
+            controller.close();
+            return;
+          }
+          confirmedRootId = duplicate.recordId;
+          send({ type: "log", batch: 0, level: "warning", message: `⚠ Continuing with existing bundle "${duplicate.recordName}" (${duplicate.recordId}) — confirmed by user` });
         }
       } catch (err) {
         send({ type: "error", message: `Could not verify this bundle doesn't already exist: ${(err as Error).message}` });
@@ -466,11 +483,16 @@ export async function POST(req: NextRequest) {
 
         // Root bundle
         send({ type: "log", batch: 2, level: "info", message: `› ROOT ${bundle.bundleName} (Type=Bundle)` });
-        const resolvedRoot = await resolveBundleProduct(
-          sfClient, bundle.bundleName,
-          { Description: bundle.description || bundle.bundleName, Family: "Bundles" },
-          (level, msg) => send({ type: "log", batch: 2, level, message: msg }),
-        );
+        // A user-confirmed existing bundle is used by Id — never re-resolved by Name, which could
+        // pick a different same-named record than the one the user actually confirmed.
+        const resolvedRoot = confirmedRootId
+          ? { id: confirmedRootId, action: "reused" as const }
+          : await resolveBundleProduct(
+              sfClient, bundle.bundleName,
+              { Description: bundle.description || bundle.bundleName, Family: "Bundles" },
+              (level, msg) => send({ type: "log", batch: 2, level, message: msg }),
+            );
+        if (confirmedRootId) send({ type: "log", batch: 2, level: "warning", message: `⚠ Reused bundle: ${bundle.bundleName} → ${confirmedRootId}` });
         if (!resolvedRoot) {
           send({ type: "batch_error", batch: 2, name: "Create Bundles", error: "Root bundle creation failed" });
           send({ type: "error", message: "Root bundle creation failed — aborting" });
@@ -852,6 +874,8 @@ export async function POST(req: NextRequest) {
         send({
           type: "complete",
           bundleId: rootBundleId,
+          /** true when the root was an existing bundle the user explicitly chose to Continue with. */
+          reusedExistingRoot: !!confirmedRootId,
           bundleIds: hs.bundleIds,
           leafProductIds: hs.leafProductIds,
           totalBundles: Object.keys(hs.bundleIds).length,

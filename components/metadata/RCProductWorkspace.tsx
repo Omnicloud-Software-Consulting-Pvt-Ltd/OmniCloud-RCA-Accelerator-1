@@ -11,6 +11,7 @@ import {
 } from "@/components/metadata/shared/productFields";
 import FieldMappingTable from "@/components/metadata/shared/FieldMappingTable";
 import type { ProductIntentMap } from "@/lib/products/ai/productIntent";
+import { formatProductPrice } from "@/lib/products/price";
 import { buildProductMappingRows } from "@/lib/products/ai/productMappingRows";
 import type { ProductPayload } from "@/lib/products/types";
 import type { DuplicateCheckResult } from "@/lib/duplicateDetection";
@@ -60,6 +61,9 @@ interface DeployResult {
   steps: Record<string, StepResult>;
   errors: { step: string; error: string }[];
   skipped: { step: string; reason: string }[];
+  warnings?: string[];
+  /** Set by /save when the product was created but its PricebookEntry could not be written. */
+  priceError?: string;
 }
 type ValidationIssue = { field: string; msg: string };
 
@@ -73,7 +77,7 @@ export interface ProductEditContext {
  * Constants
  * ─────────────────────────────────────────────────────────────────────────── */
 const EMPTY_PRODUCT: ProductState = {
-  productName: "", productCode: "", status: "Draft", description: "",
+  productName: "", productCode: "", status: "Active", description: "",
   family: "", category: "", catalog: "", sellingModel: "One Time",
   productType: "simple", isActive: true, unitOfMeasure: "Each",
   classification: "", productOwner: "", priceBook: "Standard Price Book",
@@ -132,7 +136,7 @@ function VisualPreview({ product, isDark }: { product: ProductState; isDark: boo
         ["Selling Model", product.sellingModel || "—"],
         ["Classification", product.classification || "—"],
         ["Price Book", product.priceBook || "—"],
-        ["Base Price", product.basePrice ? `$${product.basePrice}` : "—"],
+        ["Base Price", formatProductPrice(product.basePrice, product.currencyIsoCode) || "—"],
         ["Tax", product.taxIncluded === null ? "—" : product.taxIncluded ? "Included" : "Excluded"],
       ], isDark ? "#00D4FF" : "#0098CC"))}
 
@@ -166,6 +170,8 @@ function fromEditDetail(p: ProductPayload): ProductState {
     priceBook: p.priceBook || "Standard Price Book",
     basePrice: p.basePrice ?? "",
     currencyIsoCode: p.currencyIsoCode ?? "",
+    unitOfMeasure: p.unitOfMeasure ?? "",
+    classification: p.classification ?? "",
   };
 }
 
@@ -184,6 +190,8 @@ function buildEditPatch(product: ProductState, original: ProductPayload): Partia
   if ((product.priceBook || undefined) !== original.priceBook) patch.priceBook = product.priceBook || undefined;
   if ((product.basePrice || undefined) !== original.basePrice) patch.basePrice = product.basePrice || undefined;
   if ((product.currencyIsoCode || undefined) !== original.currencyIsoCode) patch.currencyIsoCode = product.currencyIsoCode || undefined;
+  if ((product.unitOfMeasure || undefined) !== original.unitOfMeasure && product.unitOfMeasure) patch.unitOfMeasure = product.unitOfMeasure;
+  if ((product.classification || undefined) !== original.classification && product.classification) patch.classification = product.classification;
   const wasBundle = original.productType === "bundle";
   if (product.productType === "bundle" && !wasBundle) patch.productType = "bundle";
   return patch;
@@ -256,6 +264,10 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
       if (key === "productName" && !codeIsManual) {
         next.productCode = autoCode(value as string);
       }
+      // Product2 has no Status field — IsActive is what Salesforce stores, so the
+      // two controls are kept in sync instead of letting them contradict each other.
+      if (key === "status") next.isActive = value === "Active";
+      if (key === "isActive") next.status = value ? "Active" : (p.status === "Active" ? "Draft" : p.status);
       return next;
     });
     if (key === "productCode") setCodeIsManual(true);
@@ -295,7 +307,7 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
         ...prev,
         productName:    p.productName  ?? "",
         productCode:    p.productCode || autoCode(p.productName ?? ""),
-        status:         "Draft",
+        status:         p.isActive !== false ? "Active" : "Draft",
         description:    p.description  ?? "",
         family:         p.family       ?? "",
         category:       p.category     ?? "",
@@ -305,8 +317,13 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
         productType:    p.productType === "bundle" ? "bundle" : "simple",
         productTypeRaw: nextIntent?.productType.value ?? "",
         isActive:       p.isActive !== false,
-        unitOfMeasure:  p.unitOfMeasure ?? "Each",
-        classification: p.classification?.name ?? "",
+        unitOfMeasure:  p.unitOfMeasure || "Each",
+        classification: p.classification ?? "",
+        productOwner:   p.productOwner ?? "",
+        // The extracted price was previously never copied into the form, so every
+        // AI-generated product reached /save with basePrice "" and no PricebookEntry.
+        basePrice:      p.basePrice ?? "",
+        priceBook:      p.priceBook || "Standard Price Book",
         currencyIsoCode: p.currencyIsoCode ?? "",
         taxIncluded:    nextIntent?.taxIncluded.value ?? null,
       }));
@@ -339,7 +356,7 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
       sellingModel:   product.sellingModel,
       unitOfMeasure:  product.unitOfMeasure,
       productType:    product.productType,
-      classification: { name: product.classification, createIfMissing: true },
+      classification: product.classification || undefined,
       productOwner:   product.productOwner,
       priceBook:      product.priceBook,
       basePrice:      product.basePrice,
@@ -375,7 +392,9 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
         const record = toCreatedSalesforceRecord(instanceUrl, "Product2", data.salesforceId, product.productName);
         notifySalesforceSuccess({
           title: "Product Created Successfully",
-          message: `${record.recordName} has been successfully created in Salesforce.`,
+          message: data.priceError
+            ? `${record.recordName} was created in Salesforce, but its price was NOT saved: ${data.priceError}`
+            : `${record.recordName} has been successfully created in Salesforce.`,
           records: [record],
         });
       }
@@ -516,7 +535,7 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
     unitOfMeasure:  product.unitOfMeasure,
     sellingModel:   product.sellingModel,
     productType:    product.productType,
-    classification: { name: product.classification, createIfMissing: true },
+    classification: product.classification || undefined,
     productOwner:   product.productOwner || undefined,
     priceBook:      product.priceBook || undefined,
     basePrice:      product.basePrice || undefined,
@@ -658,7 +677,7 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
                 </FieldWrap>
                 <FieldWrap label="Unit of Measure">
                   <FSelect value={product.unitOfMeasure} onChange={v => setField("unitOfMeasure", v)}
-                    options={UNIT_OF_MEASURES} />
+                    options={product.unitOfMeasure && !UNIT_OF_MEASURES.includes(product.unitOfMeasure) ? [product.unitOfMeasure, ...UNIT_OF_MEASURES] : UNIT_OF_MEASURES} />
                 </FieldWrap>
                 <FieldWrap label="Is Active">
                   <div className="flex gap-2 pt-0.5">
@@ -908,7 +927,7 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
                   {product.category       && <RCConfigCard icon="tag"          label="Category"        value={product.category}        color={isDark ? "#3AABFF" : "#1789B0"} sub={product.family} />}
                   {product.sellingModel   && <RCConfigCard icon="zap"          label="Selling Model"   value={product.sellingModel}    color={isDark ? "#00D4FF" : "#0098CC"} />}
                   {product.classification && <RCConfigCard icon="package"      label="Classification"  value={product.classification}  color={isDark ? "#60B8FF" : "#1C6DBF"} />}
-                  {product.priceBook      && <RCConfigCard icon="book-open"    label="Price Book"      value={product.priceBook}       color={isDark ? "#0070D6" : "#0047AB"} sub={product.basePrice ? `$${product.basePrice}` : undefined} />}
+                  {product.priceBook      && <RCConfigCard icon="book-open"    label="Price Book"      value={product.priceBook}       color={isDark ? "#0070D6" : "#0047AB"} sub={formatProductPrice(product.basePrice, product.currencyIsoCode) || undefined} />}
                   {product.productOwner   && <RCConfigCard icon="user"         label="Owner"           value={product.productOwner}    color="#2563EB" />}
                 </div>
               )}
@@ -962,9 +981,13 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
                       deployResult.steps.product        && { ok: true,  label: isEditMode ? "Product2 updated" : "Product2 created" },
                       deployResult.steps.catalog        && { ok: true,  label: `Catalog: ${(deployResult.steps.catalog as StepResult).name}` },
                       deployResult.steps.sellingModel   && { ok: true,  label: "Selling Model linked" },
-                      deployResult.steps.pricebookEntry && { ok: true,  label: `PricebookEntry @ $${(deployResult.steps.pricebookEntry as StepResult).unitPrice}` },
-                      ...deployResult.errors.map(e => ({ ok: false, label: `Error: ${e.step}` })),
-                      ...deployResult.skipped.map(s => ({ ok: null,  label: `Skipped: ${s.step}` })),
+                      deployResult.steps.unitOfMeasure  && { ok: true,  label: `Unit of Measure: ${(deployResult.steps.unitOfMeasure as StepResult).value}` },
+                      deployResult.steps.classification && { ok: true,  label: `Classification: ${(deployResult.steps.classification as StepResult).value}` },
+                      // Shows the UnitPrice Salesforce actually stored (read back server-side), not the form value.
+                      deployResult.steps.pricebookEntry && { ok: true,  label: `Price saved: ${formatProductPrice((deployResult.steps.pricebookEntry as StepResult).unitPrice, (deployResult.steps.pricebookEntry as StepResult).currencyIsoCode as string | undefined)} in ${(deployResult.steps.pricebookEntry as StepResult).pricebook}` },
+                      ...deployResult.errors.map(e => ({ ok: false, label: e.step === "pricebookEntry" ? `Price NOT saved: ${e.error}` : `Error: ${e.step} — ${e.error}` })),
+                      ...deployResult.skipped.map(s => ({ ok: null,  label: `Skipped: ${s.step} — ${s.reason}` })),
+                      ...(deployResult.warnings ?? []).map(w => ({ ok: null, label: w })),
                     ].filter(Boolean).map((item, i) => (
                       <div key={i} className="flex items-center gap-1.5 text-[10px]" style={{
                         color: item!.ok === true ? "#00C875" : item!.ok === false ? "#FF4066" : "var(--rc-text-muted)"

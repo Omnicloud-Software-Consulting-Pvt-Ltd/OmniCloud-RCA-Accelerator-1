@@ -4,6 +4,9 @@ import { loadProductDetail } from "@/lib/products/server/productDetail";
 import { findOrCreate, isUnsupportedSObject, soqlEscape } from "@/lib/products/server/salesforceWrites";
 import { findMatchingSellingModels } from "@/lib/products/server/sellingModel";
 import { checkProductDuplicate } from "@/lib/products/server/duplicateCheck";
+import { persistProductPrice } from "@/lib/products/server/pricebookEntry";
+import { resolveProductFields } from "@/lib/products/server/productFieldResolution";
+import { parseProductPrice } from "@/lib/products/price";
 import type { ProductPayload } from "@/lib/products/types";
 
 type Params = { params: Promise<{ id: string }> };
@@ -81,6 +84,10 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   const steps: Record<string, unknown> = {};
   const errors: Array<{ step: string; error: string }> = [];
   const skipped: Array<{ step: string; reason: string }> = [];
+  const warnings: string[] = [];
+
+  const price = patch.basePrice !== undefined ? parseProductPrice(patch.basePrice) : null;
+  if (price && !price.ok) return NextResponse.json({ success: false, error: price.error }, { status: 400 });
 
   /* ── Core Product2 fields — only what changed ── */
   const coreFields: Record<string, unknown> = {};
@@ -92,6 +99,12 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   // Same restricted-picklist gating as /save: only ever forward "Bundle" — never attempt to
   // clear Type on an update, since blank may not be a valid value once a record already has one.
   if (patch.productType?.toLowerCase() === "bundle") coreFields.Type = "Bundle";
+  // Unit of Measure / Classification — same org-describe-driven resolution as /save.
+  if (patch.unitOfMeasure || patch.classification) {
+    const extra = await resolveProductFields(client, { unitOfMeasure: patch.unitOfMeasure, classification: patch.classification }, { forUpdate: true });
+    Object.assign(coreFields, extra.fields);
+    skipped.push(...extra.skipped);
+  }
 
   if (Object.keys(coreFields).length > 0) {
     try {
@@ -161,36 +174,24 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   /* ── PricebookEntry — update the existing entry if there is one, else create one ── */
   if (patch.basePrice !== undefined || patch.isActive !== undefined) {
     try {
-      const existingEntries = await client.query<{ Id: string; Pricebook2Id: string }>(
-        `SELECT Id, Pricebook2Id FROM PricebookEntry WHERE Product2Id = '${soqlEscape(id)}' LIMIT 5`,
+      const existingEntries = await client.query<{ Id: string; Pricebook2Id: string; IsActive: boolean }>(
+        `SELECT Id, Pricebook2Id, IsActive FROM PricebookEntry WHERE Product2Id = '${soqlEscape(id)}' LIMIT 5`,
       );
       const existing = existingEntries.records[0];
 
       if (patch.basePrice !== undefined) {
-        const unitPrice = parseFloat(patch.basePrice);
-        if (!isNaN(unitPrice)) {
-          if (existing) {
-            const updateFields: Record<string, unknown> = { UnitPrice: unitPrice };
-            if (patch.isActive !== undefined) updateFields.IsActive = patch.isActive;
-            await client.updateRecord("PricebookEntry", existing.Id, updateFields);
-            steps.pricebookEntry = { id: existing.Id, unitPrice, updated: true };
-          } else {
-            const priceBookName = patch.priceBook || "Standard Price Book";
-            const pbResult = await client.query<{ Id: string }>(`SELECT Id FROM Pricebook2 WHERE Name = '${soqlEscape(priceBookName)}' LIMIT 1`);
-            if (pbResult.records.length > 0) {
-              const pbe = await client.createRecord("PricebookEntry", {
-                Product2Id: id,
-                Pricebook2Id: pbResult.records[0].Id,
-                UnitPrice: unitPrice,
-                IsActive: patch.isActive !== false,
-                ...(patch.currencyIsoCode ? { CurrencyIsoCode: patch.currencyIsoCode } : {}),
-              });
-              if (pbe.success) steps.pricebookEntry = { id: pbe.id, pricebook: priceBookName, unitPrice };
-              else errors.push({ step: "pricebookEntry", error: JSON.stringify(pbe.errors) });
-            } else {
-              skipped.push({ step: "pricebookEntry", reason: `Price Book '${priceBookName}' not found in org` });
-            }
-          }
+        if (price?.ok) {
+          // Shared with /save: standard-entry prerequisite, currency handling, read-back.
+          const outcome = await persistProductPrice(client, {
+            productId: id,
+            unitPrice: price.value,
+            priceBook: patch.priceBook,
+            currencyIsoCode: patch.currencyIsoCode,
+            isActive: patch.isActive ?? existing?.IsActive ?? true,
+          });
+          warnings.push(...outcome.warnings);
+          if (outcome.entry) steps.pricebookEntry = outcome.entry;
+          else errors.push({ step: "pricebookEntry", error: outcome.error ?? "Price could not be saved" });
         }
       } else if (existing && patch.isActive !== undefined) {
         // Price unchanged, but Active toggled — keep the existing price entry consistent with the product.
@@ -203,5 +204,5 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     }
   }
 
-  return NextResponse.json({ success: true, salesforceId: id, steps, errors, skipped });
+  return NextResponse.json({ success: true, salesforceId: id, steps, errors, skipped, warnings });
 }

@@ -20,6 +20,10 @@ export interface ProductPayload {
   productType?: string;
   /** PricebookEntry.CurrencyIsoCode — optional; omitted (as today, single-currency orgs) unless a caller sets it. */
   currencyIsoCode?: string;
+  /** Product2.UnitOfMeasureId / QuantityUnitOfMeasure — resolved against the org by name/code; never auto-created. */
+  unitOfMeasure?: string;
+  /** Product2.BasedOnId — name or code of an existing Active ProductClassification; never auto-created. */
+  classification?: string;
 }
 
 export interface ProductStepResult {
@@ -36,4 +40,6 @@ export interface ProductDeployResult {
   steps: Record<string, ProductStepResult>;
   errors: { step: string; error: string }[];
   skipped: { step: string; reason: string }[];
+  /** Non-fatal notes (e.g. a currency the org can't store) — the step still succeeded. */
+  warnings?: string[];
 }

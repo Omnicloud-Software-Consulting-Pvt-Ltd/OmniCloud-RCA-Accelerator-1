@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Ic, tokens, GhostButton } from "@/components/data/quotes/shared";
 import type { DuplicateCheckResult } from "@/lib/duplicateDetection";
 
@@ -16,9 +17,19 @@ import type { DuplicateCheckResult } from "@/lib/duplicateDetection";
  *  - false (but similarRecords.length > 0) → ADVISORY: a dismissible
  *            "Similar X Found" nudge — creation is NOT blocked, since there
  *            is no exact match; the user can continue or rename.
+ *
+ * Optional explicit-decision props (Bundle Creation passes these; product
+ * callers that don't keep their original behavior unchanged):
+ *  - onContinue → an explicit "proceed" action, shown for the advisory case
+ *    and — only when the caller supplies it — for an exact match too.
+ *  - onRename   → an inline new-name input instead of just dismissing; the
+ *    caller re-runs the duplicate check against the submitted name.
+ *  - onCancel   → a real Cancel button (plus Escape / backdrop click) that
+ *    stops the attempt. Backdrop click never means "continue" when this is set.
  */
 export default function DuplicateRecordModal({
   isDark, kind, requestedName, result, onClose, onChooseAnotherName, onUseExisting, onEditExisting, useExistingLabel,
+  onContinue, continueLabel, onRename, onCancel, busy,
 }: {
   isDark: boolean;
   kind: "product" | "bundle";
@@ -30,15 +41,38 @@ export default function DuplicateRecordModal({
   onUseExisting?: () => void;
   onEditExisting?: () => void;
   useExistingLabel?: string;
+  onContinue?: () => void;
+  continueLabel?: string;
+  /** Submitting a new name — the caller replaces ONLY the name and re-runs duplicate validation. */
+  onRename?: (newName: string) => void;
+  onCancel?: () => void;
+  /** True while the caller is re-checking a submitted name — disables actions to prevent double submits. */
+  busy?: boolean;
 }) {
   const t = tokens(isDark);
   const nounCap = kind === "product" ? "Product" : "Bundle";
   const blocking = result.isDuplicate;
+  const [renaming, setRenaming] = useState(false);
+  const [newName, setNewName] = useState(requestedName);
+  const trimmed = newName.trim();
+  const renameInvalid = !trimmed || trimmed.toLowerCase() === requestedName.trim().toLowerCase();
+
+  // A fresh conflict (e.g. the renamed value ALSO exists) is rendered by the caller with a new
+  // `key`, which remounts this modal and resets the inline rename form to the new name.
+
+  useEffect(() => {
+    if (!onCancel) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !busy) onCancel(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel, busy]);
+
+  const backdropClick = onCancel ? (busy ? undefined : onCancel) : (blocking ? undefined : onClose);
 
   return (
     <div
       style={{ position: "fixed", inset: 0, zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(6px)" }}
-      onClick={blocking ? undefined : onClose}
+      onClick={backdropClick}
     >
       <div
         style={{ width: 460, maxWidth: "100%", borderRadius: 16, background: t.surface, border: `1px solid ${t.border}`, padding: 22, boxShadow: "0 24px 80px rgba(0,0,0,0.5)" }}
@@ -119,8 +153,47 @@ export default function DuplicateRecordModal({
               <Ic n="edit" s={13} /> Edit Existing Bundle
             </button>
           )}
-          <GhostButton label="Choose Another Name" icon="edit" isDark={isDark} onClick={onChooseAnotherName} />
-          {!blocking && <GhostButton label="Continue Anyway" isDark={isDark} onClick={onClose} />}
+          {onContinue && (
+            <button
+              onClick={onContinue}
+              disabled={busy}
+              style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "9px 16px", borderRadius: 10, border: `1px solid ${t.accent}55`, fontSize: 12.5, fontWeight: 700, color: t.accent, cursor: busy ? "not-allowed" : "pointer", background: "transparent", opacity: busy ? 0.6 : 1 }}
+            >
+              <Ic n="arrow-right" s={13} /> {continueLabel ?? "Continue"}
+            </button>
+          )}
+          {onRename && renaming ? (
+            <form
+              onSubmit={e => { e.preventDefault(); if (!renameInvalid && !busy) onRename(trimmed); }}
+              style={{ display: "flex", flexDirection: "column", gap: 6, padding: 10, borderRadius: 10, border: `1px solid ${t.border}`, background: t.surfaceAlt }}
+            >
+              <label style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: t.dim }}>New {nounCap} Name</label>
+              <input
+                autoFocus
+                value={newName}
+                onChange={e => setNewName(e.target.value)}
+                disabled={busy}
+                style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${t.border}`, background: t.surface, color: t.heading, fontSize: 13 }}
+              />
+              {trimmed && renameInvalid && (
+                <span style={{ fontSize: 11, color: "#F59E0B" }}>Enter a name different from &quot;{requestedName}&quot;.</span>
+              )}
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="submit" disabled={renameInvalid || busy}
+                  style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "none", fontSize: 12.5, fontWeight: 700, color: "#04101F", cursor: renameInvalid || busy ? "not-allowed" : "pointer", opacity: renameInvalid || busy ? 0.55 : 1, background: `linear-gradient(135deg, ${t.accent}, ${t.accentBlue})` }}>
+                  {busy ? "Checking…" : "Check Name & Continue"}
+                </button>
+                <button type="button" disabled={busy} onClick={() => { setRenaming(false); setNewName(requestedName); }}
+                  style={{ padding: "8px 12px", borderRadius: 8, border: `1px solid ${t.border}`, fontSize: 12.5, color: t.dim, background: "transparent", cursor: "pointer" }}>
+                  Back
+                </button>
+              </div>
+            </form>
+          ) : (
+            <GhostButton label={onRename ? "Rename" : "Choose Another Name"} icon="edit" isDark={isDark} onClick={onRename ? () => setRenaming(true) : onChooseAnotherName} />
+          )}
+          {!blocking && !onContinue && <GhostButton label="Continue Anyway" isDark={isDark} onClick={onClose} />}
+          {onCancel && <GhostButton label="Cancel" icon="x" isDark={isDark} onClick={onCancel} disabled={busy} />}
         </div>
       </div>
     </div>

@@ -7,7 +7,10 @@ import {
 } from "@/lib/salesforce/client";
 import type { ProductPayload } from "@/lib/products/types";
 import { findMatchingSellingModels } from "@/lib/products/server/sellingModel";
-import { soqlEscape, isUnsupportedSObject, findOrCreate } from "@/lib/products/server/salesforceWrites";
+import { isUnsupportedSObject, findOrCreate } from "@/lib/products/server/salesforceWrites";
+import { persistProductPrice } from "@/lib/products/server/pricebookEntry";
+import { resolveProductFields } from "@/lib/products/server/productFieldResolution";
+import { parseProductPrice } from "@/lib/products/price";
 import { checkProductDuplicate } from "@/lib/products/server/duplicateCheck";
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -55,6 +58,22 @@ export async function POST(req: NextRequest) {
   const steps: Record<string, unknown> = {};
   const errors: Array<{ step: string; error: string }> = [];
   const skipped: Array<{ step: string; reason: string }> = [];
+  const warnings: string[] = [];
+
+  /* ── Validate the price BEFORE anything is created, so a bad value is
+   * reported instead of silently producing a product with no price. ── */
+  const price = parseProductPrice(payload.basePrice);
+  if (price && !price.ok) {
+    return NextResponse.json({ success: false, error: price.error }, { status: 400 });
+  }
+
+  /* ── Unit of Measure / Product Classification → real Product2 fields,
+   * resolved against this org's own describe + records (never created). ── */
+  const extra = await resolveProductFields(client, {
+    unitOfMeasure: payload.unitOfMeasure,
+    classification: payload.classification,
+  });
+  skipped.push(...extra.skipped);
 
   /* ── Step 1: Product2 ── */
   let productId: string;
@@ -72,10 +91,13 @@ export async function POST(req: NextRequest) {
       // client-side concept, not a real picklist value, and must never be
       // forwarded verbatim or Salesforce rejects the whole create.
       ...(payload.productType?.toLowerCase() === "bundle" ? { Type: "Bundle" } : {}),
+      ...extra.fields,
     });
     if (!product.success) throw new Error(`Product2 creation failed: ${JSON.stringify(product.errors)}`);
     productId = product.id;
     steps.product = { id: productId, name: payload.productName };
+    if (extra.resolved.unitOfMeasure) steps.unitOfMeasure = extra.resolved.unitOfMeasure;
+    if (extra.resolved.classification) steps.classification = extra.resolved.classification;
   } catch (err) {
     const msg = err instanceof SalesforceError ? err.message : (err as Error).message;
     return NextResponse.json({ success: false, error: msg }, { status: 500 });
@@ -143,40 +165,33 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  /* ── Step 4: PricebookEntry ── */
-  if (payload.priceBook && payload.basePrice !== undefined && payload.basePrice !== "") {
+  /* ── Step 4: PricebookEntry ──
+   * A price given in the prompt/form is always written (Standard Price Book
+   * when no Price Book was named), via the shared persistProductPrice()
+   * which handles the standard-entry prerequisite, single- vs multi-currency
+   * orgs, and reads back what Salesforce actually stored. A failure here is
+   * returned in `errors` + `priceError` so no caller can report the product
+   * as fully created while its price is missing. */
+  let priceError: string | undefined;
+  if (price?.ok) {
     try {
-      const unitPrice = parseFloat(payload.basePrice);
-      if (!isNaN(unitPrice)) {
-        const pbResult = await client.query<{ Id: string }>(
-          `SELECT Id FROM Pricebook2 WHERE Name = '${soqlEscape(payload.priceBook)}' LIMIT 1`,
-        );
-        if (pbResult.records.length > 0) {
-          const pricebook2Id = pbResult.records[0].Id;
-          const pbe = await client.createRecord("PricebookEntry", {
-            Product2Id:   productId,
-            Pricebook2Id: pricebook2Id,
-            UnitPrice:    unitPrice,
-            IsActive:     payload.isActive !== false,
-            ...(payload.currencyIsoCode ? { CurrencyIsoCode: payload.currencyIsoCode } : {}),
-          });
-          if (pbe.success) {
-            steps.pricebookEntry = { id: pbe.id, pricebook: payload.priceBook, unitPrice };
-          } else {
-            errors.push({ step: "pricebookEntry", error: JSON.stringify(pbe.errors) });
-          }
-        } else {
-          skipped.push({ step: "pricebookEntry", reason: `Price Book '${payload.priceBook}' not found in org` });
-        }
-      }
+      const outcome = await persistProductPrice(client, {
+        productId,
+        unitPrice: price.value,
+        priceBook: payload.priceBook,
+        currencyIsoCode: payload.currencyIsoCode,
+        isActive: payload.isActive !== false,
+      });
+      warnings.push(...outcome.warnings);
+      if (outcome.entry) steps.pricebookEntry = outcome.entry;
+      else priceError = outcome.error;
     } catch (e) {
-      if (isUnsupportedSObject(e as Error)) {
-        skipped.push({ step: "pricebookEntry", reason: "PricebookEntry not accessible in this org" });
-      } else {
-        errors.push({ step: "pricebookEntry", error: (e as Error).message });
-      }
+      priceError = isUnsupportedSObject(e as Error)
+        ? "PricebookEntry is not accessible in this org"
+        : (e instanceof SalesforceError ? e.message : (e as Error).message);
     }
+    if (priceError) errors.push({ step: "pricebookEntry", error: priceError });
   }
 
-  return NextResponse.json({ success: true, salesforceId: productId, steps, errors, skipped });
+  return NextResponse.json({ success: true, salesforceId: productId, steps, errors, skipped, warnings, ...(priceError ? { priceError } : {}) });
 }

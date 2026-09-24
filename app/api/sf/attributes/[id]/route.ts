@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSFClient, sfErrorResponse } from "@/lib/salesforce/serverSession";
-import { loadAttributeDetail } from "@/lib/attributes/server/attributeDetail";
+import { loadAttributeDetail, loadPicklistValueRecords } from "@/lib/attributes/server/attributeDetail";
 import {
-  updateAttributeCoreFields, addPicklistValue, updatePicklistValue, removePicklistValue,
-  type AttributeFieldPatch,
+  updateAttributeCoreFields, addPicklistValue, updatePicklistValue, removePicklistValue, reactivatePicklistValue,
+  updateProductAttributeConfig, validateTypedValue,
+  type AttributeFieldPatch, type ProductAttributeConfigPatch,
 } from "@/lib/attributes/server/attributeUpdate";
+import type { AttributeDetail } from "@/lib/attributes/types";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -28,14 +30,33 @@ interface AttributePatchBody {
   addValues?: string[];
   /** Existing AttributePicklistValue Ids to remove (deactivated or deleted depending on org schema — see removePicklistValue). */
   removeValueIds?: string[];
-  /** Rename an existing value's display text. */
+  /** Rename an existing value (by its AttributePicklistValue Id) — updates Name, Value and DisplayValue. */
   updateValues?: { id: string; displayValue: string }[];
+  /** Per-product configuration changes, by ProductAttributeDefinition Id. */
+  productConfigs?: ProductAttributeConfigPatch[];
+}
+
+type Issue = { step: string; error: string };
+
+const norm = (s: string) => s.trim().toLowerCase();
+
+function isNumericType(dataType: string | null): boolean {
+  return ["number", "currency", "percent"].includes((dataType ?? "").toLowerCase());
 }
 
 /**
- * PATCH /api/sf/attributes/[id] — updates the EXISTING AttributeDefinition
- * and its picklist values; never creates a new attribute. Mirrors PATCH
- * /api/bundles/[id]'s "only touch what's in the patch" convention.
+ * PATCH /api/sf/attributes/[id] — updates the EXISTING AttributeDefinition,
+ * its picklist values and its per-product configuration; never creates a
+ * new attribute.
+ *
+ * 1. Validate EVERYTHING against the current Salesforce state first (Ids
+ *    belong to this attribute, typed values, ranges, duplicate values). Any
+ *    validation error → 422 with no write at all, so an invalid edit never
+ *    half-applies.
+ * 2. Apply writes by record Id; each write re-reads its record and fails if
+ *    Salesforce didn't keep the value.
+ * 3. success is true ONLY if every requested write was confirmed; the
+ *    response always carries the fresh post-save Salesforce state.
  */
 export async function PATCH(req: NextRequest, { params }: Params) {
   const auth = requireSFClient(req);
@@ -50,105 +71,161 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
 
-  const errors: { step: string; error: string }[] = [];
+  let current: AttributeDetail;
+  try {
+    current = await loadAttributeDetail(client, id);
+  } catch (err) {
+    return sfErrorResponse(err, "Failed to load attribute");
+  }
+
+  const addValues = (body.addValues ?? []).map(v => v.trim()).filter(Boolean);
+  const updateValues = (body.updateValues ?? []).map(u => ({ id: u.id, text: u.displayValue.trim() }));
+  const removeValueIds = body.removeValueIds ?? [];
+  const productConfigs = body.productConfigs ?? [];
+
+  /* ── 1. Validation (no writes) ── */
+  const invalid: Issue[] = [];
+
+  if (body.patch?.name !== undefined && !body.patch.name.trim()) invalid.push({ step: "attribute", error: "Attribute Name can't be empty." });
+  const dvError = validateTypedValue(current.dataType, "Default Value", body.patch?.defaultValue);
+  if (dvError) invalid.push({ step: "defaultValue", error: dvError });
+
+  const configById = new Map(current.productConfigs.map(c => [c.id, c]));
+  for (const cfg of productConfigs) {
+    const existing = configById.get(cfg.id);
+    if (!existing) { invalid.push({ step: `productConfig:${cfg.id}`, error: `Product configuration ${cfg.id} does not belong to this attribute.` }); continue; }
+    const label = existing.productName ?? cfg.id;
+    for (const [key, lbl] of [["defaultValue", "Default Value"], ["minimumValue", "Minimum"], ["maximumValue", "Maximum"], ["stepValue", "Step"]] as const) {
+      const e = key === "defaultValue"
+        ? validateTypedValue(current.dataType, `${label} ${lbl}`, cfg[key])
+        : (isNumericType(current.dataType) ? validateTypedValue("Number", `${label} ${lbl}`, cfg[key]) : null);
+      if (e) invalid.push({ step: `productConfig:${cfg.id}`, error: e });
+    }
+    if (isNumericType(current.dataType)) {
+      const pick = (k: "defaultValue" | "minimumValue" | "maximumValue") => {
+        const v = cfg[k] !== undefined ? cfg[k] : existing[k];
+        return v === null || v === undefined || v === "" || isNaN(Number(v)) ? null : Number(v);
+      };
+      const [dv, min, max] = [pick("defaultValue"), pick("minimumValue"), pick("maximumValue")];
+      if (min !== null && max !== null && min > max) invalid.push({ step: `productConfig:${cfg.id}`, error: `${label}: Minimum (${min}) can't be greater than Maximum (${max}).` });
+      if (dv !== null && min !== null && dv < min) invalid.push({ step: `productConfig:${cfg.id}`, error: `${label}: Default Value (${dv}) is below the Minimum (${min}).` });
+      if (dv !== null && max !== null && dv > max) invalid.push({ step: `productConfig:${cfg.id}`, error: `${label}: Default Value (${dv}) is above the Maximum (${max}).` });
+    }
+  }
+
+  // Picklist: validate against ALL records on the picklist (active + inactive).
+  const reactivations: { id: string; text: string }[] = [];
+  const creations: string[] = [];
+  let nextSequence = 1;
+  if (addValues.length || updateValues.length || removeValueIds.length) {
+    if (!current.picklistId) {
+      invalid.push({ step: "picklistValues", error: "This attribute has no picklist, so its values can't be added, renamed or removed." });
+    } else {
+      let records: Awaited<ReturnType<typeof loadPicklistValueRecords>> = [];
+      try {
+        records = await loadPicklistValueRecords(client, current.picklistId);
+      } catch (err) {
+        return sfErrorResponse(err, "Could not read this attribute's picklist values");
+      }
+      nextSequence = records.reduce((m, r) => Math.max(m, r.sequence), 0) + 1;
+      const byId = new Map(records.map(r => [r.id, r]));
+
+      for (const rid of removeValueIds) {
+        if (!byId.get(rid)?.isActive) invalid.push({ step: `removeValue:${rid}`, error: `Value ${rid} is not an active value of this attribute.` });
+      }
+      for (const u of updateValues) {
+        if (!u.text) invalid.push({ step: `updateValue:${u.id}`, error: "A picklist value can't be renamed to an empty value." });
+        if (!byId.get(u.id)?.isActive) invalid.push({ step: `updateValue:${u.id}`, error: `Value ${u.id} is not an active value of this attribute.` });
+      }
+
+      // The set of texts that will be ACTIVE after this save, for duplicate detection.
+      const removed = new Set(removeValueIds);
+      const renamedTo = new Map(updateValues.map(u => [u.id, u.text]));
+      const finalActive = new Map<string, string>(); // norm(text) -> owner description
+      for (const r of records) {
+        if (!r.isActive || removed.has(r.id)) continue;
+        const text = renamedTo.get(r.id) ?? r.texts[0] ?? "";
+        const key = norm(text);
+        if (finalActive.has(key)) invalid.push({ step: `updateValue:${r.id}`, error: `"${text}" already exists on this attribute — two values can't have the same text.` });
+        finalActive.set(key, r.id);
+      }
+      for (const text of addValues) {
+        const key = norm(text);
+        if (finalActive.has(key)) { invalid.push({ step: `addValue:${text}`, error: `"${text}" already exists on this attribute — it was not added again.` }); continue; }
+        finalActive.set(key, "new");
+        // A previously removed (Inactive) record with this exact text is restored, not duplicated.
+        const inactive = records.find(r => !r.isActive && !removed.has(r.id) && r.texts.some(t => norm(t) === key));
+        if (inactive) reactivations.push({ id: inactive.id, text });
+        else creations.push(text);
+      }
+    }
+  }
+
+  if (invalid.length > 0) {
+    return NextResponse.json(
+      { success: false, salesforceId: id, steps: {}, errors: invalid, skipped: [], attribute: current, validationFailed: true },
+      { status: 422 },
+    );
+  }
+
+  /* ── 2. Writes, each verified by read-back ── */
+  const errors: Issue[] = [];
   const skipped: { step: string; reason: string }[] = [];
   const steps: Record<string, unknown> = {};
 
-  if (body.patch) {
+  if (body.patch && Object.keys(body.patch).length > 0) {
     const result = await updateAttributeCoreFields(client, id, body.patch);
     Object.assign(steps, result.steps);
     errors.push(...result.errors);
     skipped.push(...result.skipped);
   }
 
-  // Picklist value changes require the attribute's current PicklistId.
-  const needsPicklist = (body.addValues?.length ?? 0) > 0 || (body.updateValues?.length ?? 0) > 0;
-  if (needsPicklist || (body.removeValueIds?.length ?? 0) > 0) {
-    let picklistId: string | null = null;
-    // Server-side duplicate guard (non-bypassable, unlike the UI's own
-    // check) — `usedLower` tracks every display value currently considered
-    // "taken" (lower-cased); `labelById` lets a rename exclude itself from
-    // that check while still catching a rename that collides with a
-    // DIFFERENT existing value. Both updated live as adds/renames succeed,
-    // so within one request a second add/rename can't collide with the
-    // first either.
-    const usedLower = new Set<string>();
-    const labelById = new Map<string, string>();
-    let nextSequence = 1;
-    if (needsPicklist) {
-      try {
-        const current = await loadAttributeDetail(client, id);
-        picklistId = current.picklistId;
-        for (const v of current.picklistValues) {
-          const key = v.displayValue.trim().toLowerCase();
-          usedLower.add(key);
-          labelById.set(v.id, key);
-        }
-        nextSequence = current.picklistValues.reduce((m, v) => Math.max(m, v.sequence), 0) + 1;
-      } catch (err) {
-        errors.push({ step: "picklistValues", error: err instanceof Error ? err.message : "Could not resolve this attribute's picklist" });
-      }
-    }
-
-    if (body.addValues?.length) {
-      if (!picklistId) {
-        skipped.push({ step: "addValues", reason: "This attribute has no picklist to add values to." });
-      } else {
-        let added = 0;
-        for (const rawValue of body.addValues) {
-          const key = rawValue.trim().toLowerCase();
-          if (usedLower.has(key)) {
-            skipped.push({ step: `addValue:${rawValue}`, reason: `"${rawValue}" already exists on this attribute — it was not added again.` });
-            continue;
-          }
-          const result = await addPicklistValue(client, picklistId, rawValue, nextSequence++);
-          if ("error" in result) errors.push({ step: `addValue:${rawValue}`, error: result.error });
-          else { added++; usedLower.add(key); }
-        }
-        if (added > 0) steps.addedValues = { count: added };
-      }
-    }
-
-    let updated = 0;
-    for (const upd of body.updateValues ?? []) {
-      const newKey = upd.displayValue.trim().toLowerCase();
-      const oldKey = labelById.get(upd.id);
-      if (newKey !== oldKey && usedLower.has(newKey)) {
-        skipped.push({ step: `updateValue:${upd.id}`, reason: `"${upd.displayValue}" already exists on this attribute — this value was left unrenamed.` });
-        continue;
-      }
-      const result = await updatePicklistValue(client, upd.id, upd.displayValue);
-      if ("error" in result) { errors.push({ step: `updateValue:${upd.id}`, error: result.error }); continue; }
-      updated++;
-      if (oldKey) usedLower.delete(oldKey);
-      usedLower.add(newKey);
-      labelById.set(upd.id, newKey);
-    }
-    if (updated > 0) steps.updatedValues = { count: updated };
-
-    let removed = 0;
-    for (const valueId of body.removeValueIds ?? []) {
-      const result = await removePicklistValue(client, valueId);
-      if ("error" in result) errors.push({ step: `removeValue:${valueId}`, error: result.error });
-      else removed++;
-    }
-    if (removed > 0) steps.removedValues = { count: removed };
+  let removedCount = 0;
+  for (const valueId of removeValueIds) {
+    const result = await removePicklistValue(client, valueId);
+    if ("error" in result) errors.push({ step: `removeValue:${valueId}`, error: result.error });
+    else removedCount++;
   }
+  if (removedCount) steps.removedValues = { count: removedCount };
 
-  // `errors` means a real Salesforce operation the user asked for actually
-  // failed — that must never be reported as success (see removed
-  // `success: true` — the entire reason edited/added/removed values could
-  // silently fail to persist while the UI showed a green toast). This is
-  // decided BEFORE the post-save refresh below, so a read-only refresh
-  // failure (Salesforce is momentarily unreachable right after a fully
-  // successful write) never downgrades a real success into a false failure.
+  let renamedCount = 0;
+  for (const u of updateValues) {
+    const result = await updatePicklistValue(client, u.id, u.text);
+    if ("error" in result) errors.push({ step: `updateValue:${u.id}`, error: result.error });
+    else renamedCount++;
+  }
+  if (renamedCount) steps.updatedValues = { count: renamedCount };
+
+  let restoredCount = 0;
+  for (const r of reactivations) {
+    const result = await reactivatePicklistValue(client, r.id, r.text);
+    if ("error" in result) errors.push({ step: `addValue:${r.text}`, error: result.error });
+    else restoredCount++;
+  }
+  if (restoredCount) steps.restoredValues = { count: restoredCount };
+
+  let addedCount = 0;
+  for (const text of creations) {
+    const result = await addPicklistValue(client, current.picklistId!, text, nextSequence++);
+    if ("error" in result) errors.push({ step: `addValue:${text}`, error: result.error });
+    else addedCount++;
+  }
+  if (addedCount) steps.addedValues = { count: addedCount };
+
+  let configCount = 0;
+  for (const cfg of productConfigs) {
+    const result = await updateProductAttributeConfig(client, cfg);
+    if ("error" in result) errors.push({ step: `productConfig:${cfg.id}`, error: result.error });
+    else if (result.updated.length) configCount++;
+  }
+  if (configCount) steps.productConfigs = { count: configCount };
+
+  // Decided BEFORE the post-save refresh, so a read-only refresh failure never
+  // downgrades a verified success (or hides a real failure).
   const success = errors.length === 0;
   const partialSuccess = !success && Object.keys(steps).length > 0;
 
-  // Always return the canonical post-mutation state read straight back from
-  // Salesforce — never the client's optimistic local diff — so the caller
-  // can re-sync its form even after a partial failure.
-  let attribute = null;
+  let attribute: AttributeDetail | null = null;
   let refreshError: string | null = null;
   try {
     attribute = await loadAttributeDetail(client, id);

@@ -1,5 +1,6 @@
 import type { FieldMapping, FieldProvenance, ProductIntentMap } from "./productIntent";
 import type { MappingRow } from "@/components/metadata/shared/FieldMappingTable";
+import { formatProductPrice } from "@/lib/products/price";
 
 /**
  * Builds the "Field → Value → Source" rows both RCProductWorkspace (Single
@@ -24,6 +25,8 @@ export interface MappableProductFields {
   isActive: boolean;
   productOwner: string;
   description: string;
+  unitOfMeasure: string;
+  classification: string;
 }
 
 /**
@@ -61,13 +64,30 @@ export function buildProductMappingRows(fields: MappableProductFields, intent: P
     },
     { label: "Selling Model", value: fields.sellingModel, provenance: fieldProvenance(fields.sellingModel, intent?.sellingModel, emptyStr) },
     { label: "Price Book", value: fields.priceBook, provenance: fieldProvenance(fields.priceBook, intent?.priceBook, emptyStr) },
-    { label: "Base Price", value: fields.basePrice ? `$${fields.basePrice}` : "", provenance: fieldProvenance(fields.basePrice, intent?.basePrice, emptyStr) },
+    {
+      label: "Base Price",
+      value: formatProductPrice(fields.basePrice, fields.currencyIsoCode),
+      provenance: fieldProvenance(fields.basePrice, intent?.basePrice, emptyStr),
+      note: fields.basePrice ? `Saved as PricebookEntry.UnitPrice in "${fields.priceBook || "Standard Price Book"}".` : undefined,
+    },
     { label: "Currency", value: fields.currencyIsoCode, provenance: fieldProvenance(fields.currencyIsoCode, intent?.currencyIsoCode, emptyStr) },
     {
       label: "Tax Included",
       value: fields.taxIncluded === null ? "" : fields.taxIncluded ? "Yes" : "No",
       provenance: fields.taxIncluded === null ? "unspecified" : (intent?.taxIncluded.value === fields.taxIncluded ? intent.taxIncluded.provenance : "explicit"),
       note: fields.taxIncluded !== null ? "Not sent to Salesforce — no standard field exists for this." : undefined,
+    },
+    {
+      label: "Unit of Measure",
+      value: fields.unitOfMeasure,
+      provenance: fieldProvenance(fields.unitOfMeasure, intent?.unitOfMeasure, emptyStr),
+      note: fields.unitOfMeasure ? "Matched to an existing UnitOfMeasure / Quantity Unit Of Measure value — skipped (not created) if none matches." : undefined,
+    },
+    {
+      label: "Classification",
+      value: fields.classification,
+      provenance: fieldProvenance(fields.classification, intent?.classification, emptyStr),
+      note: fields.classification ? "Sets Product2.BasedOnId to an existing Active Product Classification — skipped (not created) if none matches." : undefined,
     },
     { label: "Active", value: fields.isActive ? "Yes" : "No", provenance: intent && fields.isActive === intent.isActive.value ? intent.isActive.provenance : "explicit" },
     { label: "Product Owner", value: fields.productOwner, provenance: fieldProvenance(fields.productOwner, intent?.productOwner, emptyStr) },

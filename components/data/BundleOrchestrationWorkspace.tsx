@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { loadSession } from "@/lib/auth/session";
 import { toCreatedSalesforceRecord } from "@/lib/salesforce/recordUrl";
 import { useSalesforceSuccess } from "@/components/notifications/SalesforceSuccessContext";
-import type { DuplicateCheckResult } from "@/lib/duplicateDetection";
+import { isContinuableBundleDuplicate, type DuplicateCheckResult } from "@/lib/duplicateDetection";
 import DuplicateRecordModal from "@/components/duplicates/DuplicateRecordModal";
 import PromptGuide from "@/components/ai/PromptGuide";
 import { promptGuideConfig } from "@/lib/ai/promptGuideConfig";
@@ -1301,6 +1301,10 @@ export default function BundleOrchestrationWorkspace({ isDark, onViewBundle, onE
   const lastBundleRef     = useRef<string | null>(null);
   const [duplicateCheck, setDuplicateCheck] = useState<DuplicateCheckResult | null>(null);
   const [checkingDuplicate, setCheckingDuplicate] = useState(false);
+  // Synchronous re-entrancy guard for the whole pre-check -> execute sequence. `state.executing`
+  // alone can't prevent a double submit: it's only set AFTER the pre-check resolves, and a
+  // closure can still see its stale `false`.
+  const inFlightRef = useRef(false);
   const tk = tokens(isDark);
 
   /* Helpers to update centralized state slices */
@@ -1346,31 +1350,58 @@ export default function BundleOrchestrationWorkspace({ isDark, onViewBundle, onE
     });
   }, [state.parsedBundle?.bundleName]);
 
-  /* Execute handler */
-  const handleExecute = useCallback(async () => {
-    if (!state.parsedBundle || state.executing) return;
+  /* Execute handler
+   *
+   * `opts` carries the user's explicit decision from the duplicate modal:
+   *  - skipPrecheck: the user already saw this conflict and chose Continue —
+   *    re-running the pre-check here is what used to reopen the same modal
+   *    forever, so Continue never actually continued.
+   *  - confirmedExistingBundleId: Continue on an exact-name match with an
+   *    existing Bundle — forwarded to /api/bundles/execute, whose gate only
+   *    honors it for that exact conflicting record.
+   *  - exactOnly: after an explicit Rename, only an exact-match conflict re-opens
+   *    the modal — similar-name suggestions (usually the very bundle just renamed
+   *    away from) were already seen, so a unique new name proceeds directly.
+   *  - bundle/depRules: a renamed copy, passed explicitly because the
+   *    setState that applied the rename hasn't re-rendered this closure yet.
+   */
+  const handleExecute = useCallback(async (opts: {
+    skipPrecheck?: boolean;
+    exactOnly?: boolean;
+    confirmedExistingBundleId?: string;
+    bundle?: ParsedBundle;
+    depRules?: DependencyRule[];
+  } = {}) => {
+    const bundleToRun = opts.bundle ?? state.parsedBundle;
+    const rulesToRun = opts.depRules ?? state.depRules;
+    if (!bundleToRun || state.executing || inFlightRef.current) return;
+    inFlightRef.current = true;
 
-    // Duplicate Prevention pre-check (§6-7, §20) — before any batch runs.
-    // Advisory only: /api/bundles/execute re-runs this exact check
-    // server-side as the final, race-condition-safe authority (§21).
-    setCheckingDuplicate(true);
-    try {
-      const res = await fetch("/api/bundles/check-duplicate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items: [{ key: "bundle", name: state.parsedBundle.bundleName, code: state.parsedBundle.bundleCode }] }),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        const result = data.results.bundle as DuplicateCheckResult;
-        if (result.isDuplicate || result.similarRecords.length > 0) {
-          setDuplicateCheck(result);
-          setCheckingDuplicate(false);
-          return;
+    if (!opts.skipPrecheck) {
+      // Duplicate Prevention pre-check (§6-7, §20) — before any batch runs.
+      // Advisory only: /api/bundles/execute re-runs this exact check
+      // server-side as the final, race-condition-safe authority (§21).
+      setCheckingDuplicate(true);
+      try {
+        const res = await fetch("/api/bundles/check-duplicate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items: [{ key: "bundle", name: bundleToRun.bundleName, code: bundleToRun.bundleCode }] }),
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          const result = data.results.bundle as DuplicateCheckResult;
+          if (result.isDuplicate || (!opts.exactOnly && result.similarRecords.length > 0)) {
+            setDuplicateCheck(result);
+            setCheckingDuplicate(false);
+            inFlightRef.current = false;
+            return;
+          }
         }
-      }
-    } catch { /* pre-check failed — fall through to the backend's own authoritative check */ }
-    setCheckingDuplicate(false);
+      } catch { /* pre-check failed — fall through to the backend's own authoritative check */ }
+      setCheckingDuplicate(false);
+    }
+    setDuplicateCheck(null);
 
     setState(prev => ({
       ...prev,
@@ -1385,12 +1416,17 @@ export default function BundleOrchestrationWorkspace({ isDark, onViewBundle, onE
       const res = await fetch("/api/bundles/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bundle: state.parsedBundle, depRules: state.depRules }),
+        body: JSON.stringify({
+          bundle: bundleToRun,
+          depRules: rulesToRun,
+          ...(opts.confirmedExistingBundleId ? { confirmedExistingBundleId: opts.confirmedExistingBundleId } : {}),
+        }),
       });
 
       if (!res.ok || !res.body) {
         addLog({ batch: 0, level: "error", message: "Failed to connect to orchestration engine" });
         setState(prev => ({ ...prev, executing: false }));
+        inFlightRef.current = false;
         return;
       }
 
@@ -1451,13 +1487,15 @@ export default function BundleOrchestrationWorkspace({ isDark, onViewBundle, onE
               const instanceUrl = loadSession()?.instanceUrl;
               if (instanceUrl && ev.bundleId) {
                 const bundleIds = (ev.bundleIds ?? {}) as Record<string, string>;
-                const rootName = Object.entries(bundleIds).find(([, id]) => id === ev.bundleId)?.[0] ?? state.parsedBundle?.bundleName ?? "Bundle";
+                const rootName = Object.entries(bundleIds).find(([, id]) => id === ev.bundleId)?.[0] ?? bundleToRun.bundleName ?? "Bundle";
                 const records = Object.entries(bundleIds).map(([name, id]) => toCreatedSalesforceRecord(instanceUrl, "Product2", id, name));
                 if (records.length === 0) records.push(toCreatedSalesforceRecord(instanceUrl, "Product2", ev.bundleId, rootName));
                 const nestedCount = records.length - 1;
                 notifySalesforceSuccess({
-                  title: "Bundle Created Successfully",
-                  message: nestedCount > 0
+                  title: ev.reusedExistingRoot ? "Bundle Updated Successfully" : "Bundle Created Successfully",
+                  message: ev.reusedExistingRoot
+                    ? `${rootName} already existed — its components were updated in Salesforce.`
+                    : nestedCount > 0
                     ? `${rootName} and ${nestedCount} nested bundle(s) were successfully created in Salesforce.`
                     : `${rootName} has been successfully created in Salesforce.`,
                   records,
@@ -1471,7 +1509,7 @@ export default function BundleOrchestrationWorkspace({ isDark, onViewBundle, onE
               // the frontend pre-check missed — most likely a concurrent
               // request. Surface the same modal, never a false "created".
               setDuplicateCheck(ev as DuplicateCheckResult);
-              addLog({ batch: 0, level: "error", message: `Bundle already exists: "${"recordName" in ev ? ev.recordName : state.parsedBundle?.bundleName}"` });
+              addLog({ batch: 0, level: "error", message: `Bundle already exists: "${"recordName" in ev ? ev.recordName : bundleToRun.bundleName}"` });
             }
           } catch { /* malformed SSE */ }
         }
@@ -1480,8 +1518,45 @@ export default function BundleOrchestrationWorkspace({ isDark, onViewBundle, onE
       addLog({ batch: 0, level: "error", message: (err as Error).message });
     } finally {
       setState(prev => ({ ...prev, executing: false }));
+      inFlightRef.current = false;
     }
   }, [state.parsedBundle, state.executing, state.depRules, addLog, notifySalesforceSuccess]);
+
+  /* ── Duplicate modal decisions ── */
+
+  /** Continue: proceed with THIS attempt without re-showing the same modal. */
+  const handleDuplicateContinue = useCallback(() => {
+    if (!duplicateCheck) return;
+    const confirmedExistingBundleId = duplicateCheck.isDuplicate ? duplicateCheck.recordId : undefined;
+    setDuplicateCheck(null);
+    void handleExecute({ skipPrecheck: true, confirmedExistingBundleId });
+  }, [duplicateCheck, handleExecute]);
+
+  /** Rename: replace ONLY the root bundle name, re-run duplicate validation, continue if unique. */
+  const handleDuplicateRename = useCallback((newName: string) => {
+    const current = state.parsedBundle;
+    if (!current) return;
+    const oldName = current.bundleName;
+    const renamed: ParsedBundle = { ...current, bundleName: newName };
+    // Dependency rules reference products/bundles by name — keep any that pointed at the old root name attached.
+    const renamedRules = state.depRules.map(r => ({
+      ...r,
+      source: r.source === oldName ? newName : r.source,
+      target: r.target === oldName ? newName : r.target,
+    }));
+    lastBundleRef.current = newName; // a rename is not a new parse — don't re-merge AI dependency rules
+    setState(prev => ({ ...prev, parsedBundle: renamed, depRules: renamedRules }));
+    // The pre-check runs again against the NEW name; a new conflict re-opens the modal for it.
+    void handleExecute({ bundle: renamed, depRules: renamedRules, exactOnly: true });
+  }, [state.parsedBundle, state.depRules, handleExecute]);
+
+  /** Cancel: close, make no Salesforce call, leave the workspace ready for another attempt. */
+  const handleDuplicateCancel = useCallback(() => {
+    setDuplicateCheck(null);
+    setCheckingDuplicate(false);
+    inFlightRef.current = false;
+    addLog({ batch: 0, level: "info", message: "Bundle creation cancelled — nothing was created or changed in Salesforce." });
+  }, [addLog]);
 
   const handleClear = useCallback(() => {
     setState(prev => ({
@@ -1576,7 +1651,7 @@ export default function BundleOrchestrationWorkspace({ isDark, onViewBundle, onE
                     isDark={isDark}
                     bundle={parsedBundle}
                     onUpdate={b => setSlice("parsedBundle", b)}
-                    onExecute={handleExecute}
+                    onExecute={() => { void handleExecute(); }}
                     executing={executing || checkingDuplicate}
                   />
                 </Section>
@@ -1701,17 +1776,23 @@ export default function BundleOrchestrationWorkspace({ isDark, onViewBundle, onE
 
       {duplicateCheck && state.parsedBundle && (
         <DuplicateRecordModal
+          // New key per conflict -> a fresh modal (and fresh rename form) when a renamed value also collides.
+          key={`${state.parsedBundle.bundleName}|${duplicateCheck.isDuplicate ? duplicateCheck.recordId : "similar"}`}
           isDark={isDark}
           kind="bundle"
           requestedName={state.parsedBundle.bundleName}
           result={duplicateCheck}
           useExistingLabel="View Existing Bundle"
-          onClose={() => {
-            const wasAdvisoryOnly = !duplicateCheck.isDuplicate;
-            setDuplicateCheck(null);
-            if (wasAdvisoryOnly) void handleExecute();
-          }}
-          onChooseAnotherName={() => setDuplicateCheck(null)}
+          busy={checkingDuplicate}
+          onClose={handleDuplicateCancel}
+          onCancel={handleDuplicateCancel}
+          onChooseAnotherName={handleDuplicateCancel}
+          onRename={handleDuplicateRename}
+          // Advisory (similar names only) -> always continuable. Exact match -> only when it's an
+          // existing Bundle with the exact same name (that bundle is then reused/updated, the execute
+          // route's long-standing reuse-by-name behavior) — never a plain-Product hijack.
+          onContinue={!duplicateCheck.isDuplicate || isContinuableBundleDuplicate(duplicateCheck) ? handleDuplicateContinue : undefined}
+          continueLabel={duplicateCheck.isDuplicate ? "Continue — Update Existing Bundle" : "Continue Anyway"}
           onUseExisting={duplicateCheck.isDuplicate ? () => { const id = duplicateCheck.recordId; setDuplicateCheck(null); onViewBundle?.(id); } : undefined}
           onEditExisting={duplicateCheck.isDuplicate ? () => { const id = duplicateCheck.recordId; setDuplicateCheck(null); onEditBundle?.(id); } : undefined}
         />

@@ -6,13 +6,50 @@ import { quoteApiGet, toErrorPanelData, type ErrorPanelDataLike } from "@/lib/qu
 import { loadSession } from "@/lib/auth/session";
 import { toCreatedSalesforceRecord } from "@/lib/salesforce/recordUrl";
 import { useSalesforceSuccess } from "@/components/notifications/SalesforceSuccessContext";
-import type { AttributeDetail, AttributePicklistValueRow } from "@/lib/attributes/types";
+import type { AttributeDetail, AttributePicklistValueRow, AttributeProductConfig } from "@/lib/attributes/types";
 
 interface EditFields {
   name: string;
   description: string;
   isActive: boolean;
   dataType: string;
+  /** AttributeDefinition.DefaultValue — the attribute's own configured value. */
+  defaultValue: string;
+}
+
+/** Editable copy of one ProductAttributeDefinition's configuration — all strings, "" = blank. */
+interface EditableConfig {
+  id: string;
+  productName: string | null;
+  defaultValue: string;
+  minimumValue: string;
+  maximumValue: string;
+  stepValue: string;
+}
+
+const CONFIG_KEYS = ["defaultValue", "minimumValue", "maximumValue", "stepValue"] as const;
+type ConfigKey = typeof CONFIG_KEYS[number];
+const CONFIG_FIELD: Record<ConfigKey, string> = { defaultValue: "DefaultValue", minimumValue: "MinimumValue", maximumValue: "MaximumValue", stepValue: "StepValue" };
+const CONFIG_LABEL: Record<ConfigKey, string> = { defaultValue: "Default", minimumValue: "Min", maximumValue: "Max", stepValue: "Step" };
+
+function toEditableConfig(c: AttributeProductConfig): EditableConfig {
+  return {
+    id: c.id, productName: c.productName,
+    defaultValue: c.defaultValue ?? "", minimumValue: c.minimumValue ?? "", maximumValue: c.maximumValue ?? "", stepValue: c.stepValue ?? "",
+  };
+}
+
+/** Only the fields that differ from what Salesforce currently holds, per ProductAttributeDefinition. */
+function configPatches(original: AttributeDetail, configs: EditableConfig[]) {
+  const patches: ({ id: string } & Partial<Record<ConfigKey, string>>)[] = [];
+  for (const c of configs) {
+    const o = original.productConfigs.find(x => x.id === c.id);
+    if (!o) continue;
+    const patch: { id: string } & Partial<Record<ConfigKey, string>> = { id: c.id };
+    for (const k of CONFIG_KEYS) if (c[k] !== (o[k] ?? "")) patch[k] = c[k];
+    if (Object.keys(patch).length > 1) patches.push(patch);
+  }
+  return patches;
 }
 
 interface EditableValue extends AttributePicklistValueRow {
@@ -22,7 +59,7 @@ interface EditableValue extends AttributePicklistValueRow {
 }
 
 function toFields(a: AttributeDetail): EditFields {
-  return { name: a.name, description: a.description ?? "", isActive: a.isActive, dataType: a.dataType ?? "" };
+  return { name: a.name, description: a.description ?? "", isActive: a.isActive, dataType: a.dataType ?? "", defaultValue: a.defaultValue ?? "" };
 }
 
 interface Changes {
@@ -32,8 +69,13 @@ interface Changes {
   renamed: { from: string; to: string }[];
 }
 
-function computeChanges(original: AttributeDetail, fields: EditFields, values: EditableValue[]): Changes {
+function computeChanges(original: AttributeDetail, fields: EditFields, values: EditableValue[], configs: EditableConfig[]): Changes {
   const modified: string[] = [];
+  if (fields.defaultValue !== (original.defaultValue ?? "")) modified.push("Default Value");
+  for (const p of configPatches(original, configs)) {
+    const name = configs.find(c => c.id === p.id)?.productName ?? p.id;
+    modified.push(`${name} configuration`);
+  }
   if (fields.name !== original.name) modified.push("Attribute Name");
   if (fields.description !== (original.description ?? "")) modified.push("Description");
   if (fields.isActive !== original.isActive) modified.push("Status");
@@ -75,6 +117,7 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
 
   const [fields, setFields] = useState<EditFields | null>(null);
   const [values, setValues] = useState<EditableValue[]>([]);
+  const [configs, setConfigs] = useState<EditableConfig[]>([]);
   const [newValueText, setNewValueText] = useState("");
 
   const [saving, setSaving] = useState(false);
@@ -89,6 +132,7 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
   const applyAttribute = (attribute: AttributeDetail) => {
     setOriginal(attribute);
     setFields(toFields(attribute));
+    setConfigs(attribute.productConfigs.map(toEditableConfig));
     setValues(
       attribute.picklistValues
         .filter(v => v.isActive !== false)
@@ -104,8 +148,8 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
   }, [attributeId]);
 
   const changes = useMemo(
-    () => (original && fields ? computeChanges(original, fields, values) : { modified: [], added: [], removed: [], renamed: [] }),
-    [original, fields, values],
+    () => (original && fields ? computeChanges(original, fields, values, configs) : { modified: [], added: [], removed: [], renamed: [] }),
+    [original, fields, values, configs],
   );
   const dirty = hasAnyChanges(changes);
 
@@ -118,7 +162,7 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
     if (!text) return;
     setAddValueError(null);
     const key = text.toLowerCase();
-    const isDuplicate = values.some(v => v.status !== "pendingRemove" && v.editedDisplayValue.trim().toLowerCase() === key);
+    const isDuplicate = values.some(v => v.status !== "pendingRemove" && (v.editedDisplayValue.trim().toLowerCase() === key || v.value.trim().toLowerCase() === key));
     if (isDuplicate) {
       setAddValueError(`"${text}" already exists on this attribute.`);
       return;
@@ -159,6 +203,8 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
     if (fields.description !== (original.description ?? "")) patch.description = fields.description;
     if (fields.isActive !== original.isActive) patch.isActive = fields.isActive;
     if (fields.dataType !== (original.dataType ?? "") && original.dataTypeEditable) patch.dataType = fields.dataType;
+    if (fields.defaultValue !== (original.defaultValue ?? "")) patch.defaultValue = fields.defaultValue.trim();
+    const productConfigs = configPatches(original, configs);
 
     const addValues = values.filter(v => v.status === "pendingAdd").map(v => v.editedDisplayValue);
     const removeValueIds = values.filter(v => v.status === "pendingRemove" && !v.id.startsWith("pending-")).map(v => v.id);
@@ -169,7 +215,7 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
     try {
       const res = await fetch(`/api/sf/attributes/${attributeId}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ patch: Object.keys(patch).length ? patch : undefined, addValues, removeValueIds, updateValues }),
+        body: JSON.stringify({ patch: Object.keys(patch).length ? patch : undefined, addValues, removeValueIds, updateValues, productConfigs }),
       });
       const data: {
         success: boolean;
@@ -184,6 +230,8 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
       // that doesn't match what's really in Salesforce.
       if (data.attribute) applyAttribute(data.attribute);
 
+      // Success is ONLY what the server confirmed by reading every written record back from
+      // Salesforce — a non-2xx, success:false, or a missing canonical read is never shown as saved.
       if (!res.ok || !data.success) {
         const detail = data.errors?.length
           ? data.errors.map(e => e.error).join(" • ")
@@ -201,7 +249,7 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
         const record = toCreatedSalesforceRecord(instanceUrl, "AttributeDefinition", attributeId, fields.name);
         notifySalesforceSuccess({
           title: "Attribute Updated Successfully",
-          message: `${record.recordName} has been successfully updated in Salesforce.`,
+          message: `${record.recordName} was updated and verified in Salesforce.`,
           records: [record],
         });
       }
@@ -292,6 +340,18 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
               </div>
             </label>
             <InfoStatic label="API Name" value={original.apiName ?? "—"} t={t} />
+            {!original.isPicklist && original.defaultValueEditable && (
+              (fields.dataType ?? "").toLowerCase() === "checkbox" ? (
+                <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase", color: t.dim }}>Default Value</span>
+                  <select value={fields.defaultValue} onChange={e => setField("defaultValue", e.target.value)} style={inputStyle(t)}>
+                    <option value="">— none —</option><option value="true">true</option><option value="false">false</option>
+                  </select>
+                </label>
+              ) : (
+                <EditField label="Default Value" value={fields.defaultValue} onChange={v => setField("defaultValue", v)} t={t} />
+              )
+            )}
           </div>
           <div style={{ marginTop: 12 }}>
             <label style={{ display: "block", fontSize: 10, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase", color: t.dim, marginBottom: 6 }}>Description</label>
@@ -308,6 +368,11 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
               </p>
             </div>
 
+            {original.picklistSharedCount > 1 && (
+              <p style={{ fontSize: 11.5, color: "#F59E0B", marginBottom: 10 }}>
+                This picklist is shared by {original.picklistSharedCount} attributes — changing its values changes them for all of them.
+              </p>
+            )}
             <div style={{ display: "flex", gap: 8, marginBottom: addValueError ? 6 : 12 }}>
               <input
                 value={newValueText}
@@ -368,6 +433,39 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
                 );
               })}
             </div>
+          </section>
+        )}
+
+        {/* Per-product configuration (ProductAttributeDefinition) */}
+        {configs.length > 0 && original.productConfigFields.length > 0 && (
+          <section>
+            <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: t.dim, marginBottom: 6 }}>
+              Product Configuration ({configs.length})
+            </p>
+            <p style={{ fontSize: 11.5, color: t.dim, marginBottom: 10 }}>
+              The value/range this attribute has on each product it&apos;s assigned to (Product Attribute Definition).
+            </p>
+            {(() => {
+              const keys = CONFIG_KEYS.filter(k => original.productConfigFields.includes(CONFIG_FIELD[k]) && (k === "defaultValue" || ["number", "currency", "percent"].includes((original.dataType ?? "").toLowerCase())));
+              const cols = `1.6fr ${keys.map(() => "1fr").join(" ")}`;
+              return (
+                <div style={{ borderRadius: 12, border: `1px solid ${t.border}`, overflow: "hidden" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: cols, gap: 8, padding: "9px 14px", background: t.surfaceAlt, fontSize: 10, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase", color: t.dim }}>
+                    <span>Product</span>{keys.map(k => <span key={k}>{CONFIG_LABEL[k]}</span>)}
+                  </div>
+                  {configs.map((c, i) => (
+                    <div key={c.id} style={{ display: "grid", gridTemplateColumns: cols, gap: 8, padding: "8px 14px", borderTop: i > 0 ? `1px solid ${t.border}` : undefined, alignItems: "center", fontSize: 12, color: t.body }}>
+                      <span style={{ fontWeight: 600, color: t.heading }}>{c.productName ?? c.id}</span>
+                      {keys.map(k => (
+                        <input key={k} value={c[k]}
+                          onChange={e => setConfigs(prev => prev.map(x => x.id === c.id ? { ...x, [k]: e.target.value } : x))}
+                          style={{ ...inputStyle(t), padding: "6px 8px" }} />
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
           </section>
         )}
 

@@ -62,6 +62,7 @@ async function buildExistingRecord(client: SalesforceClient, r: Product2Row): Pr
     isActive: r.IsActive !== false, family: null,
     componentCount: null, sellingModel: null, catalog: null, category: null,
     lastModifiedDate: r.LastModifiedDate ?? null,
+    type: r.Type ?? null,
   };
   if (r.Type !== "Bundle") return base;
 

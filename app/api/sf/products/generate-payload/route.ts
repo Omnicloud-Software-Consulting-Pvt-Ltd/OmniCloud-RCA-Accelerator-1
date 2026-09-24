@@ -41,6 +41,8 @@ JSON structure — every field is either the value the user stated, or JSON null
   "isActive": null,
   "productOwner": null,
   "description": null,
+  "unitOfMeasure": null,
+  "classification": null,
   "attributes": []
 }
 
@@ -82,10 +84,10 @@ sellingModel — ONLY if the prompt describes how the product is sold/billed. Re
     "Term Based - Yearly"      → fixed-term contract billed yearly/annually
   If a recurrence word is used without a stated frequency: "subscription"/"recurring"/"ongoing" → "Evergreen - Monthly"; "contract"/"lease"/"term" → "Term Based - Monthly".
 
-basePrice — ONLY if a price is stated. Recognize: "$1500", "$1,500" (strip commas/symbols), "price 1500", "base price 1500", "selling price 1500", "for 1500", "1500 including tax", "1500 before tax".
-  • Output the plain numeric string only ("1500"). If no price is mentioned anywhere, output null.
+basePrice — ONLY if a price is stated. Recognize: "$1500", "$1,500", "₹50,000", "Rs. 50,000", "5,00,000" (Indian digit grouping), "price 1500", "product price 1500", "base price 1500", "selling price 1500", "for 1500", "1500 including tax", "1500 before tax".
+  • Output the plain numeric string only, with ALL currency symbols and grouping commas removed ("₹50,000" → "50000", "5,00,000" → "500000", "$1,200.50" → "1200.50"). Never round, abbreviate or convert the amount. If no price is mentioned anywhere, output null.
 
-currencyIsoCode — ONLY if a currency is explicitly named or unambiguous from a symbol (e.g. "€40" → "EUR", "£40" → "GBP", "$1200" → "USD"). If a price is given with no currency indicator, output null (do not assume USD). If no price at all, output null.
+currencyIsoCode — ONLY if a currency is explicitly named or unambiguous from a symbol (e.g. "€40" → "EUR", "£40" → "GBP", "$1200" → "USD", "₹50,000"/"Rs. 50,000"/"50000 rupees"/"INR 50000" → "INR"). If a price is given with no currency indicator, output null (do not assume USD). If no price at all, output null.
 
 taxIncluded — ONLY if the prompt says something about tax for the price. This is a SEPARATE flag from basePrice — never fold tax wording into the price number itself.
   • "including tax" / "tax included" / "tax-inclusive" / "with tax" → true
@@ -98,6 +100,10 @@ isActive — ONLY if the prompt says something about active/inactive/draft/statu
   • No mention at all → null (Salesforce's own default will apply — do not output true just because most products are active).
 
 productOwner — ONLY if a specific owner name or email is given (e.g. "owned by jane.doe@company.com", "owner Jane Doe"). Otherwise null. Never invent one.
+
+unitOfMeasure — ONLY if explicitly stated ("unit of measure Hour", "UoM GB", "priced per user", "sold per license"). Use the unit's name as stated in Title Case ("Hour", "GB", "User", "License"). If not mentioned, output null — do NOT default to "Each".
+
+classification — ONLY if a product classification is explicitly named ("classification Computer", "product classification Software", "based on the Printer classification"). Use the user's exact wording. If not mentioned, output null — never infer one from the product type.
 
 description — ONLY if the prompt contains language that IS a description (a sentence describing the product beyond just naming its fields), not merely restating the product name. If the prompt is just a flat list of field values with no descriptive sentence, output null — do NOT synthesize a description from the field values.
 
@@ -115,6 +121,10 @@ Output:
 Prompt: "Create a Laptop Pro 15 in Computers for $1200."
 Output:
 {"productName":"Laptop Pro 15","productCode":null,"family":"Computers","category":null,"catalog":null,"productType":null,"sellingModel":null,"basePrice":"1200","currencyIsoCode":null,"taxIncluded":null,"isActive":null,"productOwner":null,"description":null,"attributes":[]}
+
+Prompt: "Create a Laptop with a product price of ₹50,000."
+Output:
+{"productName":"Laptop","productCode":null,"family":null,"category":null,"catalog":null,"productType":null,"sellingModel":null,"basePrice":"50000","currencyIsoCode":"INR","taxIncluded":null,"isActive":null,"productOwner":null,"description":null,"unitOfMeasure":null,"classification":null,"attributes":[]}
 
 Prompt: "Create a laptop for $1500 including tax."
 Output:
@@ -172,6 +182,8 @@ interface RawPayload {
   isActive?: boolean | null;
   sellingModel?: string | null;
   productType?: string | null;
+  unitOfMeasure?: string | null;
+  classification?: string | null;
   productOwner?: string | null;
   basePrice?: string | number | null;
   currencyIsoCode?: string | null;
@@ -272,6 +284,8 @@ export async function POST(req: NextRequest) {
       priceBook: null,
       productType: parsed.productType,
       currencyIsoCode: parsed.currencyIsoCode,
+      unitOfMeasure: parsed.unitOfMeasure,
+      classification: parsed.classification,
       taxIncluded: parsed.taxIncluded,
     };
 

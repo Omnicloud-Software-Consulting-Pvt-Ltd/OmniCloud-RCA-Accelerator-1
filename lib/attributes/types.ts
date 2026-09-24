@@ -15,6 +15,17 @@ export interface AttributePicklistValueRow {
   isActive: boolean;
 }
 
+/** One ProductAttributeDefinition — this attribute's configuration on a specific product (per-product value/range). */
+export interface AttributeProductConfig {
+  id: string;
+  productId: string | null;
+  productName: string | null;
+  defaultValue: string | null;
+  minimumValue: string | null;
+  maximumValue: string | null;
+  stepValue: string | null;
+}
+
 export interface AttributeRelatedProduct {
   id: string;
   name: string;
@@ -44,6 +55,15 @@ export interface AttributeDetail extends AttributeListItem {
   dataTypeEditable: boolean;
   /** Valid DataType picklist values for this org, for the Edit form's dropdown — empty means unrestricted/unknown. */
   validDataTypes: string[];
+  /** AttributeDefinition.DefaultValue — the attribute's own configured value. */
+  defaultValue: string | null;
+  defaultValueEditable: boolean;
+  /** Per-product configuration (ProductAttributeDefinition rows) for this attribute. */
+  productConfigs: AttributeProductConfig[];
+  /** Which ProductAttributeDefinition config fields are editable in this org (subset of DefaultValue/MinimumValue/MaximumValue/StepValue). */
+  productConfigFields: string[];
+  /** How many AttributeDefinitions use this same AttributePicklist — editing a value affects all of them. */
+  picklistSharedCount: number;
 }
 
 /* ── Product existence validation (RCAAttributeStudio's new gate) ── */

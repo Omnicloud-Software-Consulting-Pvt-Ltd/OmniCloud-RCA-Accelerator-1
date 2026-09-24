@@ -1,7 +1,7 @@
 import type { SalesforceClient } from "@/lib/salesforce/client";
 import { soqlEscape } from "@/lib/salesforce/client";
-import { resolveAttributeSchema, fieldExists, picklistValues, type AttributeSchema } from "./schema";
-import type { AttributeListItem, AttributeDetail, AttributePicklistValueRow, AttributeRelatedProduct } from "@/lib/attributes/types";
+import { resolveAttributeSchema, fieldExists, isFieldUpdateable, picklistValues, type AttributeSchema } from "./schema";
+import type { AttributeListItem, AttributeDetail, AttributePicklistValueRow, AttributeRelatedProduct, AttributeProductConfig } from "@/lib/attributes/types";
 
 interface AttrDefRow {
   Id: string;
@@ -23,6 +23,7 @@ async function fetchAttrDefRows(client: SalesforceClient, schema: AttributeSchem
   if (fieldExists(d, "Description")) fields.push("Description");
   if (schema.attrDefDatatypeField) fields.push(schema.attrDefDatatypeField);
   if (schema.attrDefPicklistFKField) fields.push(schema.attrDefPicklistFKField);
+  if (fieldExists(d, "DefaultValue")) fields.push("DefaultValue");
 
   const where = id ? `WHERE Id = '${soqlEscape(id)}'` : "";
   const order = id ? "" : "ORDER BY LastModifiedDate DESC LIMIT 500";
@@ -125,6 +126,67 @@ export async function loadAttributeList(client: SalesforceClient): Promise<Attri
   return rows.map(r => rowToListItem(r, schema, picklistCounts, relatedProducts));
 }
 
+/**
+ * Every value on a picklist, including Inactive (removed) ones — used by the
+ * PATCH route's duplicate guard so re-adding a previously removed value
+ * restores that record instead of creating a second one with the same text.
+ */
+export async function loadPicklistValueRecords(
+  client: SalesforceClient, picklistId: string,
+): Promise<{ id: string; texts: string[]; sequence: number; isActive: boolean }[]> {
+  const schema = await resolveAttributeSchema(client);
+  const plD = schema.attributePicklistValueDescribe;
+  const textFields = ["Name", "Value", "DisplayValue"].filter(f => fieldExists(plD, f));
+  const fields = ["Id", ...textFields.filter(f => f !== "Name"), "Name"];
+  if (fieldExists(plD, "Sequence")) fields.push("Sequence");
+  if (fieldExists(plD, "Status")) fields.push("Status");
+  else if (fieldExists(plD, "IsActive")) fields.push("IsActive");
+  const res = await client.query<Record<string, unknown>>(
+    `SELECT ${[...new Set(fields)].join(", ")} FROM AttributePicklistValue WHERE ${schema.plValueFKField} = '${soqlEscape(picklistId)}'`,
+  );
+  return res.records.map(r => ({
+    id: r.Id as string,
+    texts: textFields.map(f => r[f]).filter((v): v is string => typeof v === "string" && v.length > 0),
+    sequence: typeof r.Sequence === "number" ? r.Sequence : 0,
+    isActive: "Status" in r ? r.Status !== "Inactive" : r.IsActive !== false,
+  }));
+}
+
+/** This attribute's ProductAttributeDefinition rows — its real per-product configuration. */
+async function loadProductConfigs(client: SalesforceClient, schema: AttributeSchema, attrDefId: string): Promise<AttributeProductConfig[]> {
+  const d = schema.productAttributeDefinitionDescribe;
+  if (!d) return [];
+  const cfgFields = ["DefaultValue", "MinimumValue", "MaximumValue", "StepValue"].filter(f => fieldExists(d, f));
+  const fk = schema.padProduct2FKField;
+  const fields = ["Id", ...cfgFields, ...(fk ? [fk] : [])];
+  try {
+    const res = await client.query<Record<string, unknown>>(
+      `SELECT ${fields.join(", ")} FROM ProductAttributeDefinition WHERE AttributeDefinitionId = '${soqlEscape(attrDefId)}' LIMIT 200`,
+    );
+    const productIds = fk ? [...new Set(res.records.map(r => r[fk] as string | undefined).filter((v): v is string => !!v))] : [];
+    const names = new Map<string, string>();
+    if (productIds.length) {
+      const pr = await client.query<{ Id: string; Name: string }>(`SELECT Id, Name FROM Product2 WHERE Id IN (${productIds.map(i => `'${soqlEscape(i)}'`).join(",")})`);
+      for (const p of pr.records) names.set(p.Id, p.Name);
+    }
+    const str = (v: unknown) => (v === null || v === undefined ? null : String(v));
+    return res.records.map(r => {
+      const productId = fk ? ((r[fk] as string | undefined) ?? null) : null;
+      return {
+        id: r.Id as string,
+        productId,
+        productName: productId ? names.get(productId) ?? null : null,
+        defaultValue: str(r.DefaultValue),
+        minimumValue: str(r.MinimumValue),
+        maximumValue: str(r.MaximumValue),
+        stepValue: str(r.StepValue),
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
 /** Full single-attribute read — Attribute Detail/Edit's shared load, including picklist values. */
 export async function loadAttributeDetail(client: SalesforceClient, id: string): Promise<AttributeDetail> {
   const schema = await resolveAttributeSchema(client);
@@ -181,6 +243,15 @@ export async function loadAttributeDetail(client: SalesforceClient, id: string):
   const dataTypeField = schema.attrDefDatatypeField;
   const dataTypeFieldDescribe = dataTypeField ? attrDefD?.fields.find(f => f.name === dataTypeField) ?? null : null;
 
+  const padD = schema.productAttributeDefinitionDescribe;
+  const [productConfigs, picklistSharedCount] = await Promise.all([
+    loadProductConfigs(client, schema, id),
+    picklistId && schema.attrDefPicklistFKField
+      ? client.query<{ cnt: number }>(`SELECT COUNT(Id) cnt FROM AttributeDefinition WHERE ${schema.attrDefPicklistFKField} = '${soqlEscape(picklistId)}'`)
+          .then(r => r.records[0]?.cnt ?? 1).catch(() => 1)
+      : Promise.resolve(0),
+  ]);
+
   return {
     ...listItem,
     label: row.Label ?? null,
@@ -188,5 +259,10 @@ export async function loadAttributeDetail(client: SalesforceClient, id: string):
     picklistValues: picklistValueRows,
     dataTypeEditable: dataTypeFieldDescribe?.updateable ?? false,
     validDataTypes: picklistValues(attrDefD, dataTypeField),
+    defaultValue: (row.DefaultValue as string | null | undefined) ?? null,
+    defaultValueEditable: isFieldUpdateable(attrDefD, "DefaultValue"),
+    productConfigs,
+    productConfigFields: ["DefaultValue", "MinimumValue", "MaximumValue", "StepValue"].filter(f => isFieldUpdateable(padD, f)),
+    picklistSharedCount,
   };
 }

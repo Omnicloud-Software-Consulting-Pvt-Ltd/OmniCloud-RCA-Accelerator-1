@@ -1,4 +1,5 @@
 import type { ProductPayload } from "@/lib/products/types";
+import { parseProductPrice } from "@/lib/products/price";
 
 /**
  * Centralized Prompt → Product Field mapping layer.
@@ -50,6 +51,10 @@ export interface RawFieldInput {
   priceBook?: string | null;
   productType?: string | null;
   currencyIsoCode?: string | null;
+  /** Unit of Measure as stated ("unit of measure Hour", "priced per GB"). */
+  unitOfMeasure?: string | null;
+  /** Product Classification name/code as stated ("classification Computer"). */
+  classification?: string | null;
   /**
    * true = "including tax"/"tax included"; false = "before tax"/"tax
    * excluded"; null = the prompt said nothing about tax. There is no
@@ -76,6 +81,8 @@ export interface ProductIntentMap {
   basePrice: FieldMapping<string>;
   productType: FieldMapping<string>;
   currencyIsoCode: FieldMapping<string>;
+  unitOfMeasure: FieldMapping<string>;
+  classification: FieldMapping<string>;
   taxIncluded: FieldMapping<boolean | null>;
 }
 
@@ -110,7 +117,14 @@ export function buildProductIntent(raw: RawFieldInput): ProductIntentResult {
       : { value: raw.isActive, provenance: "explicit" };
   const sellingModel = explicitString(raw.sellingModel) ?? { value: "", provenance: "unspecified" };
   const productOwner = explicitString(raw.productOwner) ?? { value: "", provenance: "unspecified" };
-  const basePrice = explicitString(raw.basePrice) ?? { value: "", provenance: "unspecified" };
+  // Normalized ("₹50,000" / "50,000" → "50000") so the review UI shows exactly the number
+  // /save will write. An unparseable value is kept verbatim (still "explicit") so the user
+  // sees it and /save rejects it loudly — never silently turned into "no price".
+  const rawPrice = explicitString(raw.basePrice);
+  const parsedPrice = rawPrice ? parseProductPrice(rawPrice.value) : null;
+  const basePrice: FieldMapping<string> = rawPrice
+    ? { value: parsedPrice?.ok ? parsedPrice.normalized : rawPrice.value, provenance: "explicit" }
+    : { value: "", provenance: "unspecified" };
   // Price Book: only defaulted when a price was actually given — without a
   // price book name, /api/sf/products/save can't resolve a Pricebook2 to
   // attach the price to at all, so "Standard Price Book" (this app's own
@@ -121,7 +135,9 @@ export function buildProductIntent(raw: RawFieldInput): ProductIntentResult {
     explicitString(raw.priceBook) ??
     (basePrice.provenance === "explicit" ? { value: "Standard Price Book", provenance: "default" as const } : { value: "", provenance: "unspecified" as const });
   const productType = explicitString(raw.productType) ?? { value: "", provenance: "unspecified" };
-  const currencyIsoCode = explicitString(raw.currencyIsoCode) ?? { value: "", provenance: "unspecified" };
+  const currencyIsoCode = explicitString(raw.currencyIsoCode?.toUpperCase()) ?? { value: "", provenance: "unspecified" };
+  const unitOfMeasure = explicitString(raw.unitOfMeasure) ?? { value: "", provenance: "unspecified" };
+  const classification = explicitString(raw.classification) ?? { value: "", provenance: "unspecified" };
   const taxIncluded: FieldMapping<boolean | null> =
     raw.taxIncluded === null || raw.taxIncluded === undefined
       ? { value: null, provenance: "unspecified" }
@@ -129,7 +145,8 @@ export function buildProductIntent(raw: RawFieldInput): ProductIntentResult {
 
   const intent: ProductIntentMap = {
     productName, productCode, family, category, catalog, description, isActive,
-    sellingModel, productOwner, priceBook, basePrice, productType, currencyIsoCode, taxIncluded,
+    sellingModel, productOwner, priceBook, basePrice, productType, currencyIsoCode,
+    unitOfMeasure, classification, taxIncluded,
   };
 
   const payload: ProductPayload = {
@@ -151,6 +168,8 @@ export function buildProductIntent(raw: RawFieldInput): ProductIntentResult {
     // isn't forwarded to a picklist that would likely reject it.
     productType: productType.value.toLowerCase() === "bundle" ? "bundle" : undefined,
     currencyIsoCode: currencyIsoCode.value || undefined,
+    unitOfMeasure: unitOfMeasure.value || undefined,
+    classification: classification.value || undefined,
   };
 
   return { intent, payload };
