@@ -14,7 +14,7 @@
  */
 import type { SalesforceClient } from "@/lib/salesforce/client";
 import { extractStepGraph, getTagValue, type PhysicalStepNode } from "@/lib/pricing-rules/attribute-based/create/xmlBlocks";
-import { retrieveExpressionSetDefinitionFiles } from "@/lib/pricing-rules/attribute-based/create/templateExpressionSet";
+import { retrieveVersionScopedExpressionSetDefinitionFiles } from "@/lib/pricing-rules/attribute-based/create/templateExpressionSet";
 
 /** Every OTHER standard pricing-procedure action type this org may also use — swapped from the
  * attribute-based module's own list: AttributeDiscount moves IN (it's unrelated to bundle pricing),
@@ -25,7 +25,7 @@ export const SHARED_SIGNAL_ACTION_TYPES = new Set([
 
 const MINIMUM_TRUSTED_DONOR_SCORE = 0;
 
-export type ConnectionMechanism = "parentStep-chain" | "physical-nesting" | "variable-binding" | "sequence-order" | "none";
+export type ConnectionMechanism = "parentStep-chain" | "physical-nesting" | "variable-binding" | "root-sequence" | "sequence-order" | "none";
 
 export interface ResolvedConnectedAncestor { node: PhysicalStepNode | null; mechanism: ConnectionMechanism; }
 
@@ -100,6 +100,40 @@ function resolveListPriceViaVariableBinding(graph: PhysicalStepNode[], bdNode: P
   return matches.length === 1 ? { node: matches[0] } : { node: null };
 }
 
+/** The root-level step a node ultimately hangs off (its last `<parentStep>` hop, or itself). */
+function rootAnchor(graph: PhysicalStepNode[], node: PhysicalStepNode): PhysicalStepNode {
+  const chain = walkParentStepChainNames(graph, node).chain;
+  return chain.length > 0 ? chain[chain.length - 1] : node;
+}
+
+function isContractListPrice(node: PhysicalStepNode): boolean {
+  return findBindingValue(collectAllParameterBindings(ownFieldsOnly(node)), "IsContractEnabled") === "true";
+}
+
+/**
+ * §Live-org fix — Salesforce's standard Revenue Management pricing procedure is FLAT: every step is a
+ * root-level `<steps>` element, list containers group their children by `<parentStep>` name, and data
+ * flows between containers purely by ROOT sequence order (PricingSetting 1 → PriceBookEntries 2 → …
+ * → the Bundle Discount container 13). None of the other signals can prove BundleDiscount → ListPrice
+ * there: its parentStep chain ends at its own container, nothing is physically nested, and its
+ * InputUnitPrice reads NetUnitPrice rather than a ListPrice output. This compares the root anchors'
+ * sequence numbers instead, preferring a non-contract ListPrice (the standard price-book lookup) over
+ * the contract-pricing one.
+ */
+function resolveViaRootSequence(graph: PhysicalStepNode[], node: PhysicalStepNode, targetActionType: string): PhysicalStepNode | null {
+  const nodeRootSeq = parsedSequenceNumber(rootAnchor(graph, node));
+  if (nodeRootSeq === null) return null;
+  const earlier = graph
+    .filter(n => n.actionType === targetActionType)
+    .map(n => ({ n, seq: parsedSequenceNumber(rootAnchor(graph, n)) }))
+    .filter((c): c is { n: PhysicalStepNode; seq: number } => c.seq !== null && c.seq < nodeRootSeq);
+  if (earlier.length === 0) return null;
+  const preferred = targetActionType === "ListPrice" ? earlier.filter(c => !isContractListPrice(c.n)) : earlier;
+  const pool = preferred.length > 0 ? preferred : earlier;
+  pool.sort((a, b) => b.seq - a.seq);
+  return pool[0].n;
+}
+
 /** The 4-signal connection resolver — identical priority order/logic to the attribute-based module's own
  * `resolveConnectedAncestor`, generalized so the variable-binding signal (weak, hardcoded pair in the
  * original) fires for `targetActionType === "ListPrice" && node.actionType === "BundleDiscount"` instead. */
@@ -114,6 +148,11 @@ export function resolveConnectedAncestor(graph: PhysicalStepNode[], node: Physic
   if (targetActionType === "ListPrice" && node.actionType === "BundleDiscount") {
     const viaBinding = resolveListPriceViaVariableBinding(graph, node);
     if (viaBinding.node) return { node: viaBinding.node, mechanism: "variable-binding" };
+  }
+
+  if (node.parentStep) {
+    const viaRoot = resolveViaRootSequence(graph, node, targetActionType);
+    if (viaRoot) return { node: viaRoot, mechanism: "root-sequence" };
   }
 
   const nodeSeq = parsedSequenceNumber(node);
@@ -163,6 +202,8 @@ export interface BundleDiscountBranchInspection {
   listPriceConnection: ConnectionMechanism;
   connectedToListPrice: boolean;
   bindings: BundleDiscountBindingSnapshot;
+  /** The lookup table the step itself executes (its LookUpId/LookUpApiName/LookUpName literals). */
+  lookupBinding: { lookUpId: string | null; lookUpApiName: string | null; lookUpName: string | null };
   allBindings: RawParameterBinding[];
   rawXml: string;
 }
@@ -181,6 +222,11 @@ function inspectBundleDiscountBranch(graph: PhysicalStepNode[], node: PhysicalSt
       inputUnitPrice: findBindingValue(ownBindings, "InputUnitPrice"),
       priceAdjustmentScheduleBinding: ownBindings.find(b => /^PriceAdjustmentSchedule/i.test(b.name ?? ""))?.value ?? null,
       publishedOutputs: ownBindings.filter(b => b.output).map(b => b.value).filter((v): v is string => !!v),
+    },
+    lookupBinding: {
+      lookUpId: findBindingValue(ownBindings, "LookUpId"),
+      lookUpApiName: findBindingValue(ownBindings, "LookUpApiName"),
+      lookUpName: findBindingValue(ownBindings, "LookUpName"),
     },
     allBindings: collectAllParameterBindings(node.full),
     rawXml: node.full,
@@ -256,7 +302,15 @@ export function inspectDonorCandidate(fileName: string, xml: string): Expression
 
 export interface DonorCandidateRanking { fullName: string; score: number; reason: string }
 
-export function rankCandidates(candidates: ExpressionSetDonorCandidate[]): DonorCandidateRanking[] {
+/** True when a branch is bound to the resolved lookup table (by Id or DeveloperName), or — with no table
+ * to compare against — to any lookup table at all. */
+export function isBranchLookupBound(branch: BundleDiscountBranchInspection, lookupTable?: { id: string; developerName: string } | null): boolean {
+  const { lookUpId, lookUpApiName } = branch.lookupBinding;
+  if (!lookupTable) return !!(lookUpId || lookUpApiName);
+  return (!!lookUpId && lookUpId.slice(0, 15) === lookupTable.id.slice(0, 15)) || lookUpApiName === lookupTable.developerName;
+}
+
+export function rankCandidates(candidates: ExpressionSetDonorCandidate[], lookupTable?: { id: string; developerName: string } | null): DonorCandidateRanking[] {
   return candidates
     .filter(c => c.bundleDiscountOccurrences > 0)
     .map(c => {
@@ -279,10 +333,19 @@ export function rankCandidates(candidates: ExpressionSetDonorCandidate[]): Donor
             ? "physical-nesting"
             : connectedBranches.some(b => b.listPriceConnection === "variable-binding")
               ? "variable-binding"
-              : "sequence-order";
-        const mechanismBonus = bestMechanism === "parentStep-chain" ? 3 : bestMechanism === "physical-nesting" ? 2 : bestMechanism === "variable-binding" ? 1 : 0;
+              : connectedBranches.some(b => b.listPriceConnection === "root-sequence")
+                ? "root-sequence"
+                : "sequence-order";
+        const mechanismBonus = bestMechanism === "parentStep-chain" ? 3 : bestMechanism === "physical-nesting" ? 2 : (bestMechanism === "variable-binding" || bestMechanism === "root-sequence") ? 1 : 0;
         score += mechanismBonus;
         reasons.push(`>=1 BundleDiscount occurrence resolves to ListPrice (+2), strongest evidence: ${bestMechanism}${mechanismBonus > 0 ? ` (+${mechanismBonus})` : " (weakest signal — no bonus)"}`);
+        // A connected BundleDiscount step that already executes the resolved lookup table is a real,
+        // working Bundle Discount configuration. Its unrelated sibling branches are pruned away before
+        // deploy (and the builder re-checks that none survive), so they don't lower confidence in it.
+        if (unrelatedCount > 0 && connectedBranches.some(b => isBranchLookupBound(b, lookupTable))) {
+          score += unrelatedCount + 1;
+          reasons.push(`connected BundleDiscount step is bound to ${lookupTable ? `the resolved lookup table ${lookupTable.developerName}` : "a lookup table"}; unrelated branches are pruned before deploy (+${unrelatedCount + 1})`);
+        }
       } else reasons.push("no BundleDiscount occurrence resolves to ListPrice via any known mechanism");
 
       if (c.physicalStepCount <= 10) { score += 1; reasons.push(`small physical step count (${c.physicalStepCount}) — unlikely to be a large shared procedure (+1)`); }
@@ -330,9 +393,19 @@ export interface BundleBasedPricingDonorResolution {
   lowConfidenceCandidates?: DonorCandidateRanking[];
 }
 
-export async function resolveBundleBasedPricingDonor(client: SalesforceClient): Promise<BundleBasedPricingDonorResolution> {
-  const { files } = await retrieveExpressionSetDefinitionFiles(client, ["*"]);
-  const inspected = files.map(f => ({ file: f, candidate: inspectDonorCandidate(f.fileName, f.content) }));
+export async function resolveBundleBasedPricingDonor(
+  client: SalesforceClient,
+  opts: {
+    lookupTable?: { id: string; developerName: string } | null;
+    /** The Definition being (re)generated — never used as its own donor, so a defect can't copy itself forward. */
+    excludeDefinitionApiName?: string | null;
+  } = {},
+): Promise<BundleBasedPricingDonorResolution> {
+  const { files } = await retrieveVersionScopedExpressionSetDefinitionFiles(client, ["*"]);
+  const excluded = opts.excludeDefinitionApiName;
+  const inspected = files
+    .filter(f => !excluded || f.fileName.split("/").pop()?.replace(/\.expressionSetDefinition(-meta\.xml)?$/, "") !== excluded)
+    .map(f => ({ file: f, candidate: inspectDonorCandidate(f.fileName, f.content) }));
   const candidatesWithBundleDiscount = inspected.filter(e => e.candidate.bundleDiscountOccurrences > 0).map(e => e.candidate);
 
   const eligible = inspected.filter(({ candidate }) =>
@@ -343,7 +416,7 @@ export async function resolveBundleBasedPricingDonor(client: SalesforceClient): 
   );
   if (eligible.length === 0) return { selection: null, candidatesWithBundleDiscount };
 
-  const ranking = rankCandidates(eligible.map(e => e.candidate));
+  const ranking = rankCandidates(eligible.map(e => e.candidate), opts.lookupTable);
   const top = ranking[0];
   if (top.score < MINIMUM_TRUSTED_DONOR_SCORE) {
     client.logDebug("xml-diagnostic", `Bundle-Based Pricing donor ranking (all below trust floor):\n${ranking.map((r, i) => `${i + 1}. ${r.fullName} — score ${r.score} — ${r.reason}`).join("\n")}`);
@@ -351,9 +424,10 @@ export async function resolveBundleBasedPricingDonor(client: SalesforceClient): 
   }
 
   const selected = eligible.find(e => e.candidate.fullName === top.fullName)!;
-  const connectedBundleDiscountOccurrenceIndexes = selected.candidate.bundleDiscountBranches
-    .filter(b => b.connectedToListPrice)
-    .map(b => b.occurrenceIndex);
+  // Prefer the branch(es) that execute the resolved lookup table; fall back to every connected branch.
+  const connected = selected.candidate.bundleDiscountBranches.filter(b => b.connectedToListPrice);
+  const lookupBound = opts.lookupTable ? connected.filter(b => isBranchLookupBound(b, opts.lookupTable)) : [];
+  const connectedBundleDiscountOccurrenceIndexes = (lookupBound.length > 0 ? lookupBound : connected).map(b => b.occurrenceIndex);
 
   return {
     selection: {
@@ -375,7 +449,7 @@ export interface ExpressionSetDonorInspectionResult {
 /** Diagnostic-only full-org donor inventory (parallel to the attribute module's
  * `inspectAllExpressionSetDefinitionDonors`) — never consulted for the actual selection decision. */
 export async function inspectAllExpressionSetDefinitionDonors(client: SalesforceClient, targetActionType: string): Promise<ExpressionSetDonorInspectionResult> {
-  const { files, warning } = await retrieveExpressionSetDefinitionFiles(client, ["*"]);
+  const { files, warning } = await retrieveVersionScopedExpressionSetDefinitionFiles(client, ["*"]);
   const candidates = files.map(f => inspectDonorCandidate(f.fileName, f.content));
   const withTarget = candidates.filter(c => c.orderedActionTypes.includes(targetActionType));
   const ranking = rankCandidates(withTarget);

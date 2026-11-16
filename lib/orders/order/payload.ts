@@ -1,4 +1,5 @@
 import type { OrderFieldSchema, OrderFormData } from "@/lib/orders/types";
+import { billingDetailsPayload } from "@/lib/orders/order/billingDetails";
 
 export interface ResolvedOrderLookupIds {
   accountId: string | null;
@@ -31,6 +32,8 @@ export function buildOrderPayload(
   if (schema.poNumberField && formData.poNumber) payload[schema.poNumberField.apiName] = formData.poNumber;
   if (schema.poDateField && formData.poDate) payload[schema.poDateField.apiName] = formData.poDate;
   if (schema.descriptionField && formData.description) payload[schema.descriptionField.apiName] = formData.description;
+  // Bill To Contact (a Contact Id the caller has already verified) + Billing/Shipping address components.
+  Object.assign(payload, billingDetailsPayload(schema, formData));
 
   return payload;
 }

@@ -84,7 +84,7 @@ export async function GET(req: NextRequest) {
   if ("unauthorized" in auth) return auth.unauthorized;
 
   try {
-    const cacheKey = auth.client.instanceUrl;
+    const cacheKey = auth.client.cacheScope;
     const payload = await attributeStatsCache.getOrCompute(cacheKey, () => computeAttributeStats(auth.client));
     logSfCacheEvent({
       endpoint: "/api/sf/attributes/stats", caller: "computeAttributeStats", cacheKey,

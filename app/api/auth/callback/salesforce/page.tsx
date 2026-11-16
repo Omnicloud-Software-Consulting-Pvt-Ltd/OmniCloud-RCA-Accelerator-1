@@ -2,6 +2,8 @@
 
 import { useEffect, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
+import { saveSession } from "@/lib/auth/session";
+import { authorizeErrorMessage } from "@/lib/salesforce/oauthMessages";
 
 function Spinner() {
   return (
@@ -62,6 +64,15 @@ function ErrorIcon() {
   );
 }
 
+/**
+ * Authorization codes are single-use. React Strict Mode runs mount effects twice in development, which used to send the code to
+ * the server twice — one exchange always failed and could overwrite a successful sign-in with "failed". Each code is handled
+ * exactly once per page load.
+ */
+const handledCodes = new Set<string>();
+
+const SETUP_PATH = "/setup";
+
 function CallbackContent() {
   const searchParams = useSearchParams();
   const [status, setStatus] = useState<"loading" | "success" | "error">("loading");
@@ -74,24 +85,20 @@ function CallbackContent() {
     const sfError     = searchParams.get("error");
     const sfErrorDesc = searchParams.get("error_description");
 
-    const postToParent = (msg: Record<string, unknown>) => {
-      try {
-        if (window.opener && !window.opener.closed) {
-          window.opener.postMessage(msg, window.location.origin);
-        }
-      } catch {}
-    };
-
     const fail = (msg: string) => {
       setStatus("error");
       setHeadline("Authentication failed");
       setSub(msg);
-      postToParent({ type: "SF_AUTH_ERROR", error: msg });
-      setTimeout(() => { try { window.close(); } catch {} }, 3500);
+      // Back to Setup's Salesforce step, which shows the message and lets the user try again.
+      setTimeout(() => {
+        window.location.replace(`${SETUP_PATH}?sf_error=${encodeURIComponent(msg)}`);
+      }, 3500);
     };
 
-    if (sfError) { fail(sfErrorDesc ?? sfError); return; }
+    if (sfError) { fail(authorizeErrorMessage(sfError, sfErrorDesc)); return; }
     if (!code || !state) { fail("No authorization code received from Salesforce."); return; }
+    if (handledCodes.has(code)) return;
+    handledCodes.add(code);
 
     fetch("/api/auth/salesforce/token", {
       method: "POST",
@@ -100,29 +107,25 @@ function CallbackContent() {
     })
       .then((res) => res.json())
       .then((data) => {
-        if (data.error) { fail(data.error); return; }
+        if (!data?.success || !data.user) { fail(data?.error ?? "Salesforce sign-in failed."); return; }
+        const u = data.user;
+        // The tokens are in the httpOnly cookie; only display metadata is kept in the browser (as the access-token path does).
+        saveSession({
+          accessToken: "[server-secured]",
+          instanceUrl: u.instanceUrl,
+          userId: u.userId,
+          username: u.username,
+          displayName: u.displayName,
+          email: u.email,
+          environment: u.environment,
+          expiresAt: Date.now() + 8 * 60 * 60 * 1000,
+        });
         setStatus("success");
         setHeadline("Signed in successfully");
-        setSub(data.displayName || data.username || "");
-        postToParent({
-          type: "SF_AUTH_SUCCESS",
-          state,
-          session: {
-            accessToken:  data.accessToken,
-            refreshToken: data.refreshToken,
-            instanceUrl:  data.instanceUrl,
-            tokenType:    data.tokenType,
-            userId:       data.userId,
-            username:     data.username,
-            displayName:  data.displayName,
-            email:        data.email,
-            orgId:        data.orgId,
-            environment:  data.environment,
-          },
-        });
-        setTimeout(() => { try { window.close(); } catch {} }, 1400);
+        setSub(u.displayName || u.username || "");
+        setTimeout(() => { window.location.replace(`${SETUP_PATH}?sf=connected`); }, 1200);
       })
-      .catch(() => fail("Network error. Please close this window and try again."));
+      .catch(() => fail("Network error. Please try again."));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
@@ -169,9 +172,9 @@ function CallbackContent() {
         )}
         <p style={{ marginTop: "1rem", fontSize: "10px", color: "rgba(80,110,145,0.55)" }}>
           {status === "success"
-            ? "Closing this window…"
+            ? "Returning to setup…"
             : status === "error"
-            ? "This window will close automatically."
+            ? "Returning to setup so you can try again…"
             : "Please wait…"}
         </p>
       </div>

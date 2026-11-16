@@ -3,6 +3,7 @@ import { SalesforceClient, SESSION_COOKIE, decodeSession, clientFromSession } fr
 import { addBundleComponent } from "@/lib/bundles/server/relationships";
 import { checkBundleDuplicate } from "@/lib/bundles/server/duplicateCheck";
 import { isContinuableBundleDuplicate } from "@/lib/duplicateDetection";
+import { planBundleCommercials, priceAndVerify, resolveAndLinkSellingModels, type CommercialItem } from "@/lib/bundles/server/commercials";
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Types
@@ -21,6 +22,8 @@ interface ParsedProduct {
   isDependency: boolean;
   dependencyOf?: string | null;
   sellingModel?: string;
+  /** Optional Price Book name for this product; inherits its bundle’s, which defaults to the Standard Price Book. */
+  priceBook?: string;
   category?: string;
   attributes?: AttributeDefinition[];
   /** ProductRelatedComponent.IsComponentRequired — defaults to true (the existing, unchanged behavior) when absent, so AI-parsed bundles are never affected. Only the Bundle Importer sets this explicitly today. */
@@ -35,6 +38,8 @@ interface ParsedBundle {
   category?: string;
   catalog?: string;
   sellingModel?: string;
+  /** Optional Price Book name for this bundle and (by inheritance) its components; omitted = Standard Price Book. */
+  priceBook?: string;
   bundleType?: string;
   products: ParsedProduct[];
   nestedBundles?: ParsedBundle[];
@@ -113,40 +118,6 @@ function generateCode(name: string): string {
 
 function sseEvent(ctrl: ReadableStreamDefaultController, enc: TextEncoder, data: object) {
   ctrl.enqueue(enc.encode(`data: ${JSON.stringify(data)}\n\n`));
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * Selling model intelligent matcher
- * ─────────────────────────────────────────────────────────────────────────── */
-
-function matchSellingModel(desired: string | undefined, models: { Id: string; Name: string }[]): { Id: string; Name: string } | null {
-  if (models.length === 0) return null;
-  const d = (desired ?? "").trim().toLowerCase();
-  if (!d) return models.find(m => /one.?time/i.test(m.Name)) ?? models[0];
-
-  const exact = models.find(m => m.Name.toLowerCase() === d);
-  if (exact) return exact;
-
-  const contains = models.find(m => m.Name.toLowerCase().includes(d) || d.includes(m.Name.toLowerCase()));
-  if (contains) return contains;
-
-  const patterns: [RegExp, RegExp][] = [
-    [/one.?time|perpetual|purchase|upfront/i,             /one.?time|perpetual/i],
-    [/evergreen.*month|monthly.*recurring|monthly.*sub/i,  /evergreen.*month/i],
-    [/evergreen.*quarter|quarterly.*sub/i,                 /evergreen.*quarter/i],
-    [/evergreen.*year|annual.*evergreen|yearly.*sub/i,     /evergreen.*year/i],
-    [/term.*month|monthly.*contract/i,                     /term.*month/i],
-    [/term.*quarter|quarterly.*contract/i,                 /term.*quarter/i],
-    [/term.*year|annual.*contract|yearly.*contract/i,      /term.*year/i],
-    [/term.*defined|subscription/i,                        /term/i],
-  ];
-  for (const [inp, mod] of patterns) {
-    if (inp.test(d)) {
-      const sm = models.find(m => mod.test(m.Name));
-      if (sm) return sm;
-    }
-  }
-  return models.find(m => /one.?time/i.test(m.Name)) ?? models[0];
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -727,102 +698,56 @@ export async function POST(req: NextRequest) {
 
         /* ══════════════════════════════════════════════════════
          * BATCH 7 — Selling Models (ProductSellingModelOption)
-         * Dynamic — never hardcodes "One Time"
+         * Every component — root bundle, nested bundles, products, dependency products — gets the selling model requested for
+         * it (inherited from its nearest bundle), resolved with the shared, status-aware matcher. Existing products' current
+         * links are read first; an existing ProductSellingModelOption is reused, never duplicated. Unknown or Inactive models
+         * are reported per component instead of silently substituting another model.
          * ══════════════════════════════════════════════════════ */
         const b7Start = Date.now();
         send({ type: "batch_start", batch: 7, name: "Selling Models", total: allProductEntries.length });
 
-        let allSellingModels: { Id: string; Name: string }[] = [];
-        try {
-          const smRes = await sfClient.query<{ Id: string; Name: string }>("SELECT Id, Name FROM ProductSellingModel ORDER BY Name LIMIT 50");
-          allSellingModels = smRes.records;
-          send({ type: "log", batch: 7, level: "info", message: `Org selling models (${allSellingModels.length}): ${allSellingModels.map(m => m.Name).join(" · ")}` });
-        } catch {
-          send({ type: "log", batch: 7, level: "warning", message: "Could not load ProductSellingModel — skipping" });
+        const commercialPlan = planBundleCommercials(bundle, depProductsToCreate.map(d => ({ name: d.name, ownerBundleName: d.ownerBundleName })));
+        const commercialItems: CommercialItem[] = allProductEntries.map(([name, id]) => {
+          const planned = commercialPlan.get(name.toLowerCase());
+          return { name, productId: id, kind: planned?.kind ?? "product", unitPrice: priceMap[name] ?? 0, sellingModel: planned?.sellingModel, priceBook: planned?.priceBook };
+        });
+        const phase1 = await resolveAndLinkSellingModels(sfClient, commercialItems);
+        if (phase1.models.length) send({ type: "log", batch: 7, level: "info", message: `Org selling models (${phase1.models.length}): ${phase1.models.map(m => `${m.Name}${m.Status && m.Status !== "Active" ? ` [${m.Status}]` : ""}`).join(" · ")}` });
+        for (const l of phase1.linked) {
+          hs.productSellingModelIds[l.name] = l.model.id;
+          const origin = l.model.defaulted ? `no selling model requested → default "${l.model.name}"` : `requested "${l.sellingModel}" → "${l.model.name}"`;
+          send({ type: "log", batch: 7, level: "info", message: `› [${l.kind}] "${l.name}" — ${origin}${l.existingModels.length ? ` · already linked to: ${l.existingModels.join(", ")}` : ""}${l.activated ? " · activated Draft model" : ""}` });
+          if (!l.alreadyLinked) send({ type: "record_created", batch: 7, sobject: "ProductSellingModelOption", id: l.optionId, name: l.name });
+          send({ type: "commercialization_update", product: l.name, sellingModel: l.model.name, sellingModelAction: l.alreadyLinked ? "reused" : "created" });
         }
-
-        let psmCount = 0;
-        if (allSellingModels.length === 0) {
-          send({ type: "log", batch: 7, level: "error", message: "No ProductSellingModel records in org" });
-        } else {
-          for (const [name, id] of allProductEntries) {
-            const desired = sellingModelMap[name] ?? bundle.sellingModel;
-            const matched = matchSellingModel(desired, allSellingModels);
-            if (!matched) continue;
-
-            send({ type: "log", batch: 7, level: "info", message: `› "${name}" — desired: "${desired}" → matched: "${matched.Name}"` });
-
-            const existing = await sfClient.query<{ Id: string }>(
-              `SELECT Id FROM ProductSellingModelOption WHERE Product2Id = '${soqlEscape(id)}' AND ProductSellingModelId = '${soqlEscape(matched.Id)}' LIMIT 1`,
-            ).catch(() => ({ records: [] as { Id: string }[] }));
-
-            if (existing.records.length > 0) {
-              psmCount++;
-              hs.productSellingModelIds[name] = matched.Id;
-              send({ type: "commercialization_update", product: name, sellingModel: matched.Name, sellingModelAction: "reused" });
-              continue;
-            }
-
-            const result = await sfClient.createRecord("ProductSellingModelOption", { Product2Id: id, ProductSellingModelId: matched.Id });
-            if (result.success) {
-              psmCount++;
-              hs.productSellingModelIds[name] = matched.Id;
-              send({ type: "record_created", batch: 7, sobject: "ProductSellingModelOption", id: result.id, name });
-              send({ type: "commercialization_update", product: name, sellingModel: matched.Name, sellingModelAction: "created" });
-            } else {
-              send({ type: "log", batch: 7, level: "error", message: `PSMO failed for "${name}": ${JSON.stringify(result.errors)}` });
-            }
-          }
-        }
-        send({ type: "batch_complete", batch: 7, name: "Selling Models", count: psmCount, duration: Date.now() - b7Start });
+        for (const f of phase1.failures) send({ type: "log", batch: 7, level: "error", message: `✗ [${f.kind}] "${f.name}" — selling model not mapped: ${f.error}` });
+        send({ type: "batch_complete", batch: 7, name: "Selling Models", count: phase1.linked.length, duration: Date.now() - b7Start });
 
         /* ══════════════════════════════════════════════════════
          * BATCH 8 — Pricebook Entries
+         * One entry per Product2 + Pricebook2 + ProductSellingModel (shared persistProductPrice, Ids not names). An existing
+         * matching entry is REUSED with its price untouched; a different selling model or Price Book gets its own entry.
+         * Every entry is read back and its selling model verified before the component counts as done.
          * ══════════════════════════════════════════════════════ */
         const b8Start = Date.now();
-        send({ type: "batch_start", batch: 8, name: "Pricebook Entries", total: allProductEntries.length });
-
-        let pbeCount = 0;
-        try {
-          const pbRes = await sfClient.query<{ Id: string }>("SELECT Id FROM Pricebook2 WHERE IsStandard = true LIMIT 1");
-          if (pbRes.records.length === 0) {
-            send({ type: "log", batch: 8, level: "warning", message: "Standard pricebook not found — skipping" });
+        send({ type: "batch_start", batch: 8, name: "Pricebook Entries", total: phase1.linked.length });
+        const phase2 = await priceAndVerify(sfClient, phase1.linked);
+        for (const p of phase2.priced) {
+          if (!hs.pricebookId && p.entry.standardEntry) hs.pricebookId = p.entry.pricebookId;
+          const book = p.entry.pricebook;
+          if (p.entry.reused) {
+            const kept = p.entry.retainedPrice ? ` · existing price ${p.entry.retainedPrice.existing} retained (requested ${p.entry.retainedPrice.requested} not applied)` : "";
+            send({ type: "log", batch: 8, level: p.entry.retainedPrice || p.entry.inactive ? "warning" : "info", message: `↺ PBE reused: [${p.kind}] "${p.name}" · ${book} · ${p.model.name} @ ${p.entry.unitPrice}${kept}${p.entry.inactive ? " · entry is inactive in Salesforce" : ""}` });
           } else {
-            hs.pricebookId = pbRes.records[0].Id;
-            send({ type: "log", batch: 8, level: "info", message: `Standard pricebook: ${hs.pricebookId}` });
-
-            for (const [name, id] of allProductEntries) {
-              const unitPrice = priceMap[name] ?? 0;
-              const existing = await sfClient.query<{ Id: string }>(
-                `SELECT Id FROM PricebookEntry WHERE Product2Id = '${soqlEscape(id)}' AND Pricebook2Id = '${soqlEscape(hs.pricebookId)}' LIMIT 1`,
-              ).catch(() => ({ records: [] as { Id: string }[] }));
-
-              if (existing.records.length > 0) {
-                pbeCount++;
-                send({ type: "log", batch: 8, level: "warning", message: `⚠ PBE exists: ${name} — reused` });
-                continue;
-              }
-
-              const pbeFields: Record<string, unknown> = {
-                Product2Id: id, Pricebook2Id: hs.pricebookId, UnitPrice: unitPrice, IsActive: true,
-              };
-              const smId = hs.productSellingModelIds[name];
-              if (smId) pbeFields.ProductSellingModelId = smId;
-
-              const pbeResult = await sfClient.createRecord("PricebookEntry", pbeFields);
-              if (pbeResult.success) {
-                pbeCount++;
-                send({ type: "record_created", batch: 8, sobject: "PricebookEntry", id: pbeResult.id, name });
-                send({ type: "log", batch: 8, level: "success", message: `✓ PBE: ${name} @ $${unitPrice}` });
-              } else {
-                send({ type: "log", batch: 8, level: "error", message: `PBE failed for ${name}: ${JSON.stringify(pbeResult.errors)}` });
-              }
-            }
+            send({ type: "record_created", batch: 8, sobject: "PricebookEntry", id: p.entry.id, name: p.name });
+            send({ type: "log", batch: 8, level: "success", message: `✓ PBE: [${p.kind}] "${p.name}" · ${book} · ${p.model.name} @ ${p.entry.unitPrice}` });
           }
-        } catch (err) {
-          send({ type: "log", batch: 8, level: "error", message: `Pricebook batch error: ${(err as Error).message}` });
+          if (p.entry.standardEntryId) send({ type: "record_created", batch: 8, sobject: "PricebookEntry", id: p.entry.standardEntryId, name: `${p.name} (Standard Price Book)` });
+          for (const w of p.warnings.filter(w => !/already exists at|is inactive in Salesforce/.test(w))) send({ type: "log", batch: 8, level: "warning", message: `⚠ "${p.name}": ${w}` });
         }
-        send({ type: "batch_complete", batch: 8, name: "Pricebook Entries", count: pbeCount, duration: Date.now() - b8Start });
+        for (const f of phase2.failures) send({ type: "log", batch: 8, level: "error", message: `✗ [${f.kind}] "${f.name}" — price entry ${f.stage === "verify" ? "not verified" : "not saved"}: ${f.error}` });
+        const commercialFailures = [...phase1.failures, ...phase2.failures];
+        send({ type: "batch_complete", batch: 8, name: "Pricebook Entries", count: phase2.priced.length, duration: Date.now() - b8Start });
 
         /* ══════════════════════════════════════════════════════
          * BATCH 9 — Validation + Deployment
@@ -861,7 +786,13 @@ export async function POST(req: NextRequest) {
             send({ type: "log", batch: 9, level: "success", message: `Deployment summary: ${totalBundles} bundle(s) · ${totalLeafs} product(s) · ${totalDeps} dep(s)` });
             validationCount++;
 
-            send({ type: "batch_complete", batch: 9, name: "Validation + Deploy", count: validationCount, duration: Date.now() - b9Start });
+            if (commercialFailures.length) {
+              send({ type: "log", batch: 9, level: "error", message: `Selling model / price entry not verified for ${commercialFailures.length} component(s): ${commercialFailures.map(f => `"${f.name}"`).join(", ")} — see batches 7–8.` });
+              send({ type: "batch_error", batch: 9, name: "Validation + Deploy", error: `${commercialFailures.length} component(s) are missing a verified Product Selling Model or PricebookEntry` });
+            } else {
+              send({ type: "log", batch: 9, level: "success", message: `✓ Every component has a verified Product Selling Model link and PricebookEntry (${phase2.priced.length} checked in Salesforce)` });
+              send({ type: "batch_complete", batch: 9, name: "Validation + Deploy", count: validationCount, duration: Date.now() - b9Start });
+            }
           } catch (err) {
             send({ type: "log", batch: 9, level: "error", message: `Validation error: ${(err as Error).message}` });
             send({ type: "batch_complete", batch: 9, name: "Validation + Deploy", count: 0, duration: Date.now() - b9Start });
@@ -880,6 +811,8 @@ export async function POST(req: NextRequest) {
           leafProductIds: hs.leafProductIds,
           totalBundles: Object.keys(hs.bundleIds).length,
           totalProducts: Object.keys(hs.leafProductIds).length + Object.keys(hs.depProductIds).length,
+          /** Components whose selling model or PricebookEntry could not be created/verified (empty = all verified). */
+          commercialIssues: commercialFailures.map(f => ({ name: f.name, kind: f.kind, stage: f.stage, error: f.error })),
         });
       } catch (err) {
         send({ type: "error", message: (err as Error).message });

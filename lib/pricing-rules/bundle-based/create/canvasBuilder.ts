@@ -7,13 +7,12 @@
  * donor-specific literal (never leaking a donor's own bundle/component/schedule Ids or names), preserves
  * only generic, reusable runtime bindings, and re-validates the assembled result before returning it.
  *
- * §Assumption requiring live-org confirmation: the RECOGNIZED_PARAM_NAMES / BBP_STANDARD_CTX vocab below
- * follows the same standard RCA Pricing Procedure context-variable naming convention already proven for
- * AttributeDiscount in this codebase (InputUnitPrice/PriceAdjustmentSchedule-family/EffectiveFrom/EffectiveTo are
- * shared context variables across every adjustment action type, per Salesforce's own Pricing Procedure
- * framework) plus a plausible bundle/component-oriented vocabulary. Exactly like this codebase's own
- * history with AttributeDiscount, the FIRST real deploy against a live org may surface additional
- * recognized-but-unlisted binding names that need adding here — that is expected tuning, not a design flaw.
+ * The RECOGNIZED_PARAM_NAMES / BBP_STANDARD_CTX vocab below is taken from a live org's own Revenue
+ * Management Default Pricing Procedure BundleDiscount step. Three things are explicitly (re)bound rather
+ * than cloned: the lookup reference (LookUpId/LookUpApiName → the table `lookupTableResolver` resolved),
+ * the schedule (the Constant variable the step's PriceAdjustmentScheduleId reads → this procedure's own
+ * schedule), and InputUnitPrice (→ the retained ListPrice step's published output). The build then
+ * proves every lookup-table INPUT column is bound on the generated step before returning.
  */
 import type { SalesforceClient } from "@/lib/salesforce/client";
 import {
@@ -21,32 +20,50 @@ import {
   getTopLevelParameterBlocks, getNestedCustomElementParameterBlocks, removeTopLevelParameters, removeNestedCustomElementParameters,
   getParamName, isOutputParam, isInputParam, getParamValue, setParamValue, extractElementSpans,
 } from "@/lib/pricing-rules/attribute-based/create/xmlBlocks";
-import { patchC_preserveScheduleId } from "@/lib/pricing-rules/attribute-based/create/canvasBuilder";
 import { computeRequiredOccurrenceIndexes, pruneXmlToRequiredOccurrences, findDanglingParentStepReferences } from "@/lib/pricing-rules/attribute-based/create/pricingCanvasPruning";
 import { compareExpressionSetSchema, compareStepStructure, type StepStructureReport } from "@/lib/pricing-rules/attribute-based/create/schemaDiff";
-import { injectVersionNumberAndRank } from "@/lib/pricing-rules/attribute-based/create/versionEnvelopeFields";
+import { injectVersionNumberAndRank, regenerateVersionedFullName, protectXmlBlocks, restoreXmlBlocks } from "@/lib/pricing-rules/attribute-based/create/versionEnvelopeFields";
 import { resolveBundleBasedPricingDonor, resolveConnectedAncestor, SHARED_SIGNAL_ACTION_TYPES, buildNoCoherentDonorDiagnostic } from "./donorInspection";
+import type { ResolvedBundleLookupTable } from "./lookupTableResolver";
 
 const UNIT_PRICE_SEMANTIC_PRIORITY = ["UnitPrice", "NetUnitPrice", "ListPrice"];
 
 /** Bindings this BundleDiscount engine actually understands and preserves — everything else (an
- * unrecognized NAME) is stripped unconditionally, exactly like AttributeDiscount's own RECOGNIZED_PARAM_NAMES. */
+ * unrecognized NAME) is stripped unconditionally, exactly like AttributeDiscount's own RECOGNIZED_PARAM_NAMES.
+ *
+ * §Live-org fix — the org's real BundleDiscount step (Revenue Management Default Pricing Procedure) binds
+ * one input per Bundle-Based Adjustment lookup-table column — ProductId, ParentProductId, RootBundleId and
+ * the three selling models — plus the lookup reference itself (LookUpId/LookUpApiName/LookUpName) and
+ * standard element flags. None of those were listed here before, so every one of them was stripped and
+ * the generated step no longer executed any lookup table at all. */
 const RECOGNIZED_PARAM_NAMES = new Set([
-  "InputUnitPrice", "EffectiveFrom", "EffectiveTo", "Quantity",
+  "InputUnitPrice", "EffectiveFrom", "EffectiveTo", "Quantity", "InclusivePrice",
   "PriceAdjustmentScheduleId", "PriceAdjustmentScheduleName", "PriceAdjustmentScheduleIds", "PriceAdjustmentScheduleType",
-  "BundleProductId", "ComponentProductId", "ParentProductId", "ChildProductId", "ComponentQuantity",
+  "ProductId", "ParentProductId", "RootBundleId",
+  "ProductSellingModelId", "ParentProductSellingModelId", "RootProductSellingModelId",
+  "BundleProductId", "ComponentProductId", "ChildProductId", "ComponentQuantity",
   "AdjustmentTypeField", "AdjustmentValueField",
+  "LookUpId", "LookUpApiName", "LookUpName",
+  "NetUnitPrice", "Subtotal",
+  ...["IsContractEnabled", "HideWaterfall", "sectionCount", "selectedFunction", "IsRealTime"],
 ]);
+
+/** Literal-typed element configuration flags — generic across every org, never a donor-specific record. */
+const LITERAL_CONFIG_NAMES = new Set(["IsContractEnabled", "HideWaterfall", "sectionCount", "selectedFunction", "IsRealTime"]);
+/** Lookup-reference literals — kept, then overwritten with the RESOLVED table (never trusted from the donor). */
+const LOOKUP_REFERENCE_NAMES = new Set(["LookUpId", "LookUpApiName", "LookUpName"]);
 
 /** Generic/context values a recognized-name input may legitimately be bound to — a recognized name bound
  * to anything NOT in this set (e.g. a literal donor bundle/component Id) is stripped conditionally. */
 const BBP_STANDARD_CTX = new Set([
   "NetUnitPrice", "ListPrice", "Product", "Product2Id",
   "ProductSellingModel", "SellingModelType",
-  "LineItemQuantity", "Quantity",
+  "LineItemQuantity", "Quantity", "InclusivePrice",
   "PriceAdjustmentSchedule", "PriceAdjustmentScheduleId", "PriceAdjustmentScheduleName", "PriceAdjustmentScheduleIds", "PriceAdjustmentScheduleType",
   "EffectiveDate", "EffectiveFrom", "EffectiveTo", "PricingDate", "StartDate", "EndDate",
   "LineItem", "price_water_fall", "ItemNetTotalPrice",
+  // RevSalesTransactionContext tags for a bundle component line's parent (main item) and root bundle.
+  "MainItemProduct", "MainItemProductSellingModel", "RootItemProduct", "RootProductSellingModel",
   "BundleProduct", "ComponentProduct", "ChildProduct", "ParentProduct", "BundleComponent", "ComponentQuantity",
   "AdjustmentType", "AdjustmentValue", "Constant_AdjustmentType_Bundle_Based", "Constant_AdjustmentValue_Bundle_Based",
 ]);
@@ -55,27 +72,74 @@ function shouldStripBundleDiscountParam(block: string): boolean {
   if (isOutputParam(block)) return false;
   const name = getParamName(block);
   if (name === "InputUnitPrice") return false;
+  // The schedule binding is a reference to a Constant variable (e.g. BundlePASIdConstant) that
+  // `rebindScheduleConstant` re-points at this procedure's own schedule — never stripped.
+  if (name === "PriceAdjustmentScheduleId") return false;
   const value = getParamValue(block);
   if (!name || !RECOGNIZED_PARAM_NAMES.has(name)) return true;
+  if (getTagValue(block, "type") === "Literal" && (LITERAL_CONFIG_NAMES.has(name) || LOOKUP_REFERENCE_NAMES.has(name))) return false;
   const isInput = isInputParam(block) || getTagValue(block, "type") === "Parameter";
   if (isInput && value && !BBP_STANDARD_CTX.has(value) && !RECOGNIZED_PARAM_NAMES.has(value)) return true;
   return false;
+}
+
+/** Points the step's LookUp* literals at the resolved table. Fails if the donor step has no lookup
+ * reference at all — this pipeline never invents step XML. */
+export function bindLookupReference(
+  ownPart: string,
+  table: { id: string; developerName: string; label: string },
+): { xml: string; before: { lookUpId: string | null; lookUpApiName: string | null; lookUpName: string | null }; error?: string } {
+  const blocks = getNestedCustomElementParameterBlocks(ownPart);
+  const find = (n: string) => blocks.find(b => getParamName(b.block) === n);
+  const before = {
+    lookUpId: find("LookUpId") ? getParamValue(find("LookUpId")!.block) : null,
+    lookUpApiName: find("LookUpApiName") ? getParamValue(find("LookUpApiName")!.block) : null,
+    lookUpName: find("LookUpName") ? getParamValue(find("LookUpName")!.block) : null,
+  };
+  if (!find("LookUpId") || !find("LookUpApiName")) {
+    return { xml: ownPart, before, error: "The donor BundleDiscount step has no LookUpId/LookUpApiName parameters — it cannot be bound to a lookup table." };
+  }
+  const replacements: [string, string][] = [["LookUpId", table.id], ["LookUpApiName", table.developerName]];
+  // LookUpName is a display label; keep the donor's when it already names the same table.
+  const sameTable = before.lookUpId?.slice(0, 15) === table.id.slice(0, 15) || before.lookUpApiName === table.developerName;
+  if (find("LookUpName") && !sameTable) replacements.push(["LookUpName", table.label]);
+  let xml = ownPart;
+  // Replace from the end so earlier offsets stay valid.
+  const targets = replacements
+    .map(([n, v]) => ({ block: find(n)!, value: v }))
+    .sort((a, b) => b.block.start - a.block.start);
+  for (const t of targets) xml = xml.slice(0, t.block.start) + setParamValue(t.block.block, t.value) + xml.slice(t.block.end);
+  return { xml, before };
+}
+
+/** Re-points the Constant variable a BundleDiscount step reads its schedule from at `scheduleId`. */
+export function rebindScheduleConstant(fileXml: string, variableName: string, scheduleId: string): { xml: string; previousValue: string | null; error?: string } {
+  const re = /<variables>[\s\S]*?<\/variables>/g;
+  let m: RegExpExecArray | null;
+  const matches: { start: number; end: number; block: string }[] = [];
+  while ((m = re.exec(fileXml))) {
+    if (getTagValue(m[0], "name") === variableName) matches.push({ start: m.index, end: m.index + m[0].length, block: m[0] });
+  }
+  if (matches.length === 0) return { xml: fileXml, previousValue: null, error: `The schedule binding "${variableName}" is not a declared variable in the donor.` };
+  let xml = fileXml;
+  let previousValue: string | null = null;
+  for (const match of matches.sort((a, b) => b.start - a.start)) {
+    if (getTagValue(match.block, "type") !== "Constant") {
+      return { xml: fileXml, previousValue: null, error: `The schedule binding "${variableName}" is a ${getTagValue(match.block, "type") ?? "non-constant"} variable, not a Constant — it can't be pointed at this procedure's schedule.` };
+    }
+    previousValue = getTagValue(match.block, "value");
+    const updated = match.block.includes("<value>")
+      ? match.block.replace(/<value>[\s\S]*?<\/value>/, `<value>${escapeXml(scheduleId)}</value>`)
+      : match.block.replace("</variables>", `<value>${escapeXml(scheduleId)}</value></variables>`);
+    xml = xml.slice(0, match.start) + updated + xml.slice(match.end);
+  }
+  return { xml, previousValue };
 }
 
 export function patchA_stripBundleLiterals(ownPart: string): string {
   let result = removeTopLevelParameters(ownPart, shouldStripBundleDiscountParam);
   result = removeNestedCustomElementParameters(result, shouldStripBundleDiscountParam);
   return result;
-}
-
-function splitOwnFromNested(stepFullXml: string): { ownPart: string; nestedAndClose: string } {
-  const closeIdx = stepFullXml.lastIndexOf("</steps>");
-  // Prefer splitting right before a <customElement> block if present and before the closing tag, since
-  // that's where nested content actually lives for BundleDiscount (mirrors AttributeDiscount's own split point).
-  const customIdx = stepFullXml.indexOf("<customElement");
-  const splitAt = customIdx !== -1 ? customIdx : closeIdx;
-  if (splitAt === -1) return { ownPart: stepFullXml, nestedAndClose: "" };
-  return { ownPart: stepFullXml.slice(0, splitAt), nestedAndClose: stepFullXml.slice(splitAt) };
 }
 
 function collectFieldMap(xmlSlice: string): Map<string, string | null> {
@@ -151,16 +215,51 @@ export interface CanvasBuildResult {
   bundleDiscountInputBinding?: { listPriceOutputValues: string[]; inputUnitPriceValue: string | null; originalInputUnitPriceValue: string | null; wasPatched: boolean; valid: boolean };
   generatedIdentifiers?: { tag: string; value: string }[];
   canvasComposition?: { donorFullName: string; donorFileName: string; donorPhysicalStepCount: number; prunedRootBranchCount: number; finalPhysicalStepCount: number };
+  /** Exactly how the generated BundleDiscount step reaches the lookup table and schedule. */
+  lookupBinding?: BundleLookupBindingReport;
 }
 
-export async function buildBundleCanvas(
-  client: SalesforceClient,
-  ctx: { procedureName: string; apiName: string; description?: string; versionNumber?: number; rank?: number | null; onProgress?: (phase: "template-retrieved") => void },
-): Promise<CanvasBuildResult> {
+export interface BundleLookupBindingReport {
+  lookupTableId: string;
+  lookupTableApiName: string;
+  donorLookUpId: string | null;
+  donorLookUpApiName: string | null;
+  scheduleVariable: string;
+  scheduleId: string;
+  donorScheduleId: string | null;
+  /** Lookup-table INPUT column → the context tag / variable the generated step binds it to. */
+  inputBindings: { column: string; boundTo: string | null }[];
+  outputs: string[];
+  /** The step's published outputs (what it writes back into the pricing context). */
+  stepOutputs: string[];
+}
+
+export interface BundleCanvasContext {
+  procedureName: string;
+  apiName: string;
+  description?: string;
+  versionNumber?: number;
+  rank?: number | null;
+  /** This procedure's own Bundle Price Adjustment Schedule — the step is bound to it. */
+  scheduleId: string;
+  lookupTable: ResolvedBundleLookupTable;
+  onProgress?: (phase: "template-retrieved") => void;
+}
+
+export async function buildBundleCanvas(client: SalesforceClient, ctx: BundleCanvasContext): Promise<CanvasBuildResult> {
+  const donorResolution = await resolveBundleBasedPricingDonor(client, { lookupTable: ctx.lookupTable, excludeDefinitionApiName: ctx.apiName });
+  return buildBundleCanvasFromDonor(donorResolution, ctx);
+}
+
+/** The pure (no Salesforce I/O) half of `buildBundleCanvas` — exported so it can be exercised against a real
+ * retrieved donor file in tests. */
+export function buildBundleCanvasFromDonor(
+  donorResolution: Awaited<ReturnType<typeof resolveBundleBasedPricingDonor>>,
+  ctx: BundleCanvasContext,
+): CanvasBuildResult {
   const fatalErrors: string[] = [];
   const warnings: string[] = [];
 
-  const donorResolution = await resolveBundleBasedPricingDonor(client);
   if (!donorResolution.selection) {
     fatalErrors.push(
       "No valid Bundle-Based Pricing Expression Set donor was found in this org.\n\n" +
@@ -215,7 +314,7 @@ export async function buildBundleCanvas(
 
   const bdOwnBindings = collectFieldMap(collectOwnFields(bdNode));
   const donorInputUnitPrice = bdOwnBindings.get("InputUnitPrice") ?? null;
-  const lpOwnBindings = getTopLevelParameterBlocks(lpXml).filter(b => getTagValue(b.block, "output") === "true");
+  const lpOwnBindings = [...getTopLevelParameterBlocks(lpXml), ...getNestedCustomElementParameterBlocks(lpXml)].filter(b => getTagValue(b.block, "output") === "true");
   const donorLpOutputValues = lpOwnBindings.map(b => getParamValue(b.block)).filter((v): v is string => !!v);
   const targetInputUnitPriceValue = resolveTargetInputUnitPriceValue(donorInputUnitPrice, donorLpOutputValues);
   if (!targetInputUnitPriceValue) {
@@ -223,24 +322,53 @@ export async function buildBundleCanvas(
     return { success: false, fatalErrors, warnings };
   }
 
-  const { ownPart: bdOwnOriginal, nestedAndClose: bdNestedAndClose } = splitOwnFromNested(bdNode.full);
-  let bdOwnPatched = patchA_stripBundleLiterals(bdOwnOriginal);
-  bdOwnPatched = patchC_preserveScheduleId(bdOwnOriginal, bdOwnPatched, warnings);
+  // §Live-org fix — BundleDiscount is a leaf step: every binding lives inside its own <customElement>.
+  // The previous split-before-<customElement> left all of them in the untouched "nested" half, so the
+  // strip, the InputUnitPrice alignment, and schedule handling silently never ran. Patch the step whole.
+  if (bdNode.content.includes("<steps")) {
+    fatalErrors.push(`The selected BundleDiscount step (occurrence ${bdNode.occurrenceIndex}) unexpectedly contains nested steps — refusing to patch it.`);
+    return { success: false, fatalErrors, warnings };
+  }
+  let bdXml = patchA_stripBundleLiterals(bdNode.full);
   const inputUnitPriceNeedsAlignment = donorInputUnitPrice !== targetInputUnitPriceValue;
   if (inputUnitPriceNeedsAlignment) {
-    const existingBlock = getTopLevelParameterBlocks(bdOwnPatched).find(b => getParamName(b.block) === "InputUnitPrice")
-      ?? getNestedCustomElementParameterBlocks(bdOwnPatched).find(b => getParamName(b.block) === "InputUnitPrice");
+    const existingBlock = getTopLevelParameterBlocks(bdXml).find(b => getParamName(b.block) === "InputUnitPrice")
+      ?? getNestedCustomElementParameterBlocks(bdXml).find(b => getParamName(b.block) === "InputUnitPrice");
     if (existingBlock) {
-      bdOwnPatched = bdOwnPatched.slice(0, existingBlock.start) + setParamValue(existingBlock.block, targetInputUnitPriceValue) + bdOwnPatched.slice(existingBlock.end);
+      bdXml = bdXml.slice(0, existingBlock.start) + setParamValue(existingBlock.block, targetInputUnitPriceValue) + bdXml.slice(existingBlock.end);
     }
   }
-  const bdXml = bdOwnPatched + bdNestedAndClose;
+
+  const lookupBound = bindLookupReference(bdXml, ctx.lookupTable);
+  if (lookupBound.error) {
+    fatalErrors.push(lookupBound.error);
+    return { success: false, fatalErrors, warnings };
+  }
+  bdXml = lookupBound.xml;
+  if (lookupBound.before.lookUpId && lookupBound.before.lookUpId.slice(0, 15) !== ctx.lookupTable.id.slice(0, 15)) {
+    warnings.push(`Donor BundleDiscount step executed lookup table ${lookupBound.before.lookUpApiName ?? lookupBound.before.lookUpId}; the generated step is re-bound to the resolved table ${ctx.lookupTable.developerName} (${ctx.lookupTable.id}).`);
+  }
 
   const requiredInputs = ["PriceAdjustmentScheduleId"];
   const bdFieldMap = collectFieldMap(bdXml);
   const missingInputs = requiredInputs.filter(name => !bdFieldMap.has(name));
   if (missingInputs.length > 0) {
     fatalErrors.push(`Generated BundleDiscount step is missing required binding(s): ${missingInputs.join(", ")}.`);
+    return { success: false, fatalErrors, warnings };
+  }
+  const scheduleVariable = bdFieldMap.get("PriceAdjustmentScheduleId");
+  if (!scheduleVariable) {
+    fatalErrors.push("Generated BundleDiscount step's PriceAdjustmentScheduleId binding has no value.");
+    return { success: false, fatalErrors, warnings };
+  }
+
+  // Every column the lookup table matches on must be fed by the step, or no row could ever match.
+  const unboundColumns = ctx.lookupTable.inputs.map(i => i.fieldName).filter(col => !bdFieldMap.get(col));
+  if (unboundColumns.length > 0) {
+    fatalErrors.push(
+      `Generated BundleDiscount step does not bind lookup-table INPUT column(s) [${unboundColumns.join(", ")}] of ${ctx.lookupTable.developerName}. ` +
+      `Step bindings: ${[...bdFieldMap.entries()].map(([k, v]) => `${k}=${v ?? ""}`).join(", ")}.`,
+    );
     return { success: false, fatalErrors, warnings };
   }
   const hasOutput = [...getTopLevelParameterBlocks(bdXml), ...getNestedCustomElementParameterBlocks(bdXml)].some(b => getTagValue(b.block, "output") === "true");
@@ -310,20 +438,30 @@ export async function buildBundleCanvas(
   const idFreeSteps = stepsRegion.replace(/<id>[\s\S]*?<\/id>/g, "");
 
   const generatedIdentifiers: { tag: string; value: string }[] = [
-    { tag: "fullName", value: ctx.apiName }, { tag: "label", value: ctx.procedureName },
+    { tag: "fullName", value: regenerateVersionedFullName(getTagValue(envelopeBefore, "fullName") ?? ctx.apiName, ctx.apiName, ctx.versionNumber) },
+    { tag: "label", value: ctx.procedureName },
     { tag: "developerName", value: ctx.apiName }, { tag: "name", value: ctx.apiName },
     { tag: "expressionSetDefinition", value: ctx.apiName },
   ];
 
   function regenerate(envelope: string): string {
-    let out = envelope;
-    out = out.replace(/<label>[\s\S]*?<\/label>/, `<label>${escapeXml(ctx.procedureName)}</label>`);
-    if (ctx.description) out = out.replace(/<description>[\s\S]*?<\/description>/, `<description>${escapeXml(ctx.description)}</description>`);
-    out = out.replace(/<fullName>[\s\S]*?<\/fullName>/g, `<fullName>${escapeXml(ctx.apiName)}</fullName>`);
+    // §Fix — `<variables>` declarations live in this same envelope and carry their own <name>/<description>.
+    // An unshielded <name> replacement renamed the first variable after the steps to the procedure's API
+    // name (a live deploy showed exactly that); shield them exactly like the attribute builder does.
+    const shielded = new Map<string, string>();
+    let out = protectXmlBlocks(envelope, "variables", shielded);
+    // Global: the envelope holds both the definition's and the version's own <label>/<description> —
+    // leaving the version's would show the generated procedure as the donor ("…Default Pricing
+    // Procedure V1") in Setup.
+    out = out.replace(/<label>[\s\S]*?<\/label>/g, `<label>${escapeXml(ctx.procedureName)}</label>`);
+    out = out.replace(/<description>[\s\S]*?<\/description>/g, `<description>${escapeXml(ctx.description || `Bundle-Based Pricing procedure: ${ctx.procedureName}`)}</description>`);
+    // The version's own identity carries a version suffix whenever a next version was resolved, so a second
+    // version of this procedure never collides with the first.
+    out = out.replace(/<fullName>([\s\S]*?)<\/fullName>/g, (_m, donorValue: string) => `<fullName>${escapeXml(regenerateVersionedFullName(donorValue, ctx.apiName, ctx.versionNumber))}</fullName>`);
     out = out.replace(/<developerName>[\s\S]*?<\/developerName>/, `<developerName>${escapeXml(ctx.apiName)}</developerName>`);
     out = out.replace(/<name>[\s\S]*?<\/name>/, `<name>${escapeXml(ctx.apiName)}</name>`);
     out = out.replace(/<expressionSetDefinition>[\s\S]*?<\/expressionSetDefinition>/, `<expressionSetDefinition>${escapeXml(ctx.apiName)}</expressionSetDefinition>`);
-    return out;
+    return restoreXmlBlocks(out, shielded);
   }
   let regeneratedBefore = regenerate(envelopeBefore);
   let regeneratedAfter = regenerate(envelopeAfter);
@@ -347,7 +485,12 @@ export async function buildBundleCanvas(
   }
   if (fatalErrors.length > 0) return { success: false, fatalErrors, warnings };
 
-  const assembledFileXml = regeneratedBefore + idFreeSteps + regeneratedAfter;
+  const rebound = rebindScheduleConstant(regeneratedBefore + idFreeSteps + regeneratedAfter, scheduleVariable, ctx.scheduleId);
+  if (rebound.error) {
+    fatalErrors.push(rebound.error);
+    return { success: false, fatalErrors, warnings };
+  }
+  const assembledFileXml = rebound.xml;
 
   const schemaReport = compareExpressionSetSchema(prunedDonorFileXmlForComparison, assembledFileXml);
   if (!schemaReport.structurallyValid) {
@@ -368,6 +511,24 @@ export async function buildBundleCanvas(
     fatalErrors.push(`Final composed canvas's BundleDiscount InputUnitPrice ("${finalInputUnitPrice}") does not match the expected value ("${targetInputUnitPriceValue}").`);
     return { success: false, fatalErrors, warnings };
   }
+  if (finalBdFields.get("LookUpId") !== ctx.lookupTable.id || finalBdFields.get("LookUpApiName") !== ctx.lookupTable.developerName) {
+    fatalErrors.push(`Final composed canvas's BundleDiscount step is not bound to the resolved lookup table ${ctx.lookupTable.developerName} (${ctx.lookupTable.id}) — found LookUpId="${finalBdFields.get("LookUpId") ?? ""}", LookUpApiName="${finalBdFields.get("LookUpApiName") ?? ""}".`);
+    return { success: false, fatalErrors, warnings };
+  }
+  const finalScheduleVar = extractElementSpans(assembledFileXml, "variables").map(s => assembledFileXml.slice(s.start, s.end)).find(v => getTagValue(v, "name") === scheduleVariable);
+  if (!finalScheduleVar || getTagValue(finalScheduleVar, "value") !== ctx.scheduleId) {
+    fatalErrors.push(`Final composed canvas's schedule variable "${scheduleVariable}" does not hold this procedure's schedule ${ctx.scheduleId}.`);
+    return { success: false, fatalErrors, warnings };
+  }
+  const lookupBindingReport: BundleLookupBindingReport = {
+    lookupTableId: ctx.lookupTable.id, lookupTableApiName: ctx.lookupTable.developerName,
+    donorLookUpId: lookupBound.before.lookUpId, donorLookUpApiName: lookupBound.before.lookUpApiName,
+    scheduleVariable, scheduleId: ctx.scheduleId, donorScheduleId: rebound.previousValue,
+    inputBindings: ctx.lookupTable.inputs.map(i => ({ column: i.fieldName, boundTo: finalBdFields.get(i.fieldName) ?? null })),
+    outputs: ctx.lookupTable.outputs,
+    stepOutputs: [...getTopLevelParameterBlocks(finalBdNode.full), ...getNestedCustomElementParameterBlocks(finalBdNode.full)]
+      .filter(b => isOutputParam(b.block)).map(b => `${getParamName(b.block)}→${getParamValue(b.block)}`),
+  };
   const finalDangling = findDanglingParentStepReferences(finalGraph);
   if (finalDangling.length > 0) {
     fatalErrors.push(`Final composed canvas has ${finalDangling.length} dangling <parentStep> reference(s).`);
@@ -405,6 +566,7 @@ export async function buildBundleCanvas(
       donorFullName: donorCandidate.fullName, donorFileName, donorPhysicalStepCount: donorGraphOriginal.length,
       prunedRootBranchCount: requiredComputation.removedRootBranches.length, finalPhysicalStepCount: finalGraph.length,
     },
+    lookupBinding: lookupBindingReport,
   };
 }
 

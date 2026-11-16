@@ -1,0 +1,1130 @@
+{
+  "group": "SUBNATIONAL",
+  "retrievedOn": "2026-11-06",
+  "entries": [
+    {
+      "countryCode": "CA",
+      "subdivisionCode": null,
+      "status": "found",
+      "note": "Federal GST 5% (also the federal part of HST). Zero-rated supplies (e.g. basic groceries) are 0% GST/HST everywhere in Canada. No effective date is stated for the 5% rate in the fetched sources.",
+      "rates": [
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "Goods and Services Tax",
+          "taxStructure": "GST (single)",
+          "rateCategory": "standard",
+          "ratePercent": 5,
+          "appliesTo": "Taxable supplies in non-participating provinces and territories (GST-only); federal part of HST elsewhere",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4050/gst-hst-information-selected-listed-financial-institutions.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "Element E is the tax rate for the GST or the federal part of the HST (5%)."
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "Goods and Services Tax / Harmonized Sales Tax (zero-rated)",
+          "taxStructure": "GST (single)",
+          "rateCategory": "zero",
+          "ratePercent": 0,
+          "appliesTo": "Zero-rated supplies, e.g. basic groceries, in every province and territory",
+          "classification": "food",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-which-rate.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "For example, basic groceries are taxable at the rate of zero (0% GST/HST) in every province and territory."
+        }
+      ]
+    },
+    {
+      "countryCode": "CA",
+      "subdivisionCode": "CA-ON",
+      "status": "found",
+      "note": "HST 13% = 5% federal + 8% provincial (CRA RC4050).",
+      "rates": [
+        {
+          "subdivisionCode": "CA-ON",
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "HST",
+          "taxName": "Harmonized Sales Tax",
+          "taxStructure": "HST",
+          "rateCategory": "standard",
+          "ratePercent": 13,
+          "appliesTo": "Taxable supplies made in Ontario",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-which-rate/calculator.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "GST/HST and PST rates — Province | GST and HST | PST — Ontario | 13% | N/A"
+        },
+        {
+          "subdivisionCode": "CA-ON",
+          "officialTaxCode": null,
+          "taxComponent": "Federal part",
+          "effectiveFrom": null,
+          "taxType": "HST",
+          "taxName": "Harmonized Sales Tax",
+          "taxStructure": "HST",
+          "rateCategory": "standard",
+          "ratePercent": 5,
+          "appliesTo": "Federal part of HST in Ontario",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4050/gst-hst-information-selected-listed-financial-institutions.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "Element E is the tax rate for the GST or the federal part of the HST (5%)."
+        },
+        {
+          "subdivisionCode": "CA-ON",
+          "officialTaxCode": null,
+          "taxComponent": "Provincial part",
+          "effectiveFrom": null,
+          "taxType": "HST",
+          "taxName": "Harmonized Sales Tax",
+          "taxStructure": "HST",
+          "rateCategory": "standard",
+          "ratePercent": 8,
+          "appliesTo": "Provincial part of HST in Ontario",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4050/gst-hst-information-selected-listed-financial-institutions.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "The provincial tax rate for Ontario is 8% and for New Brunswick, Newfoundland and Labrador and Prince Edward Island is 10%."
+        }
+      ]
+    },
+    {
+      "countryCode": "CA",
+      "subdivisionCode": "CA-NB",
+      "status": "found",
+      "note": "HST 15% = 5% federal + 10% provincial (CRA RC4050).",
+      "rates": [
+        {
+          "subdivisionCode": "CA-NB",
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "HST",
+          "taxName": "Harmonized Sales Tax",
+          "taxStructure": "HST",
+          "rateCategory": "standard",
+          "ratePercent": 15,
+          "appliesTo": "Taxable supplies made in New Brunswick",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-which-rate/calculator.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "GST/HST and PST rates — Province | GST and HST | PST — New Brunswick | 15% | N/A"
+        },
+        {
+          "subdivisionCode": "CA-NB",
+          "officialTaxCode": null,
+          "taxComponent": "Federal part",
+          "effectiveFrom": null,
+          "taxType": "HST",
+          "taxName": "Harmonized Sales Tax",
+          "taxStructure": "HST",
+          "rateCategory": "standard",
+          "ratePercent": 5,
+          "appliesTo": "Federal part of HST in New Brunswick",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4050/gst-hst-information-selected-listed-financial-institutions.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "Element E is the tax rate for the GST or the federal part of the HST (5%)."
+        },
+        {
+          "subdivisionCode": "CA-NB",
+          "officialTaxCode": null,
+          "taxComponent": "Provincial part",
+          "effectiveFrom": null,
+          "taxType": "HST",
+          "taxName": "Harmonized Sales Tax",
+          "taxStructure": "HST",
+          "rateCategory": "standard",
+          "ratePercent": 10,
+          "appliesTo": "Provincial part of HST in New Brunswick",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4050/gst-hst-information-selected-listed-financial-institutions.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "The provincial tax rate for Ontario is 8% and for New Brunswick, Newfoundland and Labrador and Prince Edward Island is 10%."
+        }
+      ]
+    },
+    {
+      "countryCode": "CA",
+      "subdivisionCode": "CA-NL",
+      "status": "found",
+      "note": "HST 15% = 5% federal + 10% provincial (CRA RC4050).",
+      "rates": [
+        {
+          "subdivisionCode": "CA-NL",
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "HST",
+          "taxName": "Harmonized Sales Tax",
+          "taxStructure": "HST",
+          "rateCategory": "standard",
+          "ratePercent": 15,
+          "appliesTo": "Taxable supplies made in Newfoundland and Labrador",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-which-rate/calculator.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "GST/HST and PST rates — Province | GST and HST | PST — Newfoundland and Labrador | 15% | N/A"
+        },
+        {
+          "subdivisionCode": "CA-NL",
+          "officialTaxCode": null,
+          "taxComponent": "Federal part",
+          "effectiveFrom": null,
+          "taxType": "HST",
+          "taxName": "Harmonized Sales Tax",
+          "taxStructure": "HST",
+          "rateCategory": "standard",
+          "ratePercent": 5,
+          "appliesTo": "Federal part of HST in Newfoundland and Labrador",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4050/gst-hst-information-selected-listed-financial-institutions.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "Element E is the tax rate for the GST or the federal part of the HST (5%)."
+        },
+        {
+          "subdivisionCode": "CA-NL",
+          "officialTaxCode": null,
+          "taxComponent": "Provincial part",
+          "effectiveFrom": null,
+          "taxType": "HST",
+          "taxName": "Harmonized Sales Tax",
+          "taxStructure": "HST",
+          "rateCategory": "standard",
+          "ratePercent": 10,
+          "appliesTo": "Provincial part of HST in Newfoundland and Labrador",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4050/gst-hst-information-selected-listed-financial-institutions.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "The provincial tax rate for Ontario is 8% and for New Brunswick, Newfoundland and Labrador and Prince Edward Island is 10%."
+        }
+      ]
+    },
+    {
+      "countryCode": "CA",
+      "subdivisionCode": "CA-PE",
+      "status": "found",
+      "note": "HST 15% = 5% federal + 10% provincial (CRA RC4050).",
+      "rates": [
+        {
+          "subdivisionCode": "CA-PE",
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "HST",
+          "taxName": "Harmonized Sales Tax",
+          "taxStructure": "HST",
+          "rateCategory": "standard",
+          "ratePercent": 15,
+          "appliesTo": "Taxable supplies made in Prince Edward Island",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-which-rate/calculator.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "GST/HST and PST rates — Province | GST and HST | PST — Prince Edward Island | 15% | N/A"
+        },
+        {
+          "subdivisionCode": "CA-PE",
+          "officialTaxCode": null,
+          "taxComponent": "Federal part",
+          "effectiveFrom": null,
+          "taxType": "HST",
+          "taxName": "Harmonized Sales Tax",
+          "taxStructure": "HST",
+          "rateCategory": "standard",
+          "ratePercent": 5,
+          "appliesTo": "Federal part of HST in Prince Edward Island",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4050/gst-hst-information-selected-listed-financial-institutions.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "Element E is the tax rate for the GST or the federal part of the HST (5%)."
+        },
+        {
+          "subdivisionCode": "CA-PE",
+          "officialTaxCode": null,
+          "taxComponent": "Provincial part",
+          "effectiveFrom": null,
+          "taxType": "HST",
+          "taxName": "Harmonized Sales Tax",
+          "taxStructure": "HST",
+          "rateCategory": "standard",
+          "ratePercent": 10,
+          "appliesTo": "Provincial part of HST in Prince Edward Island",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4050/gst-hst-information-selected-listed-financial-institutions.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "The provincial tax rate for Ontario is 8% and for New Brunswick, Newfoundland and Labrador and Prince Edward Island is 10%."
+        }
+      ]
+    },
+    {
+      "countryCode": "CA",
+      "subdivisionCode": "CA-NS",
+      "status": "found",
+      "note": "HST 14% = 5% federal + 9% provincial, effective 2025-04-01 (CRA calculator note and RC4050). RC4050 also still contains an older list sentence giving Nova Scotia 10%; the explicit reduction sentence and the calculator table (14%) govern.",
+      "rates": [
+        {
+          "subdivisionCode": "CA-NS",
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": "2025-04-01",
+          "taxType": "HST",
+          "taxName": "Harmonized Sales Tax",
+          "taxStructure": "HST",
+          "rateCategory": "standard",
+          "ratePercent": 14,
+          "appliesTo": "Taxable supplies made in Nova Scotia",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-which-rate/calculator.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "As of April 1, 2025, the HST rate has decreased to 14% in Nova Scotia."
+        },
+        {
+          "subdivisionCode": "CA-NS",
+          "officialTaxCode": null,
+          "taxComponent": "Federal part",
+          "effectiveFrom": null,
+          "taxType": "HST",
+          "taxName": "Harmonized Sales Tax",
+          "taxStructure": "HST",
+          "rateCategory": "standard",
+          "ratePercent": 5,
+          "appliesTo": "Federal part of HST in Nova Scotia",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4050/gst-hst-information-selected-listed-financial-institutions.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "Element E is the tax rate for the GST or the federal part of the HST (5%)."
+        },
+        {
+          "subdivisionCode": "CA-NS",
+          "officialTaxCode": null,
+          "taxComponent": "Provincial part",
+          "effectiveFrom": "2025-04-01",
+          "taxType": "HST",
+          "taxName": "Harmonized Sales Tax",
+          "taxStructure": "HST",
+          "rateCategory": "standard",
+          "ratePercent": 9,
+          "appliesTo": "Provincial part of HST in Nova Scotia",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4050/gst-hst-information-selected-listed-financial-institutions.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "The provincial tax rate for Nova Scotia is reduced to 9% effective April 1, 2025."
+        }
+      ]
+    },
+    {
+      "countryCode": "CA",
+      "subdivisionCode": "CA-BC",
+      "status": "found",
+      "note": "gov.bc.ca pages could not be fetched (connection reset on every attempt), so PST 7% is taken from the CRA \"GST/HST and PST rates\" table on canada.ca. BC special PST rates (e.g. liquor, accommodation) are not recorded because no fetched page stated them.",
+      "rates": [
+        {
+          "subdivisionCode": "CA-BC",
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "Goods and Services Tax",
+          "taxStructure": "GST + PST",
+          "rateCategory": "standard",
+          "ratePercent": 5,
+          "appliesTo": "Taxable supplies made in British Columbia",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-which-rate/calculator.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "GST/HST and PST rates — Province | GST and HST | PST — British Columbia | 5% | 7%"
+        },
+        {
+          "subdivisionCode": "CA-BC",
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "PST",
+          "taxName": "Provincial Sales Tax (British Columbia)",
+          "taxStructure": "GST + PST",
+          "rateCategory": "standard",
+          "ratePercent": 7,
+          "appliesTo": "Taxable goods and services in British Columbia (provincial tax, charged in addition to GST)",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-which-rate/calculator.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "GST/HST and PST rates — Province | GST and HST | PST — British Columbia | 5% | 7%"
+        }
+      ]
+    },
+    {
+      "countryCode": "CA",
+      "subdivisionCode": "CA-SK",
+      "status": "found",
+      "note": "PST 6% confirmed on saskatchewan.ca (quote is the rate-bearing clause of a longer sentence) and in the CRA table.",
+      "rates": [
+        {
+          "subdivisionCode": "CA-SK",
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "Goods and Services Tax",
+          "taxStructure": "GST + PST",
+          "rateCategory": "standard",
+          "ratePercent": 5,
+          "appliesTo": "Taxable supplies made in Saskatchewan",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-which-rate/calculator.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "GST/HST and PST rates — Province | GST and HST | PST — Saskatchewan | 5% | 6%"
+        },
+        {
+          "subdivisionCode": "CA-SK",
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "PST",
+          "taxName": "Provincial Sales Tax (Saskatchewan)",
+          "taxStructure": "GST + PST",
+          "rateCategory": "standard",
+          "ratePercent": 6,
+          "appliesTo": "Taxable goods and services in Saskatchewan (provincial tax, charged in addition to GST)",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.saskatchewan.ca/business/taxes-licensing-and-reporting/provincial-taxes-policies-and-bulletins/provincial-sales-tax",
+          "sourceOrganization": "Government of Saskatchewan (saskatchewan.ca)",
+          "sourceQuote": "Provincial Sales Tax (PST) is a six per cent sales tax"
+        }
+      ]
+    },
+    {
+      "countryCode": "CA",
+      "subdivisionCode": "CA-MB",
+      "status": "found",
+      "note": "Manitoba RST (shown as PST in the CRA table) 7%.",
+      "rates": [
+        {
+          "subdivisionCode": "CA-MB",
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "Goods and Services Tax",
+          "taxStructure": "GST + PST",
+          "rateCategory": "standard",
+          "ratePercent": 5,
+          "appliesTo": "Taxable supplies made in Manitoba",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-which-rate/calculator.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "GST/HST and PST rates — Province | GST and HST | PST — Manitoba | 5% | 7%"
+        },
+        {
+          "subdivisionCode": "CA-MB",
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "RST",
+          "taxName": "Retail Sales Tax (Manitoba)",
+          "taxStructure": "GST + PST",
+          "rateCategory": "standard",
+          "ratePercent": 7,
+          "appliesTo": "Taxable goods and services in Manitoba (provincial tax, charged in addition to GST)",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.gov.mb.ca/finance/taxation/taxes/retail.html",
+          "sourceOrganization": "Government of Manitoba, Manitoba Finance (gov.mb.ca)",
+          "sourceQuote": "The general sales tax rate is 7%."
+        }
+      ]
+    },
+    {
+      "countryCode": "CA",
+      "subdivisionCode": "CA-QC",
+      "status": "found",
+      "note": "revenuquebec.ca returned HTTP 403 for every page tried, so QST 9.975% is taken from the CRA \"GST/HST and PST rates\" table on canada.ca. No effective date is stated in the fetched source.",
+      "rates": [
+        {
+          "subdivisionCode": "CA-QC",
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "Goods and Services Tax",
+          "taxStructure": "GST + QST",
+          "rateCategory": "standard",
+          "ratePercent": 5,
+          "appliesTo": "Taxable supplies made in Quebec",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-which-rate/calculator.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "GST/HST and PST rates — Province | GST and HST | PST — Quebec | 5% | 9.975%"
+        },
+        {
+          "subdivisionCode": "CA-QC",
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "QST",
+          "taxName": "Québec Sales Tax",
+          "taxStructure": "GST + QST",
+          "rateCategory": "standard",
+          "ratePercent": 9.975,
+          "appliesTo": "Taxable goods and services in Quebec (provincial tax, charged in addition to GST)",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-which-rate/calculator.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "GST/HST and PST rates — Province | GST and HST | PST — Quebec | 5% | 9.975%"
+        }
+      ]
+    },
+    {
+      "countryCode": "CA",
+      "subdivisionCode": "CA-AB",
+      "status": "found",
+      "note": "GST only (5%); the CRA table shows PST 0% for Alberta.",
+      "rates": [
+        {
+          "subdivisionCode": "CA-AB",
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "Goods and Services Tax",
+          "taxStructure": "GST (single)",
+          "rateCategory": "standard",
+          "ratePercent": 5,
+          "appliesTo": "Taxable supplies made in Alberta",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-which-rate/calculator.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "GST/HST and PST rates — Province | GST and HST | PST — Alberta | 5% | 0%"
+        }
+      ]
+    },
+    {
+      "countryCode": "CA",
+      "subdivisionCode": "CA-NT",
+      "status": "found",
+      "note": "GST only (5%); the CRA table shows PST 0% for Northwest Territories.",
+      "rates": [
+        {
+          "subdivisionCode": "CA-NT",
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "Goods and Services Tax",
+          "taxStructure": "GST (single)",
+          "rateCategory": "standard",
+          "ratePercent": 5,
+          "appliesTo": "Taxable supplies made in Northwest Territories",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-which-rate/calculator.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "GST/HST and PST rates — Province | GST and HST | PST — Northwest Territories | 5% | 0%"
+        }
+      ]
+    },
+    {
+      "countryCode": "CA",
+      "subdivisionCode": "CA-NU",
+      "status": "found",
+      "note": "GST only (5%); the CRA table shows PST 0% for Nunavut.",
+      "rates": [
+        {
+          "subdivisionCode": "CA-NU",
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "Goods and Services Tax",
+          "taxStructure": "GST (single)",
+          "rateCategory": "standard",
+          "ratePercent": 5,
+          "appliesTo": "Taxable supplies made in Nunavut",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-which-rate/calculator.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "GST/HST and PST rates — Province | GST and HST | PST — Nunavut | 5% | 0%"
+        }
+      ]
+    },
+    {
+      "countryCode": "CA",
+      "subdivisionCode": "CA-YT",
+      "status": "found",
+      "note": "GST only (5%); the CRA table shows PST 0% for Yukon.",
+      "rates": [
+        {
+          "subdivisionCode": "CA-YT",
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "Goods and Services Tax",
+          "taxStructure": "GST (single)",
+          "rateCategory": "standard",
+          "ratePercent": 5,
+          "appliesTo": "Taxable supplies made in Yukon",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-which-rate/calculator.html",
+          "sourceOrganization": "Canada Revenue Agency (canada.ca)",
+          "sourceQuote": "GST/HST and PST rates — Province | GST and HST | PST — Yukon | 5% | 0%"
+        }
+      ]
+    },
+    {
+      "countryCode": "IN",
+      "subdivisionCode": null,
+      "status": "found",
+      "note": "Slabs per the 56th GST Council recommendations (PIB, 03 SEP 2025): 18% standard, 5% merit, 40% de-merit, plus Nil for listed items. Effective 22 Sep 2025 for services and for all goods except pan masala, gutkha, cigarettes, chewing tobacco, unmanufactured tobacco and bidi. The GST Council Dec-2025 newsletter says those moved to the revised structure (40%; biris in the 18% band, CGST Schedule II 9%) from 1 Feb 2026, and compensation cess on them became Nil. Split: intra-State = CGST + SGST/UTGST; inter-State = IGST (= CGST + SGST). The fetched sources do not state the \"each half\" rule in words; the 9% CGST Schedule II rate (half of 18%) is the only explicit evidence. Other special rates (e.g. 3% precious metals, 0.25%) are not recorded because no fetched current source states them. The rate notification 9/2025-Central Tax (Rate) itself was not fetched.",
+      "rates": [
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": "2025-09-22",
+          "taxType": "GST",
+          "taxName": "Goods and Services Tax – Standard Rate",
+          "taxStructure": "CGST + SGST",
+          "rateCategory": "standard",
+          "ratePercent": 18,
+          "appliesTo": "Standard rate for goods and services (intra-State CGST+SGST/UTGST; inter-State IGST at the same total)",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://gstcouncil.gov.in/sites/default/files/2025-09/press_release_press_information_bureau_0.pdf",
+          "sourceOrganization": "Ministry of Finance / PIB press release, 03 SEP 2025 (56th GST Council recommendations), copy hosted on gstcouncil.gov.in",
+          "sourceQuote": "Rationalisation of the current 4-tiered tax rate structure into a citizenfriendly `Simple Tax' - a 2 rate structure with a Standard Rate of 18% and a Merit Rate of 5%; a special de-merit rate of 40% for a select few goods and services"
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": "2025-09-22",
+          "taxType": "GST",
+          "taxName": "Goods and Services Tax – Merit Rate",
+          "taxStructure": "CGST + SGST",
+          "rateCategory": "reduced",
+          "ratePercent": 5,
+          "appliesTo": "Merit rate for common-use goods and services (e.g. hair oil, toilet soap bars, shampoos, toothpaste, most food preparations)",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://gstcouncil.gov.in/sites/default/files/2025-09/press_release_press_information_bureau_0.pdf",
+          "sourceOrganization": "Ministry of Finance / PIB press release, 03 SEP 2025 (56th GST Council recommendations), copy hosted on gstcouncil.gov.in",
+          "sourceQuote": "Rationalisation of the current 4-tiered tax rate structure into a citizenfriendly `Simple Tax' - a 2 rate structure with a Standard Rate of 18% and a Merit Rate of 5%; a special de-merit rate of 40% for a select few goods and services"
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": "2025-09-22",
+          "taxType": "GST",
+          "taxName": "Goods and Services Tax – De-merit Rate",
+          "taxStructure": "CGST + SGST",
+          "rateCategory": "other",
+          "ratePercent": 40,
+          "appliesTo": "Special de-merit rate for a select few goods and services (e.g. sweetened/flavoured aerated waters; pan masala and tobacco products only from 2026-02-01)",
+          "classification": "goods",
+          "sourceUrl": "https://gstcouncil.gov.in/sites/default/files/2025-09/press_release_press_information_bureau_0.pdf",
+          "sourceOrganization": "Ministry of Finance / PIB press release, 03 SEP 2025 (56th GST Council recommendations), copy hosted on gstcouncil.gov.in",
+          "sourceQuote": "Rationalisation of the current 4-tiered tax rate structure into a citizenfriendly `Simple Tax' - a 2 rate structure with a Standard Rate of 18% and a Merit Rate of 5%; a special de-merit rate of 40% for a select few goods and services"
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": "0401",
+          "taxComponent": null,
+          "effectiveFrom": "2025-09-22",
+          "taxType": "GST",
+          "taxName": "Goods and Services Tax – Nil rate",
+          "taxStructure": "CGST + SGST",
+          "rateCategory": "zero",
+          "ratePercent": 0,
+          "appliesTo": "UHT milk (HSN 0401 per the release annexure), pre-packaged and labelled chena/paneer, Indian breads (chapati/roti, paratha, parotta)",
+          "classification": "food",
+          "sourceUrl": "https://gstcouncil.gov.in/sites/default/files/2025-09/press_release_press_information_bureau_0.pdf",
+          "sourceOrganization": "Ministry of Finance / PIB press release, 03 SEP 2025 (56th GST Council recommendations), copy hosted on gstcouncil.gov.in",
+          "sourceQuote": "Reduction of GST from 5% to NIL on Ultra-High Temperature (UHT) milk, Prepackaged and labelled chena or paneer; All the Indian Breads will see NIL rates (Chapati or roti, paratha, parotta, etc)"
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": "CGST",
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "Central GST",
+          "taxStructure": "CGST + SGST",
+          "rateCategory": "other",
+          "ratePercent": null,
+          "appliesTo": "Levied by the Centre on intra-State supplies, concurrently with SGST/UTGST",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://cbic-gst.gov.in/pdf/01042019_GST-Concept-Status.pdf",
+          "sourceOrganization": "Central Board of Indirect Taxes and Customs (cbic-gst.gov.in), \"GST – Concept & Status\" (01.04.2019)",
+          "sourceQuote": "GST to be levied by the Centre would be called Central GST (Central tax / CGST) and that to be levied by the States would be called State GST (State Tax / SGST)."
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": "SGST",
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "State GST",
+          "taxStructure": "CGST + SGST",
+          "rateCategory": "other",
+          "ratePercent": null,
+          "appliesTo": "Levied by States on intra-State supplies",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://cbic-gst.gov.in/pdf/01042019_GST-Concept-Status.pdf",
+          "sourceOrganization": "Central Board of Indirect Taxes and Customs (cbic-gst.gov.in), \"GST – Concept & Status\" (01.04.2019)",
+          "sourceQuote": "CGST & SGST / UTGST shall be levied on all taxable intra-State supplies."
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": "UTGST",
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "Union Territory GST",
+          "taxStructure": "CGST + SGST",
+          "rateCategory": "other",
+          "ratePercent": null,
+          "appliesTo": "Replaces SGST in Union Territories without legislature",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://cbic-gst.gov.in/pdf/01042019_GST-Concept-Status.pdf",
+          "sourceOrganization": "Central Board of Indirect Taxes and Customs (cbic-gst.gov.in), \"GST – Concept & Status\" (01.04.2019)",
+          "sourceQuote": "State GST (State Tax / SGST) would be called UTGST (Union territory tax) in Union Territories without legislature. CGST & SGST / UTGST shall be levied on all taxable intra-State supplies."
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": "IGST",
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "Integrated GST",
+          "taxStructure": "IGST",
+          "rateCategory": "other",
+          "ratePercent": null,
+          "appliesTo": "Levied by the Centre on inter-State supplies; IGST = CGST + SGST",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://cbic-gst.gov.in/pdf/01042019_GST-Concept-Status.pdf",
+          "sourceOrganization": "Central Board of Indirect Taxes and Customs (cbic-gst.gov.in), \"GST – Concept & Status\" (01.04.2019)",
+          "sourceQuote": "The IGST Model envisages that Centre would levy IGST (Integrated Goods and Service Tax) which would be CGST plus SGST on all inter-State supply of goods or services or both."
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": "CGST",
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "Central GST – Schedule II rate",
+          "taxStructure": "CGST + SGST",
+          "rateCategory": "standard",
+          "ratePercent": 9,
+          "appliesTo": "CGST rate of Schedule II of Notification 9/2025-Central Tax (Rate), i.e. the CGST share of the 18% band (biris added from 2026-02-01)",
+          "classification": "goods",
+          "sourceUrl": "https://gstcouncil.gov.in/sites/default/files/2026-01/monthly_newsletter_december_2025_1_0.pdf",
+          "sourceOrganization": "GST Council Secretariat monthly newsletter, December 2025 (gstcouncil.gov.in)",
+          "sourceQuote": "The amendment revises the rate structure applicable to specified tobacco and pan masala products with effect from 1st February, 2026. In Schedule II (9%), a new entry has been inserted to cover biris"
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": "Cess",
+          "effectiveFrom": "2026-02-01",
+          "taxType": "Cess",
+          "taxName": "GST Compensation Cess",
+          "taxStructure": "CGST + SGST",
+          "rateCategory": "other",
+          "ratePercent": 0,
+          "appliesTo": "Compensation cess on specified pan masala and tobacco products (Chapters 21 and 24) substituted as Nil, fully withdrawing the levy on these goods. Status for other goods not stated in fetched sources.",
+          "classification": "goods",
+          "sourceUrl": "https://gstcouncil.gov.in/sites/default/files/2026-01/monthly_newsletter_december_2025_1_0.pdf",
+          "sourceOrganization": "GST Council Secretariat monthly newsletter, December 2025 (gstcouncil.gov.in)",
+          "sourceQuote": "the compensation cess payable under the Schedule to the said notification has been substituted as \"Nil\" against all specified serial numbers ... thereby fully withdrawing the levy of compensation cess on these goods. The notification shall come into force with effect from 1st February, 2026."
+        }
+      ]
+    },
+    {
+      "countryCode": "AU",
+      "subdivisionCode": null,
+      "status": "found",
+      "note": "Every ato.gov.au page tried returned HTTP 403. GST 10% is taken from business.gov.au (Australian Government). GST-free and input-taxed categories are the subdivision headings of Divisions 38 and 40 of the GST Act on legislation.gov.au. Only the headings were readable, not the operative text, so detailed conditions (e.g. what counts as basic food) are not captured. For these rows, sourceQuote is \"Division N (...): <verbatim heading>\".",
+      "rates": [
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "Goods and Services Tax",
+          "taxStructure": "GST (single)",
+          "rateCategory": "standard",
+          "ratePercent": 10,
+          "appliesTo": "Most goods, services and other items sold or consumed in Australia",
+          "classification": "goods-and-services",
+          "sourceUrl": "https://business.gov.au/registrations/register-for-taxes/register-for-goods-and-services-tax-gst",
+          "sourceOrganization": "Australian Government – business.gov.au",
+          "sourceQuote": "Goods and services tax (GST) is a tax of 10% on most goods, services and other items sold or consumed in Australia."
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "GST-free supply",
+          "taxStructure": "GST (single)",
+          "rateCategory": "zero",
+          "ratePercent": 0,
+          "appliesTo": "Food (GST-free subject to Subdivision 38-A conditions, e.g. basic food)",
+          "classification": "food",
+          "sourceUrl": "https://www.legislation.gov.au/C2004A00446/latest/text",
+          "sourceOrganization": "Federal Register of Legislation (legislation.gov.au) – A New Tax System (Goods and Services Tax) Act 1999",
+          "sourceQuote": "Division 38 (GST-free supplies): Subdivision 38-A—Food"
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "GST-free supply",
+          "taxStructure": "GST (single)",
+          "rateCategory": "zero",
+          "ratePercent": 0,
+          "appliesTo": "Health services and goods (per Subdivision 38-B)",
+          "classification": "healthcare",
+          "sourceUrl": "https://www.legislation.gov.au/C2004A00446/latest/text",
+          "sourceOrganization": "Federal Register of Legislation (legislation.gov.au) – A New Tax System (Goods and Services Tax) Act 1999",
+          "sourceQuote": "Division 38 (GST-free supplies): Subdivision 38-B—Health"
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "GST-free supply",
+          "taxStructure": "GST (single)",
+          "rateCategory": "zero",
+          "ratePercent": 0,
+          "appliesTo": "Education courses and related supplies (per Subdivision 38-C)",
+          "classification": "education",
+          "sourceUrl": "https://www.legislation.gov.au/C2004A00446/latest/text",
+          "sourceOrganization": "Federal Register of Legislation (legislation.gov.au) – A New Tax System (Goods and Services Tax) Act 1999",
+          "sourceQuote": "Division 38 (GST-free supplies): Subdivision 38-C—Education"
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "GST-free supply",
+          "taxStructure": "GST (single)",
+          "rateCategory": "zero",
+          "ratePercent": 0,
+          "appliesTo": "Child care (per Subdivision 38-D)",
+          "classification": "other",
+          "sourceUrl": "https://www.legislation.gov.au/C2004A00446/latest/text",
+          "sourceOrganization": "Federal Register of Legislation (legislation.gov.au) – A New Tax System (Goods and Services Tax) Act 1999",
+          "sourceQuote": "Division 38 (GST-free supplies): Subdivision 38-D—Child care"
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "GST-free supply",
+          "taxStructure": "GST (single)",
+          "rateCategory": "zero",
+          "ratePercent": 0,
+          "appliesTo": "Exports and other cross-border supplies",
+          "classification": "exports",
+          "sourceUrl": "https://www.legislation.gov.au/C2004A00446/latest/text",
+          "sourceOrganization": "Federal Register of Legislation (legislation.gov.au) – A New Tax System (Goods and Services Tax) Act 1999",
+          "sourceQuote": "Division 38 (GST-free supplies): Subdivision 38-E—Exports and other cross-border supplies"
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "GST-free supply",
+          "taxStructure": "GST (single)",
+          "rateCategory": "zero",
+          "ratePercent": 0,
+          "appliesTo": "Water, sewerage and drainage",
+          "classification": "other",
+          "sourceUrl": "https://www.legislation.gov.au/C2004A00446/latest/text",
+          "sourceOrganization": "Federal Register of Legislation (legislation.gov.au) – A New Tax System (Goods and Services Tax) Act 1999",
+          "sourceQuote": "Division 38 (GST-free supplies): Subdivision 38-I—Water, sewerage and drainage"
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "GST-free supply",
+          "taxStructure": "GST (single)",
+          "rateCategory": "zero",
+          "ratePercent": 0,
+          "appliesTo": "Supplies of going concerns",
+          "classification": "other",
+          "sourceUrl": "https://www.legislation.gov.au/C2004A00446/latest/text",
+          "sourceOrganization": "Federal Register of Legislation (legislation.gov.au) – A New Tax System (Goods and Services Tax) Act 1999",
+          "sourceQuote": "Division 38 (GST-free supplies): Subdivision 38-J—Supplies of going concerns"
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "Input-taxed supply",
+          "taxStructure": "GST (single)",
+          "rateCategory": "exempt",
+          "ratePercent": null,
+          "appliesTo": "Financial supplies",
+          "classification": "financial-services",
+          "sourceUrl": "https://www.legislation.gov.au/C2004A00446/latest/text",
+          "sourceOrganization": "Federal Register of Legislation (legislation.gov.au) – A New Tax System (Goods and Services Tax) Act 1999",
+          "sourceQuote": "Division 40 (input taxed supplies): Subdivision 40-A—Financial supplies"
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "Input-taxed supply",
+          "taxStructure": "GST (single)",
+          "rateCategory": "exempt",
+          "ratePercent": null,
+          "appliesTo": "Residential rent",
+          "classification": "accommodation",
+          "sourceUrl": "https://www.legislation.gov.au/C2004A00446/latest/text",
+          "sourceOrganization": "Federal Register of Legislation (legislation.gov.au) – A New Tax System (Goods and Services Tax) Act 1999",
+          "sourceQuote": "Division 40 (input taxed supplies): Subdivision 40-B—Residential rent"
+        },
+        {
+          "subdivisionCode": null,
+          "officialTaxCode": null,
+          "taxComponent": null,
+          "effectiveFrom": null,
+          "taxType": "GST",
+          "taxName": "Input-taxed supply",
+          "taxStructure": "GST (single)",
+          "rateCategory": "exempt",
+          "ratePercent": null,
+          "appliesTo": "Supplies of residential premises (per Subdivision 40-C conditions)",
+          "classification": "other",
+          "sourceUrl": "https://www.legislation.gov.au/C2004A00446/latest/text",
+          "sourceOrganization": "Federal Register of Legislation (legislation.gov.au) – A New Tax System (Goods and Services Tax) Act 1999",
+          "sourceQuote": "Division 40 (input taxed supplies): Subdivision 40-C—Residential premises"
+        }
+      ]
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": null,
+      "status": "not-found",
+      "note": "CBS/IBS 2026 test-phase rates not recorded. planalto.gov.br (LC 214/2025 text) returned an access-denied page. The Receita Federal reforma-tributaria pages, the CBS pilot FAQ and the Ministério da Fazenda LC 214 page were fetched, but none states 2026 CBS/IBS rates. The web-search budget ran out before a gov.br page stating the rates could be found.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-AC",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-AL",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-AP",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-AM",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-BA",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-CE",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-DF",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-ES",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-GO",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-MA",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-MT",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-MS",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-MG",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-PA",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-PB",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-PR",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-PE",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-PI",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-RJ",
+      "status": "not-found",
+      "note": "ICMS internal rate not recorded: the SEFAZ-RJ portal fetch failed (invalid response header), and the search budget ran out.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-RN",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-RS",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-RO",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-RR",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-SC",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-SP",
+      "status": "not-found",
+      "note": "ICMS internal rate not recorded: the guessed SEFAZ-SP legislation URL returned 404, and the search budget ran out.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-SE",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    },
+    {
+      "countryCode": "BR",
+      "subdivisionCode": "BR-TO",
+      "status": "not-found",
+      "note": "ICMS standard internal rate not researched: the web-search budget ran out before the state SEFAZ or legislation page could be located. Not filled from comparison tables, per the rules.",
+      "rates": []
+    }
+  ]
+}

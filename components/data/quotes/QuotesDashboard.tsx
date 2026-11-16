@@ -71,7 +71,7 @@ export default function QuotesDashboard({ isDark, onNavigate }: { isDark: boolea
       id: "quotes",
       label: "Quotes",
       icon: "file-text",
-      groupLabel: "Revenue Cloud",
+      groupLabel: "Revenue Cloud Core",
       color: ACCENT,
       stats,
       actions,

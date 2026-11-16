@@ -124,6 +124,7 @@ export default function ImportCreateStep({
         records,
         failedRecords: failedItems.map(it => ({ recordName: it.name, error: it.error ?? "Unknown error" })),
         detailsLabel: `View Created ${nounPlural}`,
+        module: nounPlural,
       });
     }
 

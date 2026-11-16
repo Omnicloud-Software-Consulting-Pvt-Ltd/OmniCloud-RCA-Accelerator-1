@@ -4,6 +4,9 @@ import { requireSFClient, sfErrorResponse } from "@/lib/salesforce/serverSession
 import { resolveOrderFieldSchema, resolveOrderListFieldSchema, diagnoseOrderLookupFields } from "@/lib/orders/metadata/orderFields";
 import { resolveReferencesByName } from "@/lib/quotes/quote/reference";
 import { buildOrderPayload } from "@/lib/orders/order/payload";
+import { addressHasAny, validateBillingDetails, withGeographyCodes, type BillingFieldErrors } from "@/lib/orders/order/billingDetails";
+import { loadTaxGeoFacts } from "@/lib/tax/server/orderItemTax";
+import { verifyBillToContact } from "@/lib/orders/order/billToContact";
 import type { BundleHierarchyStep } from "@/lib/quotes/types";
 import type { OrderFormData, OrderListItem } from "@/lib/orders/types";
 
@@ -23,8 +26,12 @@ export async function POST(req: NextRequest) {
   const warnings: string[] = [];
 
   let formData: OrderFormData;
+  // The Create Order form sends requireBillingDetails; bulk import doesn't, so for it these stay optional.
+  let requireBillingDetails = false;
   try {
-    ({ formData } = await req.json());
+    const body = (await req.json()) as { formData: OrderFormData; requireBillingDetails?: unknown };
+    formData = body.formData;
+    requireBillingDetails = body.requireBillingDetails === true;
     if (!formData?.accountName?.trim()) return NextResponse.json({ error: "Account is required" }, { status: 400 });
     if (!formData?.pricebookName?.trim()) return NextResponse.json({ error: "Price Book is required" }, { status: 400 });
   } catch {
@@ -65,7 +72,24 @@ export async function POST(req: NextRequest) {
       warnings.push(`Type "${formData.type}" looks like it requires a Contract, but none was resolved — Salesforce may reject this create call.`);
     }
 
+    step(steps, "validate-billing-details", "start", "Validating Bill To Contact, Billing Address and Shipping Address.");
+    const fieldErrors: BillingFieldErrors = validateBillingDetails(formData, schema, { required: requireBillingDetails });
+    if (!fieldErrors.billToContact && formData.billToContactId && schema.billToContactField) {
+      const check = await verifyBillToContact(client, formData.billToContactId, account?.id ?? null);
+      if (!check.ok) fieldErrors.billToContact = check.error;
+      else step(steps, "validate-billing-details", "info", `Bill To Contact verified: ${check.contact.name} (${check.contact.id}).`);
+    }
+    if (Object.keys(fieldErrors).length) {
+      step(steps, "validate-billing-details", "error", "Billing details are incomplete or invalid — nothing was sent to Salesforce.", fieldErrors);
+      return NextResponse.json({ error: "Fix the highlighted billing details before creating the order.", code: "BILLING_DETAILS_INVALID", fieldErrors, steps }, { status: 400 });
+    }
+    if (formData.billToContactId && !schema.billToContactField) warnings.push("This org's Order has no createable Bill To Contact field — the selected Contact was not saved.");
+    if (addressHasAny(formData.billingAddress) && !schema.billingAddressFields) warnings.push("This org's Order address fields aren't createable — the Billing Address was not saved.");
+    if (addressHasAny(formData.shippingAddress) && !schema.shippingAddressFields) warnings.push("This org's Order address fields aren't createable — the Shipping Address was not saved.");
+    step(steps, "validate-billing-details", "success", "Billing details are valid.");
+
     const resolvedLookupIds = { accountId: account?.id ?? null, pricebookId: pricebook?.id ?? null, contractId: contract?.id ?? null, sourceQuoteId: sourceQuote?.id ?? null };
+    if (addressHasAny(formData.billingAddress) || addressHasAny(formData.shippingAddress)) formData = withGeographyCodes(formData, await loadTaxGeoFacts(client).catch(() => null));
     const payload = buildOrderPayload(schema, formData, resolvedLookupIds);
     step(steps, "build-payload", "success", "Generated Order create payload.", payload);
 

@@ -2,12 +2,16 @@
 
 import { forwardRef, useEffect, useId, useImperativeHandle, useRef, useState, type KeyboardEvent } from "react";
 import { Ic, tokens, inputStyle, Spinner } from "@/components/data/quotes/shared";
+import AnchoredOverlay from "@/components/ui/AnchoredOverlay";
+import { overlayPanelStyle } from "@/lib/ui/overlay";
 import { quoteApiPost } from "@/lib/quotes/client/apiClient";
 import type { ReferenceObjectType } from "@/lib/quotes/types";
 
 export interface ReferenceLookupValue {
   id: string;
   name: string;
+  /** Optional secondary line shown under the name in the dropdown (e.g. a Contact's email · Account). */
+  description?: string;
 }
 
 export interface ReferenceLookupHandle {
@@ -18,13 +22,13 @@ export interface ReferenceLookupHandle {
    * more than one match opens the dropdown for the user to pick — never
    * silently guesses among several candidates.
    */
-  searchAndResolve: (name: string) => Promise<void>;
+  searchAndResolve: (name: string, params?: Record<string, string | null | undefined>) => Promise<void>;
 }
 
 interface ReferenceLookupProps {
   isDark: boolean;
-  /** Which Salesforce object this lookup searches — Account, Opportunity, Pricebook2, Contact, Contract, User, Quote. Only the queried object changes; everything else about this component is object-agnostic (§Generic Reusable Lookup). */
-  objectType: ReferenceObjectType;
+  /** Which Salesforce object this lookup searches — Account, Opportunity, Pricebook2, Contact, Contract, User, Quote. Only the queried object changes; everything else about this component is object-agnostic (§Generic Reusable Lookup). Any other API name (e.g. BillingPolicy, UnitOfMeasure) is accepted too — the search endpoint validates it. */
+  objectType: ReferenceObjectType | (string & Record<never, never>);
   /** POST endpoint returning `{ matches: {id,name}[] }` for `{ objectType, term }` — each module (Quote/Order/Contract) routes to its own thin wrapper around the same shared search. */
   searchEndpoint: string;
   value: ReferenceLookupValue | null;
@@ -34,6 +38,10 @@ interface ReferenceLookupProps {
   /** Shown when a search (manual or AI-triggered) finds zero matches — defaults to a generic message naming `objectType`. */
   noMatchHint?: string;
   debounceMs?: number;
+  /** Extra fields sent with every search (e.g. `accountId` to scope Contacts to an Account). Changing them clears stale results. */
+  extraParams?: Record<string, string | null | undefined>;
+  /** Focusing an empty lookup lists the first matches (the endpoint must accept an empty term). */
+  browseOnFocus?: boolean;
 }
 
 /**
@@ -49,12 +57,13 @@ interface ReferenceLookupProps {
  * unambiguous match, per §AI Prompt Matching.
  */
 const ReferenceLookup = forwardRef<ReferenceLookupHandle, ReferenceLookupProps>(function ReferenceLookup(
-  { isDark, objectType, searchEndpoint, value, onChange, placeholder, disabled, noMatchHint, debounceMs = 350 },
+  { isDark, objectType, searchEndpoint, value, onChange, placeholder, disabled, noMatchHint, debounceMs = 350, extraParams, browseOnFocus },
   ref,
 ) {
   const t = tokens(isDark);
   const listboxId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
+  const fieldRef = useRef<HTMLDivElement>(null);
   // Mirrors `value` for the delayed blur-revert below — read at timeout-fire
   // time (not closure-captured at blur time) so a selection made in the
   // window between blur and the timeout is never clobbered by a stale value.
@@ -72,9 +81,38 @@ const ReferenceLookup = forwardRef<ReferenceLookupHandle, ReferenceLookupProps>(
     setTerm(value?.name ?? "");
   }, [value]);
 
-  async function search(rawTerm: string): Promise<ReferenceLookupValue[]> {
-    const res = await quoteApiPost<{ matches: ReferenceLookupValue[] }>(`Search ${objectType}`, searchEndpoint, { objectType, term: rawTerm });
+  async function search(rawTerm: string, params = extraParams): Promise<ReferenceLookupValue[]> {
+    const res = await quoteApiPost<{ matches: ReferenceLookupValue[] }>(`Search ${objectType}`, searchEndpoint, { ...params, objectType, term: rawTerm });
     return res.matches;
+  }
+
+  const searchError = (err: unknown) => `Could not search ${objectType}${err instanceof Error && err.message ? ` — ${err.message}` : ""}. Try again or check your Salesforce connection.`;
+
+  // A different scope (e.g. another Account) makes earlier results meaningless.
+  const scopeKey = JSON.stringify(extraParams ?? {});
+  const [prevScopeKey, setPrevScopeKey] = useState(scopeKey);
+  if (prevScopeKey !== scopeKey) {
+    setPrevScopeKey(scopeKey);
+    setResults([]);
+    setMessage(null);
+  }
+
+  async function browse() {
+    if (!browseOnFocus || disabled || value || term.trim()) return;
+    setSearching(true);
+    try {
+      const matches = await search("");
+      setResults(matches);
+      setMessage(matches.length === 0 ? (noMatchHint ?? `No ${objectType} records found.`) : null);
+      setOpen(true);
+      setHighlighted(-1);
+    } catch (err) {
+      setResults([]);
+      setMessage(searchError(err));
+      setOpen(true);
+    } finally {
+      setSearching(false);
+    }
   }
 
   function selectMatch(match: ReferenceLookupValue) {
@@ -110,9 +148,10 @@ const ReferenceLookup = forwardRef<ReferenceLookupHandle, ReferenceLookupProps>(
         setMessage(matches.length === 0 ? (noMatchHint ?? `No matching ${objectType} found. Please select an existing ${objectType}.`) : null);
         setOpen(true);
         setHighlighted(-1);
-      } catch {
+      } catch (err) {
         setResults([]);
-        setMessage(null);
+        setMessage(searchError(err));
+        setOpen(true);
       } finally {
         setSearching(false);
       }
@@ -122,7 +161,8 @@ const ReferenceLookup = forwardRef<ReferenceLookupHandle, ReferenceLookupProps>(
   }, [term]);
 
   useImperativeHandle(ref, () => ({
-    async searchAndResolve(name: string) {
+    // `params` overrides `extraParams` for this call — e.g. an Account resolved in the same AI pass, before props catch up.
+    async searchAndResolve(name: string, params?: Record<string, string | null | undefined>) {
       const trimmed = name.trim();
       setTerm(trimmed);
       if (!trimmed) {
@@ -134,7 +174,7 @@ const ReferenceLookup = forwardRef<ReferenceLookupHandle, ReferenceLookupProps>(
       }
       setSearching(true);
       try {
-        const matches = await search(trimmed);
+        const matches = await search(trimmed, params ?? extraParams);
         if (matches.length === 1) {
           selectMatch(matches[0]);
         } else if (matches.length === 0) {
@@ -175,13 +215,15 @@ const ReferenceLookup = forwardRef<ReferenceLookupHandle, ReferenceLookupProps>(
 
   return (
     <div style={{ position: "relative" }}>
-      <div style={{ position: "relative" }}>
+      <div ref={fieldRef} style={{ position: "relative" }}>
         <input
           ref={inputRef}
           value={term}
           disabled={disabled}
           onChange={e => { setTerm(e.target.value); if (value) onChange(null); setOpen(true); }}
-          onFocus={() => { if (results.length > 0 || message) setOpen(true); }}
+          onFocus={() => { if (results.length > 0 || message) setOpen(true); else void browse(); }}
+          // Clicking the already-focused field (e.g. after Escape closed the list) reopens it — focus alone won't fire again.
+          onClick={() => { if (!open && !searching) { if (results.length > 0 || message) setOpen(true); else void browse(); } }}
           onBlur={() => {
             // Selection itself now commits on the option's onMouseDown (see
             // below), which fires — and preventDefault()s the focus shift —
@@ -230,8 +272,9 @@ const ReferenceLookup = forwardRef<ReferenceLookupHandle, ReferenceLookupProps>(
         </span>
       </div>
 
-      {open && results.length > 0 && (
-        <div id={listboxId} role="listbox" style={{ position: "absolute", zIndex: 20, top: "100%", left: 0, right: 0, marginTop: 4, borderRadius: 9, border: `1px solid ${t.border}`, background: t.surface, maxHeight: 220, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" }}>
+      {/* Portaled (components/ui/AnchoredOverlay) — never clipped by the card/section it sits in. */}
+      <AnchoredOverlay anchorRef={fieldRef} open={open && results.length > 0} onDismiss={() => setOpen(false)} maxHeight={220}
+        id={listboxId} role="listbox" style={overlayPanelStyle(isDark, t.border)}>
           {results.map((m, i) => (
             <button
               key={m.id}
@@ -254,16 +297,15 @@ const ReferenceLookup = forwardRef<ReferenceLookupHandle, ReferenceLookupProps>(
               }}
             >
               {m.name}
+              {m.description && <span style={{ display: "block", fontSize: 11, color: t.dim, marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.description}</span>}
             </button>
           ))}
-        </div>
-      )}
-      {open && results.length === 0 && message && (
-        <div style={{ position: "absolute", zIndex: 20, top: "100%", left: 0, right: 0, marginTop: 4, padding: "8px 12px", borderRadius: 9, border: `1px solid ${t.warn}50`, background: t.surface, fontSize: 12, color: t.body, display: "flex", alignItems: "flex-start", gap: 6 }}>
-          <span style={{ flexShrink: 0, color: t.warn, marginTop: 1 }}><Ic n="alert" s={12} /></span>
-          <span>{message}</span>
-        </div>
-      )}
+      </AnchoredOverlay>
+      <AnchoredOverlay anchorRef={fieldRef} open={open && results.length === 0 && !!message} onDismiss={() => setOpen(false)} maxHeight={160} role="status"
+        style={{ ...overlayPanelStyle(isDark, `${t.warn}50`), padding: "8px 12px", fontSize: 12, color: t.body, display: "flex", alignItems: "flex-start", gap: 6 }}>
+        <span style={{ flexShrink: 0, color: t.warn, marginTop: 1 }}><Ic n="alert" s={12} /></span>
+        <span>{message}</span>
+      </AnchoredOverlay>
     </div>
   );
 });

@@ -96,10 +96,13 @@ function extractRecordResults(json: unknown): InstantPricingRecordResult[] {
  * Salesforce error object (`{}`) is visibly distinguishable from "we
  * couldn't find a message" by inspecting `extra` in the UI.
  */
-function normalizeRecordErrors(rec: InstantPricingRecordResult): RepricingErrorEntry[] {
+export function normalizeRecordErrors(rec: InstantPricingRecordResult): RepricingErrorEntry[] {
   const raw = rec.errors ?? rec.error;
   if (raw == null) return [];
-  const rawEntries: unknown[] = Array.isArray(raw) ? raw : [raw];
+  // Instant Pricing returns `"error": {}` on every SUCCESSFUL record (p12, 2026-11-04: success:true with priced records) —
+  // an empty object is the absence of an error, not an error with no message.
+  const isEmptyObject = (e: unknown) => e != null && typeof e === "object" && !Array.isArray(e) && Object.keys(e as object).length === 0;
+  const rawEntries: unknown[] = (Array.isArray(raw) ? raw : [raw]).filter(e => !isEmptyObject(e));
   if (rawEntries.length === 0) return [];
 
   return rawEntries.map(entry => {
@@ -444,6 +447,7 @@ export async function repriceQuote(client: SalesforceClient, quoteId: string): P
           netTotalPrice: rec.record.NetTotalPrice ?? null,
           listPrice: rec.record.ListPrice ?? null,
           discount: rec.record.Discount ?? null,
+          pricingTermCount: typeof rec.record.PricingTermCount === "number" ? rec.record.PricingTermCount : null,
           // The API's own `method: "PUT"` on the request record is what asks
           // Salesforce to persist the computed price onto the existing
           // record (not just preview it) — no separate updateRecord() call

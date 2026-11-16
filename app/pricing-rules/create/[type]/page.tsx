@@ -18,9 +18,8 @@ const VALID_TYPES = new Set(Object.keys(PRICING_TYPE_LABELS));
  * dashboard's pricing-type cards can link to a real, bookmarkable URL
  * instead of only being reachable through in-app SPA state. Deliberately
  * a light standalone page (not the full app/data/page.tsx sidebar shell)
- * reusing the same auth-gate pattern that page uses, mirroring how
- * app/contracts/sign-complete/page.tsx is its own minimal page rather
- * than embedding into the shared dashboard shell.
+ * reusing the same auth-gate pattern that page uses, rather than
+ * embedding into the shared dashboard shell.
  */
 export default function CreatePricingRuleTypePage() {
   const params = useParams<{ type: string }>();

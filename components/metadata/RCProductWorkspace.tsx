@@ -7,7 +7,7 @@ import { toCreatedSalesforceRecord } from "@/lib/salesforce/recordUrl";
 import { useSalesforceSuccess } from "@/components/notifications/SalesforceSuccessContext";
 import {
   Ic, FieldWrap, FInput, FSelect, FTextarea, SectionHeader, RCConfigCard, rcCssVars,
-  autoCode, SELLING_MODELS, FAMILIES, CATEGORY_MAP, CATALOG_MAP, UNIT_OF_MEASURES,
+  autoCode, SELLING_MODELS, FAMILIES, CATEGORY_MAP, CATALOG_MAP,
 } from "@/components/metadata/shared/productFields";
 import FieldMappingTable from "@/components/metadata/shared/FieldMappingTable";
 import type { ProductIntentMap } from "@/lib/products/ai/productIntent";
@@ -17,7 +17,10 @@ import type { ProductPayload } from "@/lib/products/types";
 import type { DuplicateCheckResult } from "@/lib/duplicateDetection";
 import DuplicateRecordModal from "@/components/duplicates/DuplicateRecordModal";
 import PromptGuide from "@/components/ai/PromptGuide";
+import { ProductConfigurationPanel, RelationResolutionView } from "@/components/data/products/ProductConfigViews";
+import { RELATION_KEYS, RELATION_META, type ProductConfiguration, type RelationKey, type RevenueConfigResolution } from "@/lib/products/revenueConfig";
 import { promptGuideConfig } from "@/lib/ai/promptGuideConfig";
+import { Disclosure, DISCLOSURE_LABELS, WarningsDisclosure } from "@/components/ui/Disclosure";
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Types
@@ -48,6 +51,11 @@ interface ProductState {
   productTypeRaw: string;
   /** null = the prompt said nothing about tax. There is no Product2/PricebookEntry field for this in standard Salesforce — never sent to /api/sf/products/save, shown here only so the meaning is never silently dropped. */
   taxIncluded: boolean | null;
+  /** Revenue Cloud tax/billing configuration by record name — resolved in Salesforce (only the two policies are Product2 fields). */
+  taxPolicy: string; taxTreatment: string; taxTreatmentItem: string; taxEngine: string; taxCode: string;
+  billingPolicy: string; billingTreatment: string; billingTreatmentItem: string;
+  /** Explicit record choices after an ambiguity (relation → Salesforce Id). */
+  relationIds: Partial<Record<RelationKey, string>>;
 }
 
 interface StepResult {
@@ -64,6 +72,10 @@ interface DeployResult {
   warnings?: string[];
   /** Set by /save when the product was created but its PricebookEntry could not be written. */
   priceError?: string;
+  /** Tax/billing relationship resolution, the configuration re-read from Salesforce and the per-request verification. */
+  resolution?: RevenueConfigResolution | null;
+  configuration?: ProductConfiguration | null;
+  verification?: { label: string; expected: string | null; actual: string | null; passed: boolean }[];
 }
 type ValidationIssue = { field: string; msg: string };
 
@@ -82,6 +94,8 @@ const EMPTY_PRODUCT: ProductState = {
   productType: "simple", isActive: true, unitOfMeasure: "Each",
   classification: "", productOwner: "", priceBook: "Standard Price Book",
   basePrice: "", currencyIsoCode: "", productTypeRaw: "", taxIncluded: null,
+  taxPolicy: "", taxTreatment: "", taxTreatmentItem: "", taxEngine: "", taxCode: "",
+  billingPolicy: "", billingTreatment: "", billingTreatmentItem: "", relationIds: {},
 };
 
 const EXAMPLE_PROMPTS = [
@@ -131,7 +145,7 @@ function VisualPreview({ product, isDark }: { product: ProductState; isDark: boo
         ...(product.productOwner ? [["Owner", product.productOwner] as [string, string]] : []),
       ], isDark ? "#3AABFF" : "#1789B0"))}
 
-      {card("Revenue Cloud", isDark ? "#00D4FF" : "#0098CC", rows([
+      {card("Revenue Cloud Core", isDark ? "#00D4FF" : "#0098CC", rows([
         ["Catalog", product.catalog || "—"],
         ["Selling Model", product.sellingModel || "—"],
         ["Classification", product.classification || "—"],
@@ -139,6 +153,17 @@ function VisualPreview({ product, isDark }: { product: ProductState; isDark: boo
         ["Base Price", formatProductPrice(product.basePrice, product.currencyIsoCode) || "—"],
         ["Tax", product.taxIncluded === null ? "—" : product.taxIncluded ? "Included" : "Excluded"],
       ], isDark ? "#00D4FF" : "#0098CC"))}
+
+      {card("Tax & Billing", isDark ? "#A78BFA" : "#6D28D9", rows([
+        ["Tax Policy", product.taxPolicy || "—"],
+        ["Tax Treatment", product.taxTreatment || "—"],
+        ["Tax Treatment Item", product.taxTreatmentItem || "—"],
+        ["Tax Engine", product.taxEngine || "—"],
+        ["Tax Code", product.taxCode || "—"],
+        ["Billing Policy", product.billingPolicy || "—"],
+        ["Billing Treatment", product.billingTreatment || "—"],
+        ["Billing Item", product.billingTreatmentItem || "—"],
+      ], isDark ? "#C4B5FD" : "#6D28D9"))}
 
       {product.description && card("Description", isDark ? "#60B8FF" : "#1C6DBF", (
         <p className="text-[11px] leading-relaxed" style={{ color: "var(--rc-text-primary)" }}>
@@ -172,6 +197,8 @@ function fromEditDetail(p: ProductPayload): ProductState {
     currencyIsoCode: p.currencyIsoCode ?? "",
     unitOfMeasure: p.unitOfMeasure ?? "",
     classification: p.classification ?? "",
+    taxPolicy: p.taxPolicy ?? "",
+    billingPolicy: p.billingPolicy ?? "",
   };
 }
 
@@ -192,6 +219,12 @@ function buildEditPatch(product: ProductState, original: ProductPayload): Partia
   if ((product.currencyIsoCode || undefined) !== original.currencyIsoCode) patch.currencyIsoCode = product.currencyIsoCode || undefined;
   if ((product.unitOfMeasure || undefined) !== original.unitOfMeasure && product.unitOfMeasure) patch.unitOfMeasure = product.unitOfMeasure;
   if ((product.classification || undefined) !== original.classification && product.classification) patch.classification = product.classification;
+  // Tax/Billing: only what the user changed (the server resolves and verifies; related records are never written to Product2).
+  for (const k of [...RELATION_KEYS, "taxCode" as const]) {
+    const v = (product[k] || "").trim();
+    if (v && v !== (original[k] ?? "")) patch[k] = v;
+  }
+  if (Object.keys(product.relationIds).length) patch.relationIds = product.relationIds;
   const wasBundle = original.productType === "bundle";
   if (product.productType === "bundle" && !wasBundle) patch.productType = "bundle";
   return patch;
@@ -229,6 +262,16 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
   const [editLoad, setEditLoad] = useState<"loading" | "ready" | "error">(editProductId ? "loading" : "ready");
   const [editLoadError, setEditLoadError] = useState<string | null>(null);
   const [duplicateCheck, setDuplicateCheck] = useState<DuplicateCheckResult | null>(null);
+  // Prompt configuration that was mentioned but not applied (from generate-payload) — shown, never silently dropped.
+  const [aiNotes, setAiNotes] = useState<string[]>([]);
+  // Tax/billing relationships resolved in Salesforce (preview before deploy).
+  const [resolution, setResolution] = useState<RevenueConfigResolution | null>(null);
+  const [resolving, setResolving] = useState(false);
+  // Unit of Measure values from THIS org (UnitOfMeasure records + Quantity Unit Of Measure picklist) — never a hardcoded list.
+  const [uomOptions, setUomOptions] = useState<string[] | null>(null);
+  useEffect(() => {
+    fetch("/api/sf/products/options").then(r => r.json()).then(d => { if (d.success) setUomOptions((d.unitsOfMeasure as { value: string }[]).map(u => u.value)); }).catch(() => setUomOptions(null));
+  }, []);
 
   /* ── Edit mode: load the product's CURRENT Salesforce values ── */
   useEffect(() => {
@@ -326,7 +369,18 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
         priceBook:      p.priceBook || "Standard Price Book",
         currencyIsoCode: p.currencyIsoCode ?? "",
         taxIncluded:    nextIntent?.taxIncluded.value ?? null,
+        taxPolicy:      p.taxPolicy ?? "",
+        taxTreatment:   p.taxTreatment ?? "",
+        taxTreatmentItem: p.taxTreatmentItem ?? "",
+        taxEngine:      p.taxEngine ?? "",
+        taxCode:        p.taxCode ?? "",
+        billingPolicy:  p.billingPolicy ?? "",
+        billingTreatment: p.billingTreatment ?? "",
+        billingTreatmentItem: p.billingTreatmentItem ?? "",
+        relationIds:    {},
       }));
+      setAiNotes(Array.isArray(data.notes) ? data.notes : []);
+      setResolution(null);
       // Only treat the code as "explicitly set" if the AI actually extracted one from the
       // prompt — otherwise leave it false so the existing auto-generate-from-name effect fills
       // it in (a system default, shown as such in the Field Mapping table), same as manual entry.
@@ -340,12 +394,33 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
     }
   }, [aiPrompt, aiPhase]);
 
+  /* ── Tax / Billing relationships → real Salesforce records (preview; nothing is written) ── */
+  const relationsRequested = RELATION_KEYS.some(k => product[k].trim()) || Object.keys(product.relationIds).length > 0;
+  const checkRelations = useCallback(async (): Promise<RevenueConfigResolution | null> => {
+    if (!RELATION_KEYS.some(k => product[k].trim()) && !Object.keys(product.relationIds).length) { setResolution(null); return null; }
+    setResolving(true);
+    try {
+      const res = await fetch("/api/sf/products/configuration/resolve", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ relations: Object.fromEntries(RELATION_KEYS.map(k => [k, product[k]])), ids: product.relationIds, productId: editContext?.id ?? null }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) { setDeployError(data.error ?? "Could not check the tax/billing configuration"); return null; }
+      setResolution(data.resolution);
+      return data.resolution as RevenueConfigResolution;
+    } catch { setDeployError("Network error — could not check the tax/billing configuration"); return null; }
+    finally { setResolving(false); }
+  }, [product, editContext]);
+  const pickRelation = (key: RelationKey, id: string) => setProduct(p => ({ ...p, relationIds: { ...p.relationIds, [key]: id } }));
+
   /* ── Deploy ── */
-  const proceedToSave = useCallback(async () => {
+  const proceedToSave = useCallback(async (opts: { allowDuplicateName?: boolean } = {}) => {
     setDeployPhase("deploying");
     setDeployError(null);
 
     const payload = {
+      // Only set after the user explicitly chose "Continue Anyway" on the exact-name duplicate warning.
+      ...(opts.allowDuplicateName ? { allowDuplicateName: true } : {}),
       productName:    product.productName,
       productCode:    product.productCode,
       family:         product.family,
@@ -361,6 +436,9 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
       priceBook:      product.priceBook,
       basePrice:      product.basePrice,
       currencyIsoCode: product.currencyIsoCode || undefined,
+      ...Object.fromEntries(RELATION_KEYS.map(k => [k, product[k].trim() || undefined])),
+      taxCode:        product.taxCode.trim() || undefined,
+      relationIds:    Object.keys(product.relationIds).length ? product.relationIds : undefined,
     };
 
     try {
@@ -380,11 +458,13 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
           setDeployPhase("idle");
           return;
         }
+        if (data.resolution) setResolution(data.resolution as RevenueConfigResolution);
         setDeployError(data.error ?? "Deployment failed");
         setDeployPhase("idle");
         return;
       }
       setDeployResult(data as DeployResult);
+      if (data.resolution) setResolution(data.resolution as RevenueConfigResolution);
       setDeployPhase("done");
 
       const instanceUrl = loadSession()?.instanceUrl;
@@ -408,6 +488,15 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
     const issues = validate();
     if (issues.length > 0) return;
 
+    // Tax/Billing configuration is resolved (and shown) before anything is created; a missing, ambiguous or inconsistent
+    // record stops here — the user picks a candidate or corrects the name.
+    if (relationsRequested) {
+      setDeployError(null);
+      const r = await checkRelations();
+      if (!r) return;
+      if (r.blockers.length) { setDeployError(`Not created — fix the tax/billing configuration first: ${r.blockers.join(" · ")}`); return; }
+    }
+
     setDeployPhase("deploying");
     setDeployError(null);
 
@@ -420,12 +509,13 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
       const res = await fetch("/api/sf/products/check-duplicate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items: [{ key: "product", name: product.productName, code: product.productCode }] }),
+        body: JSON.stringify({ items: [{ key: "product", name: product.productName }] }),
       });
       const data = await res.json();
       if (res.ok && data.success) {
         const result = data.results.product as DuplicateCheckResult;
-        if (result.isDuplicate || result.similarRecords.length > 0) {
+        // Only an exact full-name match interrupts creation — a name that merely contains (or is contained in) an existing one is a different product.
+        if (result.isDuplicate) {
           setDuplicateCheck(result);
           setDeployPhase("idle");
           return;
@@ -434,7 +524,7 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
     } catch { /* pre-check failed — fall through to the backend's own authoritative check */ }
 
     await proceedToSave();
-  }, [product, validate, proceedToSave]);
+  }, [product, validate, proceedToSave, relationsRequested, checkRelations]);
 
   const handleReset = () => {
     setProduct(EMPTY_PRODUCT);
@@ -449,6 +539,8 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
     setCodeIsManual(false);
     setIntent(null);
     setDuplicateCheck(null);
+    setAiNotes([]);
+    setResolution(null);
   };
 
   /* ── Save edit (UPDATE, never CREATE) ── */
@@ -474,6 +566,7 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
+        if (data.resolution) setResolution(data.resolution as RevenueConfigResolution);
         setDeployError(data.error ?? "Update failed");
         setDeployPhase("idle");
         return;
@@ -635,89 +728,7 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
         <div className="flex-1 overflow-y-auto" style={{ scrollbarWidth: "thin" }}>
           <div className="px-6 py-5 space-y-8 pb-12">
 
-            {/* ═══════ SECTION 1: PRODUCT DETAILS ═══════ */}
-            <section>
-              <SectionHeader icon="package" label="Product Details" />
-
-              {/* Product Name */}
-              <div className="mb-4">
-                <FieldWrap label="Product Name *">
-                  <input
-                    value={product.productName}
-                    onChange={e => setField("productName", e.target.value)}
-                    placeholder="Enter product name…"
-                    className="w-full rounded-xl outline-none text-[16px] font-semibold px-4 py-3"
-                    style={{
-                      background: isDark ? "rgba(30,144,255,0.04)" : "rgba(0,71,171,0.08)",
-                      border: isDark ? "1px solid rgba(30,144,255,0.15)" : "1px solid rgba(0,71,171,0.22)",
-                      color: isDark ? "white" : "#001F5B",
-                      fontFamily: "inherit",
-                      letterSpacing: "-0.02em",
-                      transition: "border-color 180ms",
-                    }}
-                    onFocus={e => (e.target.style.borderColor = "#1E90FF")}
-                    onBlur={e => (e.target.style.borderColor = isDark ? "rgba(30,144,255,0.15)" : "rgba(0,71,171,0.22)")}
-                  />
-                </FieldWrap>
-              </div>
-
-              <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
-                <FieldWrap label="Product Code *">
-                  <FInput value={product.productCode}
-                    onChange={v => { setCodeIsManual(true); setField("productCode", v); }}
-                    placeholder="AUTO_GENERATED" mono />
-                </FieldWrap>
-                <FieldWrap label="Product Status">
-                  <FSelect value={product.status} onChange={v => setField("status", v as ProductStatus)}
-                    options={["Draft","Active","Archived"]} />
-                </FieldWrap>
-                <FieldWrap label="Product Type">
-                  <FSelect value={product.productType} onChange={v => setField("productType", v as ProductType)}
-                    options={["simple","bundle"]} />
-                </FieldWrap>
-                <FieldWrap label="Unit of Measure">
-                  <FSelect value={product.unitOfMeasure} onChange={v => setField("unitOfMeasure", v)}
-                    options={product.unitOfMeasure && !UNIT_OF_MEASURES.includes(product.unitOfMeasure) ? [product.unitOfMeasure, ...UNIT_OF_MEASURES] : UNIT_OF_MEASURES} />
-                </FieldWrap>
-                <FieldWrap label="Is Active">
-                  <div className="flex gap-2 pt-0.5">
-                    {["Yes","No"].map(v => (
-                      <motion.button key={v}
-                        onClick={() => setField("isActive", v === "Yes")}
-                        className="flex-1 py-2 rounded-lg text-[11px] font-medium cursor-pointer"
-                        style={{
-                          background: (product.isActive ? "Yes" : "No") === v ? "rgba(30,144,255,0.14)" : "var(--rc-field-bg)",
-                          border: `1px solid ${(product.isActive ? "Yes" : "No") === v ? "rgba(30,144,255,0.35)" : "var(--rc-field-border)"}`,
-                          color: (product.isActive ? "Yes" : "No") === v ? (isDark ? "#1E90FF" : "#0968D3") : "var(--rc-text-muted)",
-                        }}
-                        whileTap={{ scale: 0.96 }}>{v}</motion.button>
-                    ))}
-                  </div>
-                </FieldWrap>
-                <FieldWrap label="Product Classification">
-                  <FInput value={product.classification} onChange={v => setField("classification", v)}
-                    placeholder="e.g. Mobile Phone" />
-                </FieldWrap>
-              </div>
-
-              <FieldWrap label="Description" span2>
-                <FTextarea value={product.description} onChange={v => setField("description", v)}
-                  placeholder="Enter product description…" rows={2} />
-              </FieldWrap>
-
-              {validationIssues.length > 0 && (
-                <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
-                  className="mt-3 px-3 py-2.5 rounded-lg flex items-start gap-2 text-[11px]"
-                  style={{ background: "rgba(232,68,68,0.07)", border: "1px solid rgba(232,68,68,0.18)", color: "#E84444" }}>
-                  <div className="mt-0.5 shrink-0"><Ic n="alert" s={13} /></div>
-                  <div>{validationIssues.map(i => i.msg ? `${i.field}: ${i.msg}` : i.field).join(" · ")}</div>
-                </motion.div>
-              )}
-            </section>
-
-            <div className="h-px" style={{ background: "var(--rc-divider)" }} />
-
-            {/* ═══════ SECTION 2: AI PRODUCT REQUIREMENT PROMPT ═══════ */}
+            {/* ═══════ SECTION 1: AI PRODUCT REQUIREMENT PROMPT ═══════ */}
             <section>
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2">
@@ -855,6 +866,100 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
                   </motion.div>
                 )}
               </div>
+              {aiNotes.length > 0 && (
+                <div className="mt-3">
+                  <WarningsDisclosure isDark={isDark} label="View Warnings & Diagnostics — requested but not applied" warnings={aiNotes} />
+                </div>
+              )}
+            </section>
+
+            <div className="h-px" style={{ background: "var(--rc-divider)" }} />
+
+            {/* ═══════ SECTION 2: PRODUCT DETAILS ═══════ */}
+            <section>
+              <SectionHeader icon="package" label="Product Details" />
+
+              {/* Product Name */}
+              <div className="mb-4">
+                <FieldWrap label="Product Name *">
+                  <input
+                    value={product.productName}
+                    onChange={e => setField("productName", e.target.value)}
+                    placeholder="Enter product name…"
+                    className="w-full rounded-xl outline-none text-[16px] font-semibold px-4 py-3"
+                    style={{
+                      background: isDark ? "rgba(30,144,255,0.04)" : "rgba(0,71,171,0.08)",
+                      border: isDark ? "1px solid rgba(30,144,255,0.15)" : "1px solid rgba(0,71,171,0.22)",
+                      color: isDark ? "white" : "#001F5B",
+                      fontFamily: "inherit",
+                      letterSpacing: "-0.02em",
+                      transition: "border-color 180ms",
+                    }}
+                    onFocus={e => (e.target.style.borderColor = "#1E90FF")}
+                    onBlur={e => (e.target.style.borderColor = isDark ? "rgba(30,144,255,0.15)" : "rgba(0,71,171,0.22)")}
+                  />
+                </FieldWrap>
+              </div>
+
+              <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
+                <FieldWrap label="Product Code *">
+                  <FInput value={product.productCode}
+                    onChange={v => { setCodeIsManual(true); setField("productCode", v); }}
+                    placeholder="AUTO_GENERATED" mono />
+                </FieldWrap>
+                <FieldWrap label="Product Status">
+                  <FSelect value={product.status} onChange={v => setField("status", v as ProductStatus)}
+                    options={["Draft","Active","Archived"]} />
+                </FieldWrap>
+                <FieldWrap label="Product Type">
+                  <FSelect value={product.productType} onChange={v => setField("productType", v as ProductType)}
+                    options={["simple","bundle"]} />
+                </FieldWrap>
+                <FieldWrap label="Unit of Measure">
+                  {uomOptions && uomOptions.length > 0 ? (
+                    <FSelect value={product.unitOfMeasure} onChange={v => setField("unitOfMeasure", v)}
+                      options={product.unitOfMeasure && !uomOptions.some(u => u.toLowerCase() === product.unitOfMeasure.toLowerCase()) ? ["", product.unitOfMeasure, ...uomOptions] : ["", ...uomOptions]} />
+                  ) : (
+                    <FInput value={product.unitOfMeasure} onChange={v => setField("unitOfMeasure", v)} placeholder="validated against Salesforce" />
+                  )}
+                  {uomOptions && product.unitOfMeasure && !uomOptions.some(u => u.toLowerCase() === product.unitOfMeasure.toLowerCase()) && (
+                    <span className="text-[10px]" style={{ color: "#E84444" }}>Not a Unit of Measure in this org — it won&apos;t be applied.</span>
+                  )}
+                </FieldWrap>
+                <FieldWrap label="Is Active">
+                  <div className="flex gap-2 pt-0.5">
+                    {["Yes","No"].map(v => (
+                      <motion.button key={v}
+                        onClick={() => setField("isActive", v === "Yes")}
+                        className="flex-1 py-2 rounded-lg text-[11px] font-medium cursor-pointer"
+                        style={{
+                          background: (product.isActive ? "Yes" : "No") === v ? "rgba(30,144,255,0.14)" : "var(--rc-field-bg)",
+                          border: `1px solid ${(product.isActive ? "Yes" : "No") === v ? "rgba(30,144,255,0.35)" : "var(--rc-field-border)"}`,
+                          color: (product.isActive ? "Yes" : "No") === v ? (isDark ? "#1E90FF" : "#0968D3") : "var(--rc-text-muted)",
+                        }}
+                        whileTap={{ scale: 0.96 }}>{v}</motion.button>
+                    ))}
+                  </div>
+                </FieldWrap>
+                <FieldWrap label="Product Classification">
+                  <FInput value={product.classification} onChange={v => setField("classification", v)}
+                    placeholder="e.g. Mobile Phone" />
+                </FieldWrap>
+              </div>
+
+              <FieldWrap label="Description" span2>
+                <FTextarea value={product.description} onChange={v => setField("description", v)}
+                  placeholder="Enter product description…" rows={2} />
+              </FieldWrap>
+
+              {validationIssues.length > 0 && (
+                <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
+                  className="mt-3 px-3 py-2.5 rounded-lg flex items-start gap-2 text-[11px]"
+                  style={{ background: "rgba(232,68,68,0.07)", border: "1px solid rgba(232,68,68,0.18)", color: "#E84444" }}>
+                  <div className="mt-0.5 shrink-0"><Ic n="alert" s={13} /></div>
+                  <div>{validationIssues.map(i => i.msg ? `${i.field}: ${i.msg}` : i.field).join(" · ")}</div>
+                </motion.div>
+              )}
             </section>
 
             <div className="h-px" style={{ background: "var(--rc-divider)" }} />
@@ -933,6 +1038,41 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
               )}
             </section>
 
+            <div className="h-px" style={{ background: "var(--rc-divider)" }} />
+
+            {/* ═══════ SECTION 4: TAX & BILLING CONFIGURATION ═══════ */}
+            <section>
+              <SectionHeader icon="dollar-sign" label="Tax & Billing Configuration" />
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                {([...RELATION_KEYS.filter(k => k.startsWith("tax")), "taxCode" as const, ...RELATION_KEYS.filter(k => k.startsWith("billing"))]).map(k => (
+                  <FieldWrap key={k} label={k === "taxCode" ? "Tax Code (verified)" : `${RELATION_META[k].label}${RELATION_META[k].direct ? "" : " (related)"}`}>
+                    <FInput value={product[k]} onChange={v => setProduct(p => ({ ...p, [k]: v, relationIds: k === "taxCode" ? p.relationIds : Object.fromEntries(Object.entries(p.relationIds).filter(([rk]) => rk !== k)) }))}
+                      placeholder={k === "taxCode" ? "e.g. OC_GST_18" : `existing ${k === "taxEngine" ? "engine" : "record"} name`} />
+                  </FieldWrap>
+                ))}
+              </div>
+              <p className="text-[10px] mb-2 leading-relaxed" style={{ color: "var(--rc-text-muted)" }}>
+                Only Tax Policy and Billing Policy are Product2 fields (TaxPolicyId / BillingPolicyId). Treatments, items and the engine are related records — they are resolved through the policy and verified, never written to Product2. Names are resolved to existing Salesforce records; nothing is created.
+              </p>
+              <motion.button onClick={() => void checkRelations()} disabled={resolving || !relationsRequested}
+                className="px-3 py-1.5 rounded-lg text-[11px] font-semibold cursor-pointer"
+                style={{ border: "1px solid rgba(30,144,255,0.3)", color: isDark ? "#1E90FF" : "#0968D3", background: "transparent", opacity: relationsRequested ? 1 : 0.5 }}
+                whileTap={{ scale: 0.97 }}>{resolving ? "Checking in Salesforce…" : "Check in Salesforce"}</motion.button>
+              {resolution && <div className="mt-3"><RelationResolutionView isDark={isDark} resolution={resolution} onPick={pickRelation} /></div>}
+              {Object.keys(product.relationIds).length > 0 && (
+                <p className="text-[10px] mt-1.5" style={{ color: "var(--rc-text-muted)" }}>Selected: {Object.entries(product.relationIds).map(([k, id]) => `${RELATION_META[k as RelationKey].label} ${id}`).join(" · ")} — click Check in Salesforce to re-verify.</p>
+              )}
+            </section>
+
+            {deployResult?.configuration && (
+              <>
+                <div className="h-px" style={{ background: "var(--rc-divider)" }} />
+                <section>
+                  <ProductConfigurationPanel isDark={isDark} c={deployResult.configuration} verification={deployResult.verification} title="Final product configuration (re-read from Salesforce)" />
+                </section>
+              </>
+            )}
+
           </div>
         </div>
 
@@ -982,6 +1122,9 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
                       deployResult.steps.catalog        && { ok: true,  label: `Catalog: ${(deployResult.steps.catalog as StepResult).name}` },
                       deployResult.steps.sellingModel   && { ok: true,  label: "Selling Model linked" },
                       deployResult.steps.unitOfMeasure  && { ok: true,  label: `Unit of Measure: ${(deployResult.steps.unitOfMeasure as StepResult).value}` },
+                      deployResult.steps.taxPolicy      && { ok: true,  label: `Tax Policy assigned: ${(deployResult.steps.taxPolicy as StepResult).name}` },
+                      deployResult.steps.billingPolicy  && { ok: true,  label: `Billing Policy assigned: ${(deployResult.steps.billingPolicy as StepResult).name}` },
+                      ...(deployResult.verification ?? []).filter(v => v.passed).map(v => ({ ok: true, label: `Verified: ${v.label}` })),
                       deployResult.steps.classification && { ok: true,  label: `Classification: ${(deployResult.steps.classification as StepResult).value}` },
                       // Shows the UnitPrice Salesforce actually stored (read back server-side), not the form value.
                       deployResult.steps.pricebookEntry && { ok: true,  label: `Price saved: ${formatProductPrice((deployResult.steps.pricebookEntry as StepResult).unitPrice, (deployResult.steps.pricebookEntry as StepResult).currencyIsoCode as string | undefined)} in ${(deployResult.steps.pricebookEntry as StepResult).pricebook}` },
@@ -1098,10 +1241,10 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
             {/* Field Mapping — visible before Deploy, per-field Provided/Default/Not specified */}
             {product.productName && (
               <div className="mb-4">
-                <p className="text-[9px] font-bold uppercase tracking-wider mb-2" style={{ color: "var(--rc-text-section)" }}>
-                  Field Mapping
-                </p>
-                <FieldMappingTable rows={mappingRows} />
+                {/* Per-field AI extraction detail (Provided / Default / Not specified) — hidden until asked for. */}
+                <Disclosure isDark={isDark} label={`${DISCLOSURE_LABELS.ai} — field mapping`} icon="cpu">
+                  <FieldMappingTable rows={mappingRows} />
+                </Disclosure>
               </div>
             )}
 
@@ -1183,6 +1326,10 @@ export default function RCProductWorkspace({ isDark, editProductId, onSaved, onC
           }}
           onChooseAnotherName={() => setDuplicateCheck(null)}
           onUseExisting={duplicateCheck.isDuplicate ? () => { setDuplicateCheck(null); onCancel?.(); } : undefined}
+          // "Continue Anyway" on an exact-name duplicate: re-submits with an explicit override that skips ONLY the
+          // duplicate-name gate — validation, price/config checks and Salesforce's own rules still apply on the server.
+          onContinue={duplicateCheck.isDuplicate && !editContext ? () => { setDuplicateCheck(null); void proceedToSave({ allowDuplicateName: true }); } : undefined}
+          continueLabel="Continue Anyway"
         />
       )}
     </div>

@@ -51,7 +51,7 @@ const sellingModelTypeFieldCache = createTTLCache<string | null>();
 
 /** Resolve the real Describe field name for ProductSellingModel's type picklist. */
 async function resolveSellingModelTypeFieldName(client: SalesforceClient): Promise<string | null> {
-  return sellingModelTypeFieldCache.getOrCompute(client.instanceUrl, async () => {
+  return sellingModelTypeFieldCache.getOrCompute(client.cacheScope, async () => {
     try {
       const describe = await describeObjectCached(client, "ProductSellingModel");
       return resolveField(describe, "SellingModelType", /^selling model type$/i)?.name ?? null;
@@ -116,7 +116,7 @@ const pricebookEntrySellingModelFieldCache = createTTLCache<string | null>();
  * determines which selling model applies.
  */
 async function resolvePricebookEntrySellingModelFieldName(client: SalesforceClient): Promise<string | null> {
-  return pricebookEntrySellingModelFieldCache.getOrCompute(client.instanceUrl, async () => {
+  return pricebookEntrySellingModelFieldCache.getOrCompute(client.cacheScope, async () => {
     try {
       const describe = await describeObjectCached(client, "PricebookEntry");
       return resolveField(describe, "ProductSellingModelId", /^selling model$/i)?.name ?? null;

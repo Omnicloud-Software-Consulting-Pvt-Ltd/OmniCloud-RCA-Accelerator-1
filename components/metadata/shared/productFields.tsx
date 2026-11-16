@@ -2,6 +2,8 @@
 
 import React from "react";
 import { motion } from "framer-motion";
+import { useTheme } from "next-themes";
+import FieldHelp from "@/components/help/FieldHelp";
 
 /**
  * Shared Product Creation field primitives — extracted verbatim from
@@ -97,12 +99,16 @@ export function Ic({ n, s = 16 }: { n: string; s?: number }) {
  * Field components
  * ─────────────────────────────────────────────────────────────────────────── */
 export function FieldWrap({ label, children, span2 }: { label: string; children: React.ReactNode; span2?: boolean }) {
+  const { resolvedTheme } = useTheme();
   return (
     <div style={{ gridColumn: span2 ? "1 / -1" : undefined }}>
-      <label className="block text-[10px] font-semibold uppercase tracking-wider mb-1.5"
-        style={{ color: "rgba(90,120,160,0.7)" }}>
-        {label}
-      </label>
+      <div className="flex items-center gap-1 mb-1.5">
+        <label className="block text-[10px] font-semibold uppercase tracking-wider"
+          style={{ color: "rgba(90,120,160,0.7)" }}>
+          {label}
+        </label>
+        <FieldHelp isDark={resolvedTheme !== "light"} label={label} size={10} />
+      </div>
       {children}
     </div>
   );

@@ -17,11 +17,15 @@ interface ProductHistoryResponse {
  * instead of routing into an editor, since RCProductWorkspace only supports
  * creating new products today.
  */
-export default function ProductHistoryList({ isDark, onOpenImportHistory, onEditProduct, refreshToken }: {
+export default function ProductHistoryList({ isDark, onOpenImportHistory, onEditProduct, onViewBilling, onViewConfiguration, refreshToken }: {
   isDark: boolean;
   onOpenImportHistory?: () => void;
   /** Opens the product in the Edit workspace (reuses RCProductWorkspace — see app/data/page.tsx's "edit" mode). */
   onEditProduct?: (id: string) => void;
+  /** Opens this product's Revenue Cloud Billing view (assigned Billing Policy → treatment → items, assign/change). */
+  onViewBilling?: (id: string) => void;
+  /** Opens the product's complete Revenue Cloud configuration (selling model, catalog, price book, tax, billing, readiness). */
+  onViewConfiguration?: (id: string) => void;
   /** Bump this after a successful edit save to force a re-fetch instead of showing stale cached values. */
   refreshToken?: number;
 }) {
@@ -145,8 +149,12 @@ export default function ProductHistoryList({ isDark, onOpenImportHistory, onEdit
                       <DetailField label="Created" value={new Date(p.createdDate).toLocaleDateString()} t={t} />
                       <DetailField label="Last Modified" value={new Date(p.lastModifiedDate).toLocaleDateString()} t={t} />
                     </div>
-                    {onEditProduct && (
-                      <GhostButton label="Edit Product" icon="edit" isDark={isDark} onClick={() => onEditProduct(p.id)} />
+                    {(onEditProduct || onViewBilling || onViewConfiguration) && (
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        {onEditProduct && <GhostButton label="Edit Product" icon="edit" isDark={isDark} onClick={() => onEditProduct(p.id)} />}
+                        {onViewConfiguration && <GhostButton label="Configuration" icon="layers" isDark={isDark} onClick={() => onViewConfiguration(p.id)} />}
+                        {onViewBilling && <GhostButton label="Revenue Cloud Billing" icon="link" isDark={isDark} onClick={() => onViewBilling(p.id)} />}
+                      </div>
                     )}
                   </div>
                 )}

@@ -26,6 +26,7 @@ JSON STRUCTURE
   "category": "string — bundle-level category",
   "catalog": "string — product catalog name (e.g. Enterprise Catalog, SMB Catalog)",
   "sellingModel": "string — see SELLING MODEL RULES below",
+  "priceBook": "string — OPTIONAL: only when the user names a Price Book; omit it otherwise (Standard Price Book)",
   "bundleType": "Static",
   "products": [
     {
@@ -34,6 +35,7 @@ JSON STRUCTURE
       "isDependency": false,
       "dependencyOf": null,
       "sellingModel": "string",
+      "priceBook": "string — OPTIONAL: only when the user names a different Price Book for this product; omit to inherit the bundle’s",
       "category": "string",
       "attributes": [
         {
@@ -82,6 +84,11 @@ NESTING RULES
 - totalPrice = sum of direct products + sum of nestedBundles[].totalPrice
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PRICE BOOK RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Include "priceBook" ONLY when the user explicitly names a Price Book (e.g. "in the Partner Price Book"); use the name exactly as written.
+- Never invent a Price Book name. Omitted = the org’s Standard Price Book. Products and nested bundles inherit their bundle’s Price Book.
+
 SELLING MODEL RULES (apply dynamically — NEVER hardcode "One Time" for all)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - Physical hardware (laptops, monitors, phones, printers, servers, mice, keyboards): One Time

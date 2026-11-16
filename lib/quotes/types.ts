@@ -5,6 +5,7 @@
  */
 
 import type { FieldRef } from "@/lib/salesforce/describe";
+import type { RecordDisplayMeta } from "@/lib/salesforce/recordReferences";
 export type { FieldRef } from "@/lib/salesforce/describe";
 
 /* ── Generic field/reference resolution ── */
@@ -90,7 +91,8 @@ export interface QuoteListItem {
   lineItemCount: number | null;
 }
 
-export interface QuoteDetail {
+/** `RecordDisplayMeta` adds lookup names / formatted currency for the overview (lib/salesforce/recordReferences.ts). */
+export interface QuoteDetail extends RecordDisplayMeta {
   id: string;
   name: string;
   record: Record<string, unknown>;
@@ -457,7 +459,9 @@ export interface PricingModelDiagnosis {
 
 export interface RepricingLineResult {
   quoteLineItemId: string;
+  /** Absent from Salesforce's response when the line's price didn't change. */
   netUnitPrice: number | null;
+  pricingTermCount?: number | null;
   netTotalPrice: number | null;
   listPrice: number | null;
   discount: number | null;
@@ -865,11 +869,10 @@ export interface SalesforceResponseSummary {
   orderLineItems?: { count: number; ids: string[] } | null;
   orderBundleResult?: unknown;
   orderActivation?: unknown;
-  /** Contract-side counterparts (Contract/document-generation/e-signature module) — same shared store, additive fields so Quote/Order code is unaffected. */
+  /** Contract-side counterparts (Contract/document-generation module) — same shared store, additive fields so Quote/Order code is unaffected. */
   contract?: { id: string; contractNumber: string | null; status: string | null } | null;
   contractActivation?: unknown;
   contractDocument?: { contentVersionId: string; templateName: string } | null;
-  contractSignature?: unknown;
 }
 
 /* ── Bundle diagnostics ── */

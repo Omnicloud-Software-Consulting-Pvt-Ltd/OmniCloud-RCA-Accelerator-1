@@ -59,7 +59,7 @@ function uniqueInstanceUrl(): string {
 function buildDesktopClient(): SalesforceClient {
   const classificationId = "0Z6DESKTOPNATIVE001";
   return {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeSObjects() {
       return { sobjects: [
         { name: "ProductClassification", label: "", labelPlural: "", createable: false, queryable: true },
@@ -129,7 +129,7 @@ test("resolveBaseProductConfiguration resolves a real baseline DefaultValue for 
 test("regression: a Laptop/Monitor-style product with ONLY direct ProductAttributeDefinition records (no classification at all) behaves exactly as before", async () => {
   const productId = "01tLAPTOPNATIVE0001";
   const client = {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeSObjects() {
       return { sobjects: [] }; // no ProductClassification/ProductClassificationAttr on this org at all
     },

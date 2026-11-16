@@ -36,23 +36,24 @@ export function toFieldRef(f: DescribeField | null): FieldRef | null {
 /* ── Describe caching (10-min TTL, keyed by instance URL; never caches a failure) ── */
 
 const describeObjectCache = createTTLCache<DescribeResult>();
-const describeGlobalCache = createTTLCache<{ name: string; label: string; labelPlural: string; createable: boolean; queryable: boolean }[]>();
+const describeGlobalCache = createTTLCache<{ name: string; label: string; labelPlural: string; createable: boolean; queryable: boolean; updateable?: boolean; keyPrefix?: string | null }[]>();
 
 export async function describeObjectCached(client: SalesforceClient, sobject: string): Promise<DescribeResult> {
-  const key = `${client.instanceUrl}:${sobject}`;
+  // Keyed by API version too: a describe lists only the fields that exist at its version (some fields only exist at newer versions),
+  // so one version's field list must never answer for another's.
+  const key = `${client.cacheScope}:${client.apiVersion}:${sobject}`;
   return describeObjectCache.getOrCompute(key, () => client.describeObject(sobject));
 }
 
 export async function describeGlobalCached(client: SalesforceClient) {
-  const key = client.instanceUrl;
+  const key = client.cacheScope;
   return describeGlobalCache.getOrCompute(key, async () => (await client.describeSObjects()).sobjects);
 }
 
-/** Clear cached describe results for an instance (e.g. after a schema-changing action). */
-export function clearDescribeCache(instanceUrl: string) {
-  describeGlobalCache.clear(instanceUrl);
-  // Per-object entries are keyed `${instanceUrl}:${sobject}` — clear the whole
-  // cache since we don't track which objects were cached for this instance.
+/** Clear cached describe results (e.g. after a schema-changing action). Entries are keyed per session
+ *  (`client.cacheScope`), so every session's entries are cleared — the next read re-describes. */
+export function clearDescribeCache() {
+  describeGlobalCache.clear();
   describeObjectCache.clear();
 }
 

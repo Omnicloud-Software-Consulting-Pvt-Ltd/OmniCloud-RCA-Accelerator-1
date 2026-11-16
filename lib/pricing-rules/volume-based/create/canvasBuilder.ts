@@ -24,6 +24,7 @@ import {
 } from "@/lib/pricing-rules/attribute-based/create/versionEnvelopeFields";
 import {
   resolvePriceBookEntriesV2DecisionTable, resolveVolumeDiscountEntriesDecisionTable,
+  requiredDecisionTableMessage, validatePricingDecisionTable, decisionTableLookupName,
   formatExactDecisionTableFailure, formatDecisionTableMappingDiagnostic,
   PRICE_BOOK_DECISION_TABLE_LABEL, VOLUME_DISCOUNT_DECISION_TABLE_LABEL,
 } from "@/lib/pricing-rules/attribute-based/create/decisionTableExactResolver";
@@ -299,9 +300,17 @@ export async function buildVolumeCanvas(
    * discovery failure is now always fatal. */
   const vtdResolution = await resolveVolumeDiscountEntriesDecisionTable(client);
   if (vtdResolution.status !== "resolved") {
-    fatalErrors.push(`Could not resolve the exact "${VOLUME_DISCOUNT_DECISION_TABLE_LABEL}" Decision Table on this org — ${formatExactDecisionTableFailure(vtdResolution)}`);
+    fatalErrors.push(`${requiredDecisionTableMessage("volume-based")} ${formatExactDecisionTableFailure(vtdResolution)}`);
     return { success: false, fatalErrors, warnings };
   }
+  // Validate the resolved table against Salesforce BEFORE anything is generated from it: Active, and the
+  // Volume Discount Entries column signature (it matches on the quantity bounds; Tiered Adjustment Entries returns them).
+  const vtdValidation = await validatePricingDecisionTable(client, "volume-based", vtdResolution.table);
+  if (!vtdValidation.ok) {
+    fatalErrors.push(`${requiredDecisionTableMessage("volume-based")} Resolved table ${vtdResolution.table.id} (${vtdResolution.table.developerName ?? "?"}) failed validation: ${vtdValidation.problems.join(" ")}`);
+    return { success: false, fatalErrors, warnings };
+  }
+  warnings.push(`Volume-Based Decision Table validated: ${VOLUME_DISCOUNT_DECISION_TABLE_LABEL} = ${vtdResolution.table.id} (${vtdResolution.table.developerName ?? "?"}), status ${vtdValidation.status ?? "n/a"}, INPUT [${vtdValidation.inputs.join(", ")}], OUTPUT [${vtdValidation.outputs.join(", ")}], ${vtdValidation.existingEntryCount ?? "?"} existing ${vtdResolution.table.sourceObject ?? "source"} row(s).`);
   // §Task 5 — the two semantic tables are resolved fully independently (two separate calls, two separate
   // exported functions — see decisionTableExactResolver.ts's own file header for why there is no shared
   // "candidate label" parameter a call site could confuse); this asserts that independence actually held:
@@ -317,12 +326,9 @@ export async function buildVolumeCanvas(
     `ListPrice:\n  requested = ${PRICE_BOOK_DECISION_TABLE_LABEL}\n  resolvedId = ${pbDtResolution.table.id}\n  resolvedIdentity = MasterLabel="${pbDtResolution.table.masterLabel ?? "(none)"}" DeveloperName="${pbDtResolution.table.developerName ?? "(none)"}" SetupName="${pbDtResolution.table.setupName ?? "(none)"}" (matched via ${pbDtResolution.mechanism})\n` +
     `VolumeDiscount:\n  requested = ${VOLUME_DISCOUNT_DECISION_TABLE_LABEL}\n  resolvedId = ${vtdResolution.table.id}\n  resolvedIdentity = MasterLabel="${vtdResolution.table.masterLabel ?? "(none)"}" DeveloperName="${vtdResolution.table.developerName ?? "(none)"}" SetupName="${vtdResolution.table.setupName ?? "(none)"}" (matched via ${vtdResolution.mechanism})`,
   );
-  // §Display-name fallback chain — MasterLabel is preferred (most human-readable) but is not guaranteed
-  // non-null (see decisionTableExactResolver.ts): falls back to DeveloperName, then SetupName, then the
-  // semantic target name itself as an absolute last resort — never null, so the patched LookUpName is
-  // always a real, meaningful value and the final-XML validation below can compare against this SAME
-  // computed value rather than re-deriving it (and risking a spurious null-vs-value mismatch).
-  const vtdResolvedName = vtdResolution.table.masterLabel ?? vtdResolution.table.developerName ?? vtdResolution.table.setupName ?? VOLUME_DISCOUNT_DECISION_TABLE_LABEL;
+  // §Fix — LookUpName is the table's real name (what Salesforce's own standard procedure uses), never the
+  // generic MasterLabel placeholder ("Decision Tables") that every table shares on these orgs.
+  const vtdResolvedName = decisionTableLookupName(vtdResolution, VOLUME_DISCOUNT_DECISION_TABLE_LABEL);
   const vtdLookup: DecisionTableLookup = { id: vtdResolution.table.id, name: vtdResolvedName, apiName: vtdResolution.table.developerName ?? "" };
 
   const lpBindingsBefore = collectFieldMap(lpXml);
@@ -330,7 +336,9 @@ export async function buildVolumeCanvas(
   // substitute (a prior version did `pbDt.apiName || lpBindings.get("LookUpApiName")`): the resolved
   // table's own fields are used verbatim, even when DeveloperName is absent on this org, so the deployed
   // step's LookUp* fields can never silently carry a donor-org literal forward.
-  const pbResolvedName = pbDtResolution.table.masterLabel ?? pbDtResolution.table.developerName ?? pbDtResolution.table.setupName ?? PRICE_BOOK_DECISION_TABLE_LABEL;
+  // §Fix — same rule as the adjustment step: LookUpName is the table's real name ("Price Book Entries V2",
+  // its SetupName), never the generic MasterLabel placeholder ("Decision Tables") every table shares.
+  const pbResolvedName = decisionTableLookupName(pbDtResolution, PRICE_BOOK_DECISION_TABLE_LABEL);
   const lpLookup = { lookUpId: pbDtResolution.table.id, lookUpApiName: pbDtResolution.table.developerName ?? null, lookUpName: pbResolvedName };
   warnings.push(formatDecisionTableMappingDiagnostic({
     pricingTypeLabel: "VOLUME — LISTPRICE", actionType: "ListPrice", table: pbDtResolution.table, mechanism: pbDtResolution.mechanism,

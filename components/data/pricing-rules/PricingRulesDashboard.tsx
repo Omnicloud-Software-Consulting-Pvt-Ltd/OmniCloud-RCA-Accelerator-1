@@ -94,7 +94,7 @@ export default function PricingRulesDashboard({ isDark, onNavigate }: { isDark: 
       { id: "rule-history", title: "Rule History", desc: "Browse deployed Pricing Procedures.", icon: "list", accent: accentBlue, workflow: "history" },
     ];
 
-    return { id: "pricing-rules", label: "Pricing Rules", icon: "zap", groupLabel: "Revenue Cloud", color: accent, stats, actions };
+    return { id: "pricing-rules", label: "Pricing Rules", icon: "zap", groupLabel: "Revenue Cloud Core", color: accent, stats, actions };
   }, [data, accent, accentBlue]);
 
   const recentActivity: RecentOp[] = useMemo(() => {

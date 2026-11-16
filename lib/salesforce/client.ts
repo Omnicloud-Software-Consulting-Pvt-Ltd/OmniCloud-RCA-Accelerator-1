@@ -107,6 +107,13 @@ export interface DescribeField {
   restrictedPicklist?: boolean;
   /** The API name of this field's controlling field, when this is a dependent picklist/checkbox. Null/undefined = not dependent on anything. */
   controllerName?: string | null;
+  /** True for the object's record-name field (Name, or e.g. DocumentNumber / an auto-number) — Describe's own flag, never guessed. */
+  nameField?: boolean;
+  autoNumber?: boolean;
+  dependentPicklist?: boolean;
+  inlineHelpText?: string | null;
+  precision?: number;
+  scale?: number;
 }
 
 export interface OrgLimits {
@@ -182,6 +189,17 @@ export interface SalesforceDebugLogEntry {
   durationMs?: number;
 }
 
+/** Non-cryptographic, one-way digest (two FNV-1a 32-bit passes) — used only to tell login sessions apart in cache keys. */
+function sessionDigest(value: string): string {
+  let a = 0x811c9dc5, b = 0x01000193 ^ 0x5bd1e995;
+  for (let i = 0; i < value.length; i++) {
+    const c = value.charCodeAt(i);
+    a = Math.imul(a ^ c, 0x01000193) >>> 0;
+    b = Math.imul(b ^ c, 0x01000193 + 2 * i) >>> 0;
+  }
+  return a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0");
+}
+
 /* ── SalesforceClient ── */
 export class SalesforceClient {
   readonly instanceUrl: string;
@@ -189,6 +207,13 @@ export class SalesforceClient {
   readonly apiVersion: string;
   private readonly refresh?: RefreshConfig;
   readonly debugLog: SalesforceDebugLogEntry[] = [];
+  /**
+   * Cache scope for anything USER-dependent (describe createable/FLS, record visibility, permission probes): the org's
+   * instance URL plus a digest of this login session (its refresh token, else its access token). A login session belongs to
+   * exactly one org and one user, so two users — or two orgs — never share these cache entries. Never contains a token.
+   * Org-level facts (API versions, org currency) may still key by `instanceUrl`, which is unique per org.
+   */
+  readonly cacheScope: string;
 
   constructor(
     instanceUrl: string,
@@ -200,6 +225,7 @@ export class SalesforceClient {
     this.accessToken = accessToken;
     this.apiVersion = apiVersion;
     this.refresh = refresh;
+    this.cacheScope = `${this.instanceUrl}#${sessionDigest(refresh?.refreshToken || accessToken)}`;
   }
 
   /** Manual debug-log entry point for callers that know something worth recording beyond a plain SOQL/REST/SOAP call (e.g. a retry). */
@@ -409,7 +435,7 @@ export class SalesforceClient {
     return this.request<DescribeResult>(`/sobjects/${sobject}/describe`);
   }
 
-  async describeSObjects(): Promise<{ sobjects: { name: string; label: string; labelPlural: string; createable: boolean; queryable: boolean }[] }> {
+  async describeSObjects(): Promise<{ sobjects: { name: string; label: string; labelPlural: string; createable: boolean; queryable: boolean; updateable?: boolean; keyPrefix?: string | null }[] }> {
     return this.request("/sobjects");
   }
 
@@ -681,9 +707,8 @@ export function decodeSession(encoded: string): SFServerSession | null {
  *
  * sameSite is "lax", not "strict": this cookie must be present when the
  * browser lands back on this app via a cross-site top-level redirect (e.g.
- * DocuSign's OAuth callback at /api/contracts/docusign/callback). Strict
- * withholds cookies on any cross-site navigation, including redirects, which
- * broke that flow entirely. Lax still omits the cookie on cross-site POSTs
+ * a third-party OAuth callback). Strict withholds cookies on any cross-site
+ * navigation, including redirects. Lax still omits the cookie on cross-site POSTs
  * and on fetch/XHR/iframe requests of any method, which is what actually
  * matters for CSRF — every state-changing route in this app is POST-only.
  */

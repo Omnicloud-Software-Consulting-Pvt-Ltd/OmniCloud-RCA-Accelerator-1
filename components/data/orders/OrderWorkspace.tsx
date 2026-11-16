@@ -8,6 +8,7 @@ import {
 import LineItemsEditor from "@/components/data/orders/LineItemsEditor";
 import OrderPreviewPanel from "@/components/data/orders/OrderPreviewPanel";
 import OrderLineItemFailureView from "@/components/data/orders/OrderLineItemFailureView";
+import OrderOverview from "@/components/data/orders/OrderOverview";
 import { quoteApiGet, quoteApiPost, quoteApiPatch, quoteApiDelete, toErrorPanelData, type ErrorPanelDataLike } from "@/lib/quotes/client/apiClient";
 import { replayServerSteps } from "@/lib/quotes/client/executionLog";
 import { updateResponseSummary } from "@/lib/quotes/client/responseSummary";
@@ -29,6 +30,7 @@ export default function OrderWorkspace({
   onBack,
   initialTab,
   onTabChange,
+  onContinueBilling,
 }: {
   isDark: boolean;
   orderId: string;
@@ -36,6 +38,8 @@ export default function OrderWorkspace({
   initialTab?: string;
   /** Bubbles tab changes up to OrdersModule (and from there to the page's URL) so a refresh reopens the same tab. */
   onTabChange?: (tab: Tab) => void;
+  /** Opens "Revenue Cloud Billing — Order Setup" for this order. */
+  onContinueBilling?: (orderId: string) => void;
 }) {
   const t = tokens(isDark);
   const [tab, setTabState] = useState<Tab>(() => (TABS.some(t => t.id === initialTab) ? (initialTab as Tab) : "overview"));
@@ -154,7 +158,10 @@ export default function OrderWorkspace({
           <Ic n="shopping-cart" s={17} /> {detail?.orderNumber ?? "Loading…"}
           {detail?.status && <Pill label={detail.status} color={mutable ? t.accent : t.warn} isDark={isDark} />}
         </div>
-        <GhostButton label="Back to History" icon="arrow-left" isDark={isDark} onClick={onBack} />
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {onContinueBilling && <GhostButton label={mutable ? "Set Up Billing" : "Revenue Cloud Billing"} icon="calendar" isDark={isDark} onClick={() => onContinueBilling(orderId)} />}
+          <GhostButton label="Back to History" icon="arrow-left" isDark={isDark} onClick={onBack} />
+        </div>
       </div>
       <div style={{ borderBottom: `1px solid ${t.border}`, paddingBottom: 10 }}>
         <Tabs isDark={isDark} tabs={TABS} active={tab} onChange={id => setTab(id as Tab)} />
@@ -183,22 +190,7 @@ export default function OrderWorkspace({
             : <ErrorPanel isDark={isDark} error={error} />
         )}
 
-        {tab === "overview" && (
-          <>
-            <Section title="Order Fields" icon="file-text" isDark={isDark}>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
-                {Object.entries(detail.record)
-                  .filter(([, v]) => typeof v !== "object")
-                  .map(([k, v]) => (
-                    <div key={k} style={{ fontSize: 12, display: "flex", justifyContent: "space-between", borderBottom: `1px solid ${t.border}`, padding: "4px 0" }}>
-                      <span style={{ color: t.dim }}>{k}</span>
-                      <span style={{ color: t.heading }}>{String(v ?? "—")}</span>
-                    </div>
-                  ))}
-              </div>
-            </Section>
-          </>
-        )}
+        {tab === "overview" && <OrderOverview isDark={isDark} detail={detail} />}
 
         {tab === "lines" && (
           <>

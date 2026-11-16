@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Ic, tokens, GhostButton } from "@/components/data/quotes/shared";
 import type { DuplicateCheckResult } from "@/lib/duplicateDetection";
+import { Z } from "@/lib/ui/overlay";
 
 /**
  * The one Duplicate Prevention modal shared by every Product/Bundle
@@ -11,9 +12,10 @@ import type { DuplicateCheckResult } from "@/lib/duplicateDetection";
  * (tokens/Ic from components/data/quotes/shared, the same primitives every
  * other modal built this session uses). Two modes driven by
  * `result.isDuplicate`:
- *  - true  → BLOCKING: "X Already Exists", no dismiss-and-proceed action,
- *            no "Create Anyway" (§5, §10) — only View/Use Existing/Edit
- *            Existing/Choose Another Name.
+ *  - true  → "X Already Exists": no dismiss-and-proceed action — only
+ *            View/Use Existing/Edit Existing/Choose Another Name, plus an
+ *            explicit Continue only when the caller supplies `onContinue`
+ *            (Product creation's "Continue Anyway" on an exact-name match).
  *  - false (but similarRecords.length > 0) → ADVISORY: a dismissible
  *            "Similar X Found" nudge — creation is NOT blocked, since there
  *            is no exact match; the user can continue or rename.
@@ -71,7 +73,7 @@ export default function DuplicateRecordModal({
 
   return (
     <div
-      style={{ position: "fixed", inset: 0, zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(6px)" }}
+      style={{ position: "fixed", inset: 0, zIndex: Z.dialog, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(6px)" }}
       onClick={backdropClick}
     >
       <div
@@ -86,7 +88,9 @@ export default function DuplicateRecordModal({
         </div>
         <p style={{ fontSize: 12.5, color: t.dim, marginBottom: 16 }}>
           {blocking && result.isDuplicate
-            ? `"${result.recordName}" already exists in your Salesforce organization.`
+            ? kind === "product"
+              ? `A product with the exact name "${result.recordName}" already exists in your Salesforce organization. Rename this product${onContinue ? ", or continue to create another product with the same name" : ""}.`
+              : `"${result.recordName}" already exists in your Salesforce organization.`
             : `We found ${nounCap.toLowerCase()}s with names similar to "${requestedName}" — double-check this isn't a duplicate before continuing.`}
         </p>
 

@@ -59,7 +59,7 @@ export function picklistValues(d: DescribeResult | null, fieldName: string | nul
 const schemaCache = createTTLCache<AttributeSchema>();
 
 export async function resolveAttributeSchema(client: SalesforceClient): Promise<AttributeSchema> {
-  return schemaCache.getOrCompute(client.instanceUrl, async () => {
+  return schemaCache.getOrCompute(client.cacheScope, async () => {
     const [attrDefD, plValueD, padD] = await Promise.all([
       describeObjectCached(client, "AttributeDefinition").catch(() => null),
       describeObjectCached(client, "AttributePicklistValue").catch(() => null),
@@ -77,7 +77,8 @@ export async function resolveAttributeSchema(client: SalesforceClient): Promise<
   });
 }
 
-/** Clear the cached schema for an instance — call after a schema-changing action, mirrors lib/salesforce/describe.ts's own cache-invalidation convention. */
-export function clearAttributeSchemaCache(instanceUrl: string) {
-  schemaCache.clear(instanceUrl);
+/** Clear the cached schema — call after a schema-changing action. Entries are keyed per session (`client.cacheScope`),
+ *  so every session's entries are cleared; mirrors lib/salesforce/describe.ts's clearDescribeCache. */
+export function clearAttributeSchemaCache() {
+  schemaCache.clear();
 }

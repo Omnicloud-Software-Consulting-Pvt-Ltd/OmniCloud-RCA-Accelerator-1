@@ -106,7 +106,7 @@ export async function GET(req: NextRequest) {
   const { client } = auth;
 
   try {
-    const cacheKey = client.instanceUrl;
+    const cacheKey = client.cacheScope;
     const payload = await productStatsCache.getOrCompute(cacheKey, () => computeProductStats(client));
     logSfCacheEvent({
       endpoint: "/api/sf/products/stats", caller: "computeProductStats", cacheKey,

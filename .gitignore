@@ -55,3 +55,9 @@ Thumbs.db
 
 # temporary donor-xml-diagnostic output (org metadata captured locally, never committed)
 /diagnostics/
+
+# RAMP server-side store (lib/ramp/server/store.ts)
+/.data/
+
+# Salesforce CLI local cache (org metadata catalogs) — never committed
+/.sf/

@@ -22,13 +22,18 @@ JSON STRUCTURE
   "type": "string — e.g. New, Renewal, Amendment, or null",
   "poNumber": "string or null",
   "poDate": "YYYY-MM-DD or null",
-  "description": "string or null"
+  "description": "string or null",
+  "billToContactName": "string — the person to bill (a Contact name), or null",
+  "billingAddress": { "street": "string or null", "city": "string or null", "state": "string or null", "postalCode": "string or null", "country": "string or null" } or null,
+  "shippingAddress": { "street": "string or null", "city": "string or null", "state": "string or null", "postalCode": "string or null", "country": "string or null" } or null,
+  "shippingSameAsBilling": true if the request says to ship to the billing address, otherwise false
 }
 
 RULES
 - Orders have no free-text Name field — never invent one; OrderNumber is system-assigned.
 - Only extract fields explicitly stated or clearly implied — leave anything not mentioned as null.
 - Never invent an account, price book, or contract name that wasn't said.
+- Never invent a contact name or any part of an address. Split a stated address into its parts; leave unstated parts null.
 - These extracted values are a starting point for a form the user can still edit — accuracy matters more than completeness.`;
 }
 
@@ -86,7 +91,22 @@ export async function POST(req: NextRequest) {
       description: typeof parsed.description === "string" ? parsed.description : "",
     };
 
-    return NextResponse.json({ success: true, fields });
+    const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+    const address = (v: unknown) => {
+      const a = v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+      const out = { street: str(a.street), city: str(a.city), state: str(a.state), postalCode: str(a.postalCode), country: str(a.country) };
+      return Object.values(out).some(Boolean) ? out : null;
+    };
+    // Kept apart from `fields` so the existing string-field merge on the client is untouched. The contact is only a
+    // name to resolve against Salesforce; addresses are suggestions the client applies to fields the user hasn't edited.
+    const billingAddress = address(parsed.billingAddress);
+    const billing = {
+      billToContactName: str(parsed.billToContactName),
+      billingAddress,
+      shippingAddress: address(parsed.shippingAddress) ?? (parsed.shippingSameAsBilling === true ? billingAddress : null),
+    };
+
+    return NextResponse.json({ success: true, fields, billing });
   } catch (err) {
     return NextResponse.json({ success: false, error: (err as Error).message }, { status: 500 });
   }

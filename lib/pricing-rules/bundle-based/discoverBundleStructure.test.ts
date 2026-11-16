@@ -23,16 +23,16 @@ function describeWithFields(fields: { name: string; type: string; referenceTo?: 
 let mockClientCounter = 0;
 
 /** §Test-isolation note — `discoverBundleStructure.ts` resolves fields through `describeObjectCached`
- * (lib/salesforce/describe.ts), which caches per `${client.instanceUrl}:${sobject}`. Each mock client here
- * gets its own distinct `instanceUrl` so two tests' mocks never collide on the same cache key (a shared,
- * undefined `instanceUrl` across mocks would let one test's successful Describe leak into another test
+ * (lib/salesforce/describe.ts), which caches per `${client.cacheScope}:${sobject}`. Each mock client here
+ * gets its own distinct `instanceUrl`/`cacheScope` so two tests' mocks never collide on the same cache key (a shared,
+ * undefined `cacheScope` across mocks would let one test's successful Describe leak into another test
  * whose org genuinely doesn't have that object). */
 function buildClient(opts: {
   describeByObject: Record<string, DescribeResult | null>;
   queryByObject: Record<string, Record<string, unknown>[]>;
 }): SalesforceClient {
   return {
-    instanceUrl: `https://mock-org-${mockClientCounter++}.example.com`,
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(`https://mock-org-${mockClientCounter++}.example.com`),
     async describeObject(sobject: string) {
       const d = opts.describeByObject[sobject];
       if (!d) throw new Error(`${sobject} does not exist on this org`);

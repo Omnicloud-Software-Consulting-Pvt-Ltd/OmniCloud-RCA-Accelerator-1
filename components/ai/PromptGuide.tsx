@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import { Ic, tokens } from "@/components/data/quotes/shared";
-import type { PromptGuideConfig, PromptGuideField } from "@/lib/ai/promptGuideConfig";
+import type { PromptGuideConfig, PromptGuideExample, PromptGuideField } from "@/lib/ai/promptGuideConfig";
 
-type Tab = "overview" | "required" | "optional" | "example";
+type Tab = "overview" | "required" | "optional" | "prerequisites" | "example" | "errors";
 
 /**
  * Shared "what can I say here?" help panel for every AI-driven Create
@@ -16,22 +16,27 @@ type Tab = "overview" | "required" | "optional" | "example";
  * its own `setPrompt`.
  */
 export default function PromptGuide({
-  isDark, config, onUseExample, defaultOpen = false,
+  isDark, config, onUseExample, defaultOpen = false, collapsedLabel,
 }: {
   isDark: boolean;
   config: PromptGuideConfig;
   onUseExample?: (prompt: string) => void;
   defaultOpen?: boolean;
+  /** Collapsed header text — defaults to the AI prompt wording; help-only pages pass their own. */
+  collapsedLabel?: string;
 }) {
   const t = tokens(isDark);
   const [open, setOpen] = useState(defaultOpen);
   const [tab, setTab] = useState<Tab>("overview");
+  const examples = [config.example, config.multipleExample, ...(config.moreExamples ?? [])].filter((e): e is NonNullable<typeof e> => !!e);
 
   const tabs: { id: Tab; label: string }[] = [
     { id: "overview", label: "Overview" },
     { id: "required", label: `Required (${config.requiredFields.length})` },
     { id: "optional", label: `Optional (${config.optionalFields.length})` },
-    { id: "example", label: "Example" },
+    ...(config.prerequisites?.length ? [{ id: "prerequisites" as const, label: "Prerequisites" }] : []),
+    { id: "example", label: examples.length > 1 ? "Examples" : "Example" },
+    ...(config.commonErrors?.length || config.nextSteps?.length ? [{ id: "errors" as const, label: "Errors & next steps" }] : []),
   ];
 
   return (
@@ -44,7 +49,7 @@ export default function PromptGuide({
         <div style={{ width: 26, height: 26, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", background: `${t.accent}18`, border: `1px solid ${t.accent}30`, color: t.accent, flexShrink: 0 }}>
           <Ic n="info" s={14} />
         </div>
-        <span style={{ fontSize: 12.5, fontWeight: 800, color: t.heading, letterSpacing: "-0.01em", flex: 1 }}>{open ? config.title : "Prompt Guide — what can I say here?"}</span>
+        <span style={{ fontSize: 12.5, fontWeight: 800, color: t.heading, letterSpacing: "-0.01em", flex: 1 }}>{open ? config.title : collapsedLabel ?? "Prompt Guide — what can I say here?"}</span>
         <span style={{ color: t.dim, flexShrink: 0 }}><Ic n={open ? "chevron-down" : "chevron-right"} s={14} /></span>
       </button>
 
@@ -87,12 +92,17 @@ export default function PromptGuide({
           {tab === "required" && <FieldTable fields={config.requiredFields} tone="required" t={t} />}
           {tab === "optional" && <FieldTable fields={config.optionalFields} tone="optional" t={t} />}
 
+          {tab === "prerequisites" && <FieldList heading="Before you start" items={config.prerequisites ?? []} t={t} />}
+          {tab === "errors" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <FieldList heading="Common errors" items={config.commonErrors ?? []} t={t} />
+              <FieldList heading="Next steps" items={config.nextSteps ?? []} t={t} />
+            </div>
+          )}
+
           {tab === "example" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <ExampleBlock example={config.example} isDark={isDark} t={t} onUseExample={onUseExample} />
-              {config.multipleExample && (
-                <ExampleBlock example={config.multipleExample} isDark={isDark} t={t} onUseExample={onUseExample} />
-              )}
+              {examples.map((ex, i) => <ExampleBlock key={i} example={ex} isDark={isDark} t={t} onUseExample={onUseExample} />)}
               {config.multipleNote && (
                 <div className="flex items-start gap-2" style={{ fontSize: 11.5, color: t.accentBlue }}>
                   <span style={{ flexShrink: 0, marginTop: 1 }}><Ic n="info" s={12} /></span>
@@ -150,7 +160,7 @@ function FieldTable({ fields, tone, t }: { fields: PromptGuideField[]; tone: "re
 }
 
 function ExampleBlock({ example, isDark, t, onUseExample }: {
-  example: { label?: string; prompt: string };
+  example: PromptGuideExample;
   isDark: boolean;
   t: ReturnType<typeof tokens>;
   onUseExample?: (prompt: string) => void;
@@ -160,6 +170,16 @@ function ExampleBlock({ example, isDark, t, onUseExample }: {
       {example.label && <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase", color: t.dim, marginBottom: 5 }}>{example.label}</p>}
       <div style={{ borderRadius: 10, border: `1px solid ${t.border}`, background: t.surfaceAlt, padding: "10px 12px" }}>
         <p style={{ fontSize: 12, color: t.body, margin: 0, whiteSpace: "pre-wrap", fontStyle: "italic" }}>&ldquo;{example.prompt}&rdquo;</p>
+        {example.details && example.details.length > 0 && (
+          <ul style={{ margin: "8px 0 0", padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 3 }}>
+            {example.details.map((d, i) => (
+              <li key={i} className="flex items-start gap-2" style={{ fontSize: 11.5, color: t.body }}>
+                <span style={{ flexShrink: 0, marginTop: 6, width: 4, height: 4, borderRadius: "50%", background: t.accent }} />
+                <span>{d}</span>
+              </li>
+            ))}
+          </ul>
+        )}
         {onUseExample && (
           <button
             onClick={() => onUseExample(example.prompt)}

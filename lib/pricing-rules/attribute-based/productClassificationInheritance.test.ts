@@ -43,7 +43,7 @@ function buildClient(opts: {
   } as unknown as DescribeResult;
 
   return {
-    instanceUrl: opts.instanceUrl,
+    instanceUrl: opts.instanceUrl, cacheScope: opts.instanceUrl,
     async describeSObjects() {
       return { sobjects: opts.globalObjects.map(o => ({ name: o.name, label: o.name, labelPlural: o.name, createable: false, queryable: o.queryable })) };
     },
@@ -67,7 +67,7 @@ test("resolves classification-inherited attributes end to end with non-standard 
   const productId = "01tDESKTOP00000001";
   const classificationId = "0Z6CLASSIFICATION01";
   const client = buildClient({
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     globalObjects: [{ name: "ProductClassification", queryable: true }, { name: "ProductClassificationAttr", queryable: true }],
     product2Fields: [field("Id", "id"), field("ClassRef__c", "reference", { referenceTo: ["ProductClassification"] })],
     pcaFields: [
@@ -94,7 +94,7 @@ test("resolves classification-inherited attributes end to end with non-standard 
 
 test("degrades to supported=false when ProductClassification/ProductClassificationAttr are not queryable on this org", async () => {
   const client = buildClient({
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     globalObjects: [{ name: "SomeUnrelatedObject", queryable: true }],
   });
   const result = await resolveProductClassificationInheritance(client, "01tANYPRODUCT00001");
@@ -104,7 +104,7 @@ test("degrades to supported=false when ProductClassification/ProductClassificati
 
 test("product has no classification set — supported=true, empty map, never throws", async () => {
   const client = buildClient({
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     globalObjects: [{ name: "ProductClassification", queryable: true }, { name: "ProductClassificationAttr", queryable: true }],
     product2Fields: [field("Id", "id"), field("ClassRef__c", "reference", { referenceTo: ["ProductClassification"] })],
     productRow: { ClassRef__c: null },
@@ -119,7 +119,7 @@ test("cross-org arbitrary IDs — completely different, unusually-shaped IDs tha
   const weirdProductId = "zzz-not-a-real-sf-id-format-999";
   const weirdClassificationId = "###classification###";
   const client = buildClient({
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     globalObjects: [{ name: "ProductClassification", queryable: true }, { name: "ProductClassificationAttr", queryable: true }],
     product2Fields: [field("Id", "id"), field("WeirdLookupFieldName999", "reference", { referenceTo: ["ProductClassification"] })],
     pcaFields: [field("Id", "id"), field("WeirdAttrDefRef", "reference", { referenceTo: ["AttributeDefinition"] }), field("WeirdClassRef", "reference", { referenceTo: ["ProductClassification"] })],

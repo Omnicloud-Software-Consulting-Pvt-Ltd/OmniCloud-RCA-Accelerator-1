@@ -9,12 +9,13 @@ import RichTextEditor from "@/components/data/contracts/RichTextEditor";
 import { quoteApiGet, quoteApiPost, quoteApiDelete, toErrorPanelData, type ErrorPanelDataLike } from "@/lib/quotes/client/apiClient";
 import * as templateStore from "@/lib/contracts/documents/localTemplateStore";
 import * as draftStore from "@/lib/contracts/documents/draftDocumentStore";
-import { renderBrandedHtml } from "@/lib/contracts/documents/render";
+import { applyCompanySettings, renderBrandedHtml } from "@/lib/contracts/documents/render";
 import type { DraftDocument } from "@/lib/contracts/documents/draftDocumentStore";
 import type {
   BrandingConfig, CompanySettings, ContractTemplate, FooterElementKey, GeneratedDocument,
   MergeFieldValues, PageOrientation, PageSize, SignatureBlockConfig, SignatureFieldType,
 } from "@/lib/contracts/types";
+import { Z } from "@/lib/ui/overlay";
 
 type Mode = "browse" | "edit";
 type CenterView = "editor" | "preview" | "print" | "pdf";
@@ -74,7 +75,7 @@ function miniBtn(t: Tokens): React.CSSProperties {
 function Modal({ isDark, title, onClose, children }: { isDark: boolean; title: string; onClose: () => void; children: React.ReactNode }) {
   const t = tokens(isDark);
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
+    <div style={{ position: "fixed", inset: 0, zIndex: Z.dialogNested, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
       <div onClick={e => e.stopPropagation()} style={{ width: 420, maxWidth: "90vw", borderRadius: 14, border: `1px solid ${t.border}`, background: t.surface, boxShadow: "0 20px 60px rgba(0,0,0,0.4)" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", borderBottom: `1px solid ${t.border}` }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: t.heading }}>{title}</div>
@@ -142,10 +143,9 @@ function TemplateCard({ isDark, tpl, onUse, onPreview, onDuplicate, onRename, on
  * client-side), and Section B (Generated Documents) lists every draft and
  * every real Salesforce-generated document for this Contract in one table.
  */
-export default function ContractDocuments({ isDark, contractId, onUseForSignature }: {
+export default function ContractDocuments({ isDark, contractId }: {
   isDark: boolean;
   contractId: string;
-  onUseForSignature?: (doc: GeneratedDocument) => void;
 }) {
   const t = tokens(isDark);
   const [mode, setMode] = useState<Mode>("browse");
@@ -223,7 +223,10 @@ export default function ContractDocuments({ isDark, contractId, onUseForSignatur
     return companySettings?.companyName ? { ...base, CompanyName: companySettings.companyName } : base;
   }, [mergeValues, companySettings]);
 
-  const previewHtml = useMemo(() => (draftBranding ? renderBrandedHtml(draftBody, draftBranding, effectiveValues) : ""), [draftBody, draftBranding, effectiveValues]);
+  // The template branding with the saved Company Information applied (name + contact details) — used for the live preview, the
+  // PDF preview and generated documents alike. Saving a template still stores the template’s own branding (draftBranding).
+  const effectiveBranding = useMemo(() => (draftBranding ? applyCompanySettings(draftBranding, companySettings) : null), [draftBranding, companySettings]);
+  const previewHtml = useMemo(() => (effectiveBranding ? renderBrandedHtml(draftBody, effectiveBranding, effectiveValues) : ""), [draftBody, effectiveBranding, effectiveValues]);
 
   function updateBranding(patch: Partial<BrandingConfig>) {
     setDraftBranding(b => (b ? { ...b, ...patch } : b));
@@ -262,7 +265,7 @@ export default function ContractDocuments({ isDark, contractId, onUseForSignatur
     setPdfLoading(true);
     setPdfDataUri(null);
     try {
-      const res = await quoteApiPost<{ pdfBase64: string }>("Render PDF preview", "/api/contracts/templates/preview/pdf", { bodyHtml: draftBody, branding: draftBranding, values: effectiveValues });
+      const res = await quoteApiPost<{ pdfBase64: string }>("Render PDF preview", "/api/contracts/templates/preview/pdf", { bodyHtml: draftBody, branding: effectiveBranding, values: effectiveValues });
       setPdfDataUri(`data:application/pdf;base64,${res.pdfBase64}`);
     } catch (err) {
       setError(toErrorPanelData(err, "Could not render the PDF preview"));
@@ -296,7 +299,7 @@ export default function ContractDocuments({ isDark, contractId, onUseForSignatur
     try {
       await quoteApiPost<{ contentVersionId: string }>(
         `Generate ${format.toUpperCase()}`, `/api/contracts/${contractId}/documents/generate`,
-        { templateName: draftName, bodyHtml: draftBody, branding: draftBranding, companySettings, format, contentDocumentId: regenerateContentDocumentId },
+        { templateName: draftName, bodyHtml: draftBody, branding: effectiveBranding, companySettings, format, contentDocumentId: regenerateContentDocumentId },
       );
       if (editingDraftId) await draftStore.deleteDraft(editingDraftId);
       setDrafts(await draftStore.listDrafts(contractId));
@@ -790,7 +793,10 @@ export default function ContractDocuments({ isDark, contractId, onUseForSignatur
                     </tr>
                   ) : (
                     <tr key={row.doc.contentVersionId} style={{ borderTop: `1px solid ${t.border}` }}>
-                      <td style={{ padding: "8px", fontWeight: 600, color: t.heading }}>{row.doc.title}</td>
+                      <td style={{ padding: "8px", fontWeight: 600, color: t.heading }}>
+                        {row.doc.title}
+                        {row.doc.signature && <span style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 700, padding: "1px 7px", borderRadius: 999, color: "#22C55E", border: "1px solid #22C55E55", background: "#22C55E14" }}>{row.doc.signature.kind === "certificate" ? "DocuSign certificate" : "Signed"}</span>}
+                      </td>
                       <td style={{ padding: "8px" }}>
                         <Pill label={row.doc.isLatest ? "Generated" : "Superseded"} color={row.doc.isLatest ? t.accent : t.dim} isDark={isDark} />
                       </td>
@@ -798,14 +804,13 @@ export default function ContractDocuments({ isDark, contractId, onUseForSignatur
                       <td style={{ padding: "8px", color: t.dim }}>{row.doc.createdByName ?? "—"}</td>
                       <td style={{ padding: "8px", color: t.dim }}>{fmtDateTime(row.doc.createdDate)}</td>
                       <td style={{ padding: "8px", color: t.dim, fontFamily: "ui-monospace, monospace", fontSize: 10 }}>
-                        {/* Previously showed ONLY contentDocumentId under an ambiguous "Salesforce File Id" header — the ContentVersion Id (needed for downloads/API/DocuSign sends) was never visible here at all. Both are now labeled explicitly so they can never be confused with each other again. */}
-                        <div title="ContentVersion.Id — use this for downloads, previews, and the Production Parity Email Test">CV: {row.doc.contentVersionId}</div>
-                        <div title="ContentDocument.Id — used for delete/versioning, NOT for downloads or DocuSign sends">CD: {row.doc.contentDocumentId}</div>
+                        {/* Previously showed ONLY contentDocumentId under an ambiguous "Salesforce File Id" header — the ContentVersion Id (needed for downloads/API) was never visible here at all. Both are now labeled explicitly so they can never be confused with each other again. */}
+                        <div title="ContentVersion.Id — use this for downloads and previews">CV: {row.doc.contentVersionId}</div>
+                        <div title="ContentDocument.Id — used for delete/versioning, NOT for downloads">CD: {row.doc.contentDocumentId}</div>
                       </td>
                       <td style={{ padding: "8px" }}>
                         <div style={{ display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end" }}>
                           {row.doc.isLatest && <button onClick={() => handleRegenerate(row.doc)} style={miniBtn(t)}><Ic n="refresh" s={11} /> Regenerate</button>}
-                          {row.doc.isLatest && onUseForSignature && <button onClick={() => onUseForSignature(row.doc)} style={miniBtn(t)}><Ic n="send" s={11} /> Signature</button>}
                           <button onClick={() => handleView(row.doc)} style={miniBtn(t)}><Ic n="eye" s={11} /></button>
                           <button onClick={() => handleDownload(row.doc)} style={miniBtn(t)}><Ic n="download" s={11} /></button>
                           <button onClick={() => handleDeleteGenerated(row.doc)} disabled={busyId === row.doc.contentVersionId} style={{ ...miniBtn(t), color: t.error, borderColor: t.error + "60" }}><Ic n="trash" s={11} /></button>
@@ -974,16 +979,22 @@ function CompanyInfoEditor({ isDark, settings, onSaved }: { isDark: boolean; set
   const t = tokens(isDark);
   const [draft, setDraft] = useState<CompanySettings | null>(settings);
   const [saving, setSaving] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   async function save() {
     if (!draft) return;
     setSaving(true);
+    setResult(null);
     try {
       const settingsResult = await templateStore.updateCompanySettings({
-        companyName: draft.companyName, address: draft.address, phone: draft.phone, email: draft.email,
-        website: draft.website, taxNumber: draft.taxNumber, registrationNumber: draft.registrationNumber,
+        companyName: draft.companyName.trim(), address: draft.address.trim(), phone: draft.phone.trim(), email: draft.email.trim(),
+        website: draft.website.trim(), taxNumber: draft.taxNumber.trim(), registrationNumber: draft.registrationNumber.trim(),
       });
+      setDraft(settingsResult);
       onSaved(settingsResult);
+      setResult({ ok: true, text: "Saved — the document header and {{CompanyName}} now use this information." });
+    } catch (err) {
+      setResult({ ok: false, text: err instanceof Error ? err.message : "Company information could not be saved." });
     } finally {
       setSaving(false);
     }
@@ -993,7 +1004,7 @@ function CompanyInfoEditor({ isDark, settings, onSaved }: { isDark: boolean; set
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      <div style={{ fontSize: 10.5, color: t.dim }}>Auto-populates {"{{CompanyName}}"} and the document header — Save applies it immediately to the preview.</div>
+      <div style={{ fontSize: 10.5, color: t.dim }}>Shown in the document header (name and contact details) and used for {"{{CompanyName}}"}. Save applies it to the preview and to generated documents. Saved in this browser.</div>
       <Field label="Company Name" isDark={isDark}><input value={draft.companyName} onChange={e => setDraft({ ...draft, companyName: e.target.value })} style={inputStyle(t)} /></Field>
       <Field label="Address" isDark={isDark}><input value={draft.address} onChange={e => setDraft({ ...draft, address: e.target.value })} style={inputStyle(t)} /></Field>
       <Field label="Phone" isDark={isDark}><input value={draft.phone} onChange={e => setDraft({ ...draft, phone: e.target.value })} style={inputStyle(t)} /></Field>
@@ -1002,6 +1013,7 @@ function CompanyInfoEditor({ isDark, settings, onSaved }: { isDark: boolean; set
       <Field label="Tax Number" isDark={isDark}><input value={draft.taxNumber} onChange={e => setDraft({ ...draft, taxNumber: e.target.value })} style={inputStyle(t)} /></Field>
       <Field label="Registration Number" isDark={isDark}><input value={draft.registrationNumber} onChange={e => setDraft({ ...draft, registrationNumber: e.target.value })} style={inputStyle(t)} /></Field>
       <PrimaryButton label={saving ? "Saving…" : "Save Company Info"} icon="save" isDark={isDark} disabled={saving} onClick={save} />
+      {result && <div role="status" style={{ fontSize: 11.5, fontWeight: 600, color: result.ok ? "#00C896" : t.error }}>{result.text}</div>}
     </div>
   );
 }

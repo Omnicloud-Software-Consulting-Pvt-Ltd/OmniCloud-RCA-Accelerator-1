@@ -4,6 +4,8 @@ import { useState, type CSSProperties, type ReactNode } from "react";
 import { Ic, tokens, Section, Pill, PrimaryButton, GhostButton, EmptyState, Spinner, formatCurrency } from "./shared";
 import AttributeMappingConfigurator, { type AttributeMappingOverridesPayload } from "./AttributeMappingConfigurator";
 import { ExecutionLogPanel, ApiJsonDetailsPanel } from "./CreationAuditPanels";
+import { useNotify } from "@/components/notifications/SalesforceSuccessContext";
+import { announcePricingProcedure } from "@/components/notifications/announce";
 import { loadSession } from "@/lib/auth/session";
 import { buildAttributePricingSalesforceRecords, type SalesforceRecordLink } from "@/lib/pricing-rules/attribute-based/create/salesforceRecordLinks";
 import type {
@@ -19,6 +21,7 @@ import type {
 } from "@/lib/pricing-rules/attribute-based/types";
 import type { CreateAttributePricingResult, CreateStreamEvent } from "@/lib/pricing-rules/attribute-based/create/types";
 import type { MissingAttributeConfigInfo, AdjustmentConflict, AdjustmentDecisionOverride } from "@/lib/pricing-rules/attribute-based/create/nativeRecords";
+import { WarningsDisclosure } from "@/components/ui/Disclosure";
 
 /** Mirrors `adjustmentDecisionKey` from nativeRecords.ts (a server-only module — never imported as a
  * runtime value here) byte-for-byte; must never drift from that server-side key convention. */
@@ -271,6 +274,7 @@ export default function AttributeBasedPricingCreate({ isDark }: { isDark: boolea
   const [creating, setCreating] = useState(false);
   const [createEvents, setCreateEvents] = useState<{ step: string; status: string; detail?: string }[]>([]);
   const [createResult, setCreateResult] = useState<CreateAttributePricingResult | null>(null);
+  const notifier = useNotify();
   const [createRequestError, setCreateRequestError] = useState<string | null>(null);
   /** §Phase 9/24 — decisions the user has already made for previously-reported adjustment-value
    * conflicts, keyed by `adjustmentDecisionKey(attributeName, value)`. Accumulates across resubmits (a
@@ -379,6 +383,7 @@ export default function AttributeBasedPricingCreate({ isDark }: { isDark: boolea
         event => setCreateEvents(prev => [...prev, event]),
       );
       setCreateResult(res);
+      announcePricingProcedure(notifier, res, procedureName);
     } catch (err) {
       setCreateRequestError(err instanceof Error ? err.message : "Network error — could not reach the server.");
     } finally {
@@ -427,6 +432,7 @@ export default function AttributeBasedPricingCreate({ isDark }: { isDark: boolea
           placeholder={PROMPT_PLACEHOLDER}
           style={textareaStyle(t)}
         />
+
 
         {/* ── Prompt Guide ── */}
         <Section title="Prompt Guide" icon="info" isDark={isDark} defaultOpen={false}>
@@ -1044,16 +1050,7 @@ function ResultStage({
             </div>
           )}
 
-          {result.warnings.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {result.warnings.map((w, i) => (
-                <div key={i} className="flex items-start gap-2" style={{ fontSize: 11.5, color: t.warn }}>
-                  <span style={{ flexShrink: 0, marginTop: 1 }}><Ic n="alert" s={12} /></span>
-                  <span>{w}</span>
-                </div>
-              ))}
-            </div>
-          )}
+          <WarningsDisclosure isDark={isDark} warnings={result.warnings ?? []} />
 
           {/* ── Part 6 — Next: moves from the preview into the separate Final Confirmation step ── */}
           {!reviewed && !confirmed && (
@@ -1598,16 +1595,7 @@ function CreationSummary({ isDark, result }: { isDark: boolean; result: CreateAt
       <div style={{ fontSize: 12.5, color: t.body }}><strong style={{ color: t.heading }}>Existing Values Reused:</strong> {result.existingValuesReused?.length ?? 0}</div>
       <div style={{ fontSize: 12.5, color: t.body }}><strong style={{ color: t.heading }}>New Values Created:</strong> {result.createdValues?.length ?? 0}</div>
       <div style={{ fontSize: 12.5, color: t.body }}><strong style={{ color: t.heading }}>Excluded Attributes:</strong> {result.excludedAttributes?.length ?? 0}</div>
-      {result.warnings.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 4 }}>
-          {result.warnings.map((w, i) => (
-            <div key={i} className="flex items-start gap-2" style={{ fontSize: 11.5, color: t.warn }}>
-              <span style={{ flexShrink: 0, marginTop: 1 }}><Ic n="alert" s={12} /></span>
-              <span>{w}</span>
-            </div>
-          ))}
-        </div>
-      )}
+      <WarningsDisclosure isDark={isDark} warnings={result.warnings ?? []} />
       <SalesforceRecordsSection isDark={isDark} result={result} />
     </div>
   );

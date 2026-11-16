@@ -90,7 +90,7 @@ export default function BundlesDashboard({ isDark, onNavigate }: { isDark: boole
       id: "bundles",
       label: "Bundles",
       icon: "package",
-      groupLabel: "Revenue Cloud",
+      groupLabel: "Revenue Cloud Core",
       color: ACCENT,
       stats,
       actions,

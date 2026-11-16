@@ -38,6 +38,7 @@
  * runtime assertion.
  */
 import type { SalesforceClient } from "@/lib/salesforce/client";
+import { soqlEscape } from "@/lib/salesforce/client";
 
 export const PRICE_BOOK_DECISION_TABLE_LABEL = "Price Book Entries V2";
 export const TIERED_ADJUSTMENT_DECISION_TABLE_LABEL = "Tiered Adjustment Entries";
@@ -205,6 +206,109 @@ export function resolveTieredAdjustmentEntriesDecisionTable(client: SalesforceCl
 }
 export function resolveVolumeDiscountEntriesDecisionTable(client: SalesforceClient): Promise<ExactDecisionTableResolution> {
   return resolveExactDecisionTableByLabel(client, VOLUME_DISCOUNT_DECISION_TABLE_LABEL);
+}
+
+/* ── Pricing type → Decision Table (Tier-Based / Volume-Based) ── */
+
+export type TierVolumePricingType = "tier-based" | "volume-based";
+
+/** The one Decision Table each pricing type's adjustment step must execute. Deterministic; no fallback. */
+export const PRICING_TYPE_DECISION_TABLE: Record<TierVolumePricingType, string> = {
+  "tier-based": TIERED_ADJUSTMENT_DECISION_TABLE_LABEL,
+  "volume-based": VOLUME_DISCOUNT_DECISION_TABLE_LABEL,
+};
+
+const PRICING_TYPE_TITLE: Record<TierVolumePricingType, string> = { "tier-based": "Tier-Based", "volume-based": "Volume-Based" };
+
+export function requiredDecisionTableMessage(pricingType: TierVolumePricingType): string {
+  return `${PRICING_TYPE_TITLE[pricingType]} Pricing requires the Decision Table '${PRICING_TYPE_DECISION_TABLE[pricingType]}', but it could not be resolved in Salesforce.`;
+}
+
+/**
+ * The column signature that distinguishes the two tables (both are sourced from PriceAdjustmentTier, so the
+ * source object alone can't): Tiered Adjustment Entries RETURNS the tier bounds, Volume Discount Entries
+ * MATCHES on them. A table that has the right name but the other table's shape is rejected.
+ */
+const EXPECTED_COLUMNS: Record<TierVolumePricingType, { inputs: string[]; outputs: string[]; notInputs: string[] }> = {
+  "tier-based": {
+    inputs: ["PriceAdjustmentScheduleId", "Product2Id", "ProductSellingModelId"],
+    outputs: ["TierType", "TierValue", "LowerBound", "UpperBound"],
+    notInputs: ["LowerBound", "UpperBound"],
+  },
+  "volume-based": {
+    inputs: ["PriceAdjustmentScheduleId", "Product2Id", "ProductSellingModelId", "LowerBound", "UpperBound"],
+    outputs: ["TierType", "TierValue"],
+    notInputs: [],
+  },
+};
+
+export interface PricingDecisionTableValidation {
+  ok: boolean;
+  problems: string[];
+  status: string | null;
+  inputs: string[];
+  outputs: string[];
+  /** Rows of the table's source object (PriceAdjustmentTier) — informational; the pipeline creates its own. */
+  existingEntryCount: number | null;
+}
+
+/** Pure column-shape check, exported for tests. */
+export function checkPricingDecisionTableColumns(pricingType: TierVolumePricingType, inputs: string[], outputs: string[]): string[] {
+  const expected = EXPECTED_COLUMNS[pricingType];
+  const problems: string[] = [];
+  const missingIn = expected.inputs.filter(c => !inputs.includes(c));
+  const missingOut = expected.outputs.filter(c => !outputs.includes(c));
+  const wrongIn = expected.notInputs.filter(c => inputs.includes(c));
+  if (missingIn.length || missingOut.length || wrongIn.length) {
+    problems.push(
+      `Columns don't match '${PRICING_TYPE_DECISION_TABLE[pricingType]}'. Expected INPUT ⊇ [${expected.inputs.join(", ")}]${expected.notInputs.length ? ` without [${expected.notInputs.join(", ")}]` : ""} and OUTPUT ⊇ [${expected.outputs.join(", ")}]; ` +
+      `actual INPUT [${inputs.join(", ") || "none"}], OUTPUT [${outputs.join(", ") || "none"}].`,
+    );
+  }
+  return problems;
+}
+
+/** Validates the resolved table against Salesforce before any Expression Set is generated from it. */
+export async function validatePricingDecisionTable(
+  client: SalesforceClient, pricingType: TierVolumePricingType, table: ExactDecisionTableRecord,
+): Promise<PricingDecisionTableValidation> {
+  const problems: string[] = [];
+  let status: string | null = null;
+  try {
+    status = (await client.query<{ Status: string | null }>(`SELECT Status FROM DecisionTable WHERE Id = '${soqlEscape(table.id)}'`)).records[0]?.Status ?? null;
+  } catch { /* Status isn't exposed on every org — not treated as fatal */ }
+  if (status !== null && status !== "Active") problems.push(`Status is "${status}", expected "Active".`);
+
+  let inputs: string[] = [];
+  let outputs: string[] = [];
+  try {
+    const params = (await client.query<{ FieldName: string; Usage: string }>(
+      `SELECT FieldName, Usage FROM DecisionTableParameter WHERE DecisionTableId = '${soqlEscape(table.id)}'`,
+    )).records;
+    inputs = params.filter(p => p.Usage === "INPUT").map(p => p.FieldName);
+    outputs = params.filter(p => p.Usage === "OUTPUT").map(p => p.FieldName);
+    problems.push(...checkPricingDecisionTableColumns(pricingType, inputs, outputs));
+  } catch (err) {
+    problems.push(`Could not read the table's columns: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  let existingEntryCount: number | null = null;
+  if (table.sourceObject) {
+    try { existingEntryCount = (await client.query(`SELECT COUNT() FROM ${table.sourceObject}`)).totalSize; } catch { /* informational only */ }
+  }
+  return { ok: problems.length === 0, problems, status, inputs, outputs, existingEntryCount };
+}
+
+/**
+ * The `LookUpName` a step must carry for a resolved table. Salesforce's own standard pricing procedure uses
+ * the table's real name (e.g. "Tiered Adjustment Entries"), which on these orgs lives in SetupName — while
+ * MasterLabel is the SAME generic placeholder ("Decision Tables") on every table. Preferring MasterLabel
+ * produced procedures whose lookup read "Decision Tables" instead of the table they execute.
+ */
+export function decisionTableLookupName(resolution: Extract<ExactDecisionTableResolution, { status: "resolved" }>, semanticName: string): string {
+  const t = resolution.table;
+  if (resolution.mechanism === "exact-master-label" || resolution.mechanism === "exact-setup-name") return semanticName;
+  return t.setupName ?? t.developerName ?? semanticName;
 }
 
 /** Formats any non-"resolved" outcome into a single human-readable diagnostic string, including the full

@@ -19,7 +19,7 @@ export async function loadProductDetail(client: SalesforceClient, id: string): P
   let optionalFields: string[] = [];
   try {
     const names = new Set((await client.describeObject("Product2")).fields.map(f => f.name));
-    optionalFields = ["UnitOfMeasureId", "QuantityUnitOfMeasure", "BasedOnId"].filter(f => names.has(f));
+    optionalFields = ["UnitOfMeasureId", "QuantityUnitOfMeasure", "BasedOnId", "TaxPolicyId", "BillingPolicyId"].filter(f => names.has(f));
   } catch { /* describe unavailable — read only the core fields */ }
   const record = await client.getRecord("Product2", id, ["Id", "Name", "ProductCode", "Family", "Description", "IsActive", "Type", ...optionalFields]);
 
@@ -37,6 +37,15 @@ export async function loadProductDetail(client: SalesforceClient, id: string): P
       classification = c.records[0]?.Name ?? "";
     } catch { /* ProductClassification not queryable — leave blank */ }
   }
+
+  // Tax / Billing Policy (the only tax/billing Product2 fields) — names for the edit form; related treatments are shown in Configuration.
+  const policyName = async (object: string, id: unknown) => {
+    if (typeof id !== "string" || !id) return "";
+    try { return (await client.query<{ Name: string }>(`SELECT Name FROM ${object} WHERE Id = '${soqlEscape(id)}' LIMIT 1`)).records[0]?.Name ?? ""; }
+    catch { return ""; }
+  };
+  const taxPolicy = await policyName("TaxPolicy", record.TaxPolicyId);
+  const billingPolicy = await policyName("BillingPolicy", record.BillingPolicyId);
 
   let category = "";
   let catalog = "";
@@ -102,5 +111,7 @@ export async function loadProductDetail(client: SalesforceClient, id: string): P
     productType: (record.Type as string) === "Bundle" ? "bundle" : undefined,
     unitOfMeasure: unitOfMeasure || undefined,
     classification: classification || undefined,
+    taxPolicy: taxPolicy || undefined,
+    billingPolicy: billingPolicy || undefined,
   };
 }

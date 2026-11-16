@@ -68,7 +68,7 @@ function baseArgs() {
 test("TEST 1 — the exact live bug: a compatible existing schedule with IsActive=false is activated (not just silently reused)", async () => {
   const updateLog: { object: string; id: string; payload: Record<string, unknown> }[] = [];
   const client = {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeObject() { return PAS_DESCRIBE; },
     async query(soql: string) {
       if (soql.includes("FROM Pricebook2")) return { records: [{ Id: "01sPRICEBOOK0000A" }] };
@@ -99,7 +99,7 @@ test("TEST 1 — the exact live bug: a compatible existing schedule with IsActiv
 test("TEST 2 — a compatible existing schedule that is ALREADY active is reused with zero extra writes (no spurious update)", async () => {
   const updateLog: unknown[] = [];
   const client = {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeObject() { return PAS_DESCRIBE; },
     async query(soql: string) {
       if (soql.includes("FROM Pricebook2")) return { records: [{ Id: "01sPRICEBOOK0000A" }] };
@@ -119,7 +119,7 @@ test("TEST 2 — a compatible existing schedule that is ALREADY active is reused
 
 test("TEST 3 — activation attempt fails (e.g. a genuinely empty reused schedule Salesforce still refuses to activate): non-fatal, schedule Id is still returned, failure is reported not thrown", async () => {
   const client = {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeObject() { return PAS_DESCRIBE; },
     async query(soql: string) {
       if (soql.includes("FROM Pricebook2")) return { records: [{ Id: "01sPRICEBOOK0000A" }] };
@@ -140,7 +140,7 @@ test("TEST 3 — activation attempt fails (e.g. a genuinely empty reused schedul
 test("TEST 4 — no compatible existing schedule: creates a new one (existing, unchanged behavior) — never activated on create, per the org's own spurious-validation constraint", async () => {
   const createLog: { object: string; payload: Record<string, unknown> }[] = [];
   const client = {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeObject() { return PAS_DESCRIBE; },
     async query(soql: string) {
       if (soql.includes("FROM Pricebook2")) return { records: [{ Id: "01sPRICEBOOK0000A" }] };
@@ -165,7 +165,7 @@ test("TEST 4 — no compatible existing schedule: creates a new one (existing, u
 
 test("TEST 5 — this org's PriceAdjustmentSchedule schema has no IsActive field at all: activation check is skipped entirely, never crashes", async () => {
   const client = {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeObject() { return PAS_DESCRIBE_NO_ISACTIVE; },
     async query(soql: string) {
       if (soql.includes("FROM Pricebook2")) return { records: [{ Id: "01sPRICEBOOK0000A" }] };
@@ -184,7 +184,7 @@ test("TEST 5 — this org's PriceAdjustmentSchedule schema has no IsActive field
 test("TEST 6 — arbitrary, unusually-shaped Salesforce Ids throughout prove nothing is hardcoded (Laptop/Monitor/any future product)", async () => {
   const updateLog: { id: string }[] = [];
   const client = {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeObject() { return PAS_DESCRIBE; },
     async query(soql: string) {
       if (soql.includes("FROM Pricebook2")) return { records: [{ Id: "###weird-pricebook###" }] };

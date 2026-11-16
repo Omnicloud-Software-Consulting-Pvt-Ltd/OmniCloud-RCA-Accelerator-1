@@ -19,6 +19,7 @@ import {
   type FlatDraftItem,
 } from "@/lib/quotes/bundles/relationshipCreate";
 import { fetchCatalogProductsByIds } from "@/lib/quotes/catalog/search";
+import { choosePricebookEntry, fetchActivePricebookEntries } from "@/lib/quotes/catalog/pricebookEntries";
 import { resolveSellingModelsBatch } from "@/lib/quotes/catalog/sellingModel";
 import { resolveProductAttributesBatch } from "@/lib/quotes/catalog/attributes";
 import { validateBillingTreatment } from "@/lib/quotes/billing/treatment";
@@ -385,8 +386,10 @@ export async function createQuoteLineItems(
   // payloads) ever reads pricebookEntryId — so the correction propagates
   // to every payload for free, with nothing left referencing the stale Id.
   logStep("Resolve PricebookEntry", "start", { pricebookId }, null, "Re-resolving each line's active PricebookEntry (and its current List Price) for this price book — never trusting the draft's stored value.");
-  const pricebookEntryCorrections: { product: string; previous: string; resolved: string }[] = [];
+  const pricebookEntryCorrections: { product: string; previous: string; resolved: string; reason?: string }[] = [];
   const listPriceCorrections: { product: string; previous: number; resolved: number }[] = [];
+  // Every active entry per product (one per selling model), so a line keeps the entry of ITS selling model.
+  const activeEntries = await fetchActivePricebookEntries(client, pricebookId, distinctProductIds);
   for (const item of flatItems) {
     const fresh = freshCatalog.get(item.draft.productId);
     if (!fresh) {
@@ -401,18 +404,29 @@ export async function createQuoteLineItems(
         productId: item.draft.productId, productName: item.draft.product.name, path: item.path, code: "PRICEBOOK_ENTRY_UNRESOLVED",
       });
     }
-    if (fresh.pricebookEntryId !== item.draft.product.pricebookEntryId) {
-      pricebookEntryCorrections.push({ product: item.draft.product.name, previous: item.draft.product.pricebookEntryId, resolved: fresh.pricebookEntryId });
-      item.draft.product = { ...item.draft.product, pricebookEntryId: fresh.pricebookEntryId };
+    const entries = activeEntries.get(item.draft.productId) ?? [];
+    const choice = choosePricebookEntry(entries, item.draft.product.pricebookEntryId, item.draft.sellingModelId ?? null, { legacyFallback: entries.find(e => e.pricebookEntryId === fresh.pricebookEntryId) ?? null });
+    if (!choice.ok) {
+      return fail({
+        currentStep: "Resolve PricebookEntry", validationRule: "the line's PricebookEntry must belong to its selling model (Salesforce derives the line's selling model from it)",
+        reason: `"${item.draft.product.name}": ${choice.reason}`,
+        missingField: "PricebookEntryId", invalidValue: item.draft.product.pricebookEntryId, salesforceObject: "PricebookEntry",
+        productId: item.draft.productId, productName: item.draft.product.name, path: item.path, code: `PRICEBOOK_ENTRY_${choice.code}`,
+      });
+    }
+    const resolvedEntry = { pricebookEntryId: choice.entry.pricebookEntryId, listPrice: choice.entry.listPrice };
+    if (resolvedEntry.pricebookEntryId !== item.draft.product.pricebookEntryId) {
+      pricebookEntryCorrections.push({ product: item.draft.product.name, previous: item.draft.product.pricebookEntryId, resolved: resolvedEntry.pricebookEntryId, reason: choice.reason });
+      item.draft.product = { ...item.draft.product, pricebookEntryId: resolvedEntry.pricebookEntryId };
     }
     // §The user's explicit "never $0" directive is only as authoritative as
     // the List Price it's computed from — re-resolve it from Salesforce
     // right before pricing, the same way pricebookEntryId already is,
     // rather than trusting a value captured whenever the product was added
     // to this session (which may have gone stale).
-    if (fresh.listPrice !== item.draft.product.listPrice) {
+    if (resolvedEntry.listPrice !== item.draft.product.listPrice) {
       const previousListPrice = item.draft.product.listPrice;
-      listPriceCorrections.push({ product: item.draft.product.name, previous: previousListPrice, resolved: fresh.listPrice });
+      listPriceCorrections.push({ product: item.draft.product.name, previous: previousListPrice, resolved: resolvedEntry.listPrice });
       // draft.unitPrice defaults to the catalog List Price at Add-time but,
       // on a ManualPricing org, may since have been deliberately edited by
       // the user via the visible "Unit $" field — only correct it in
@@ -420,8 +434,8 @@ export async function createQuoteLineItems(
       // the STALE list price (i.e. it was never manually touched); a real
       // manual edit must never be silently discarded by this correction.
       const unitPriceWasUntouched = item.draft.unitPrice === previousListPrice;
-      item.draft.product = { ...item.draft.product, listPrice: fresh.listPrice };
-      if (unitPriceWasUntouched) item.draft.unitPrice = fresh.listPrice;
+      item.draft.product = { ...item.draft.product, listPrice: resolvedEntry.listPrice };
+      if (unitPriceWasUntouched) item.draft.unitPrice = resolvedEntry.listPrice;
     }
   }
   logStep(

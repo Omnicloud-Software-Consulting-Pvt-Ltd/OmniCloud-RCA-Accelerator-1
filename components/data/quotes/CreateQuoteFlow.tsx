@@ -22,6 +22,7 @@ import { sumDraftTreeTotal, flattenDraftTree } from "@/lib/quotes/pricing/calc";
 import type {
   BundleHierarchyStep, LineItemCreationResult, LineItemFailureDetail, QuoteCreateResult, QuoteFieldSchema, QuoteFormData, QuoteLineItemDraft,
 } from "@/lib/quotes/types";
+import { WarningsDisclosure } from "@/components/ui/Disclosure";
 
 type Step = "details" | "lines" | "preview" | "success";
 
@@ -325,7 +326,7 @@ export default function CreateQuoteFlow({ isDark }: { isDark: boolean }) {
           <PrimaryButton label={submittingLines ? "Creating…" : "Create Quote"} icon="check" isDark={isDark} disabled={submittingLines} onClick={handleSubmitLines} />
         )}
         {step === "success" && (
-          <PrimaryButton label="Create Another Quote" icon="plus" isDark={isDark} onClick={handleStartOver} />
+          <GhostButton label="Create Another Quote" icon="plus" isDark={isDark} onClick={handleStartOver} />
         )}
       </div>
     </FooterBar>
@@ -460,16 +461,7 @@ export default function CreateQuoteFlow({ isDark }: { isDark: boolean }) {
 
         {step === "lines" && quoteResult && pricebookValue?.id && (
           <>
-            {quoteWarnings.length > 0 && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 14px", borderRadius: 10, border: `1px solid ${t.warn}50`, background: `${t.warn}10` }}>
-                {quoteWarnings.map((w, i) => (
-                  <div key={i} style={{ display: "flex", gap: 8, fontSize: 12, color: t.body }}>
-                    <span style={{ flexShrink: 0, color: t.warn }}><Ic n="info" s={13} /></span>
-                    <span>{w}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+            <WarningsDisclosure isDark={isDark} warnings={quoteWarnings} />
             <LineItemsEditor isDark={isDark} pricebookId={pricebookValue.id} onChange={(roots, valid, isConfiguring) => { setLineRoots(roots); setLinesValid(valid); setLinesConfiguring(isConfiguring); }} initialRoots={lineRoots} />
           </>
         )}
@@ -562,7 +554,7 @@ export default function CreateQuoteFlow({ isDark }: { isDark: boolean }) {
                     <div style={{ marginTop: 2, color: t.dim }}>{lineItemResult.repricing.transcript.rawText || "(empty body)"}</div>
                   </div>
                 )}
-                <CodeBlock isDark={isDark} data={lineItemResult.repricing} defaultExpanded />
+                <CodeBlock isDark={isDark} data={lineItemResult.repricing} />
               </Section>
             )}
             {lineItemResult.pricingTrace.length > 0 && (

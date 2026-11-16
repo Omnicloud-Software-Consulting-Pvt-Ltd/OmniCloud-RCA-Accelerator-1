@@ -9,6 +9,7 @@ import { useSalesforceSuccess } from "@/components/notifications/SalesforceSucce
 import type { BundleDetail } from "@/lib/bundles/server/bundleDetail";
 import type { BundleComponentRow } from "@/lib/bundles/server/relationships";
 import type { CatalogProduct } from "@/lib/quotes/types";
+import { Z } from "@/lib/ui/overlay";
 
 interface EditFields {
   name: string; productCode: string; description: string; family: string;
@@ -231,6 +232,7 @@ export default function BundleEditWorkspace({ isDark, bundleId, onCancel, onSave
           title: "Bundle Updated Successfully",
           message: `${record.recordName} has been successfully updated in Salesforce.`,
           records: [record],
+          module: "Bundles",
         });
       }
       onSaved();
@@ -479,7 +481,7 @@ export default function BundleEditWorkspace({ isDark, bundleId, onCancel, onSave
 
       {/* Unsaved changes guard */}
       {confirmLeave && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: Z.dialog }}>
           <div style={{ width: 380, borderRadius: 14, background: t.surface, border: `1px solid ${t.border}`, padding: 20 }}>
             <p style={{ fontSize: 14, fontWeight: 700, color: t.heading, marginBottom: 8 }}>Unsaved Changes</p>
             <p style={{ fontSize: 12.5, color: t.dim, marginBottom: 16 }}>You have unsaved bundle changes. Are you sure you want to leave?</p>

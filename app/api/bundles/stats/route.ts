@@ -88,7 +88,7 @@ export async function GET(req: NextRequest) {
   const { client } = auth;
 
   try {
-    const cacheKey = client.instanceUrl;
+    const cacheKey = client.cacheScope;
     const payload = await bundleStatsCache.getOrCompute(cacheKey, () => computeBundleStats(client));
     logSfCacheEvent({
       endpoint: "/api/bundles/stats", caller: "computeBundleStats", cacheKey,

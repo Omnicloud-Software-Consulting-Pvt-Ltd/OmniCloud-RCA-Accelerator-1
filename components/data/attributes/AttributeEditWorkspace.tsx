@@ -7,6 +7,7 @@ import { loadSession } from "@/lib/auth/session";
 import { toCreatedSalesforceRecord } from "@/lib/salesforce/recordUrl";
 import { useSalesforceSuccess } from "@/components/notifications/SalesforceSuccessContext";
 import type { AttributeDetail, AttributePicklistValueRow, AttributeProductConfig } from "@/lib/attributes/types";
+import { Z } from "@/lib/ui/overlay";
 
 interface EditFields {
   name: string;
@@ -513,7 +514,7 @@ export default function AttributeEditWorkspace({ isDark, attributeId, onCancel, 
 
       {/* Unsaved changes guard */}
       {confirmLeave && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: Z.dialog }}>
           <div style={{ width: 380, borderRadius: 14, background: t.surface, border: `1px solid ${t.border}`, padding: 20 }}>
             <p style={{ fontSize: 14, fontWeight: 700, color: t.heading, marginBottom: 8 }}>Unsaved Changes</p>
             <p style={{ fontSize: 12.5, color: t.dim, marginBottom: 16 }}>You have unsaved attribute changes. Are you sure you want to leave?</p>

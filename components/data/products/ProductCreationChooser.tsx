@@ -28,7 +28,8 @@ export default function ProductCreationChooser({
           Create one product with the full AI-assisted workspace, or describe several products in a single prompt and create them all at once.
         </p>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16, maxWidth: 800 }}>
+        {/* Centered in the content area; side by side on desktop, stacking on narrow screens via auto-fit. */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16, maxWidth: 800, width: "100%", marginLeft: "auto", marginRight: "auto" }}>
           <ChoiceCard
             isDark={isDark}
             icon="package"

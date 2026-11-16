@@ -30,7 +30,7 @@ const contractListSchemaCache = createTTLCache<ContractListFieldSchema>();
  *     builder can refuse to ever treat it as writable.
  */
 export async function resolveContractFieldSchema(client: SalesforceClient): Promise<ContractFieldSchema> {
-  return contractSchemaCache.getOrCompute(client.instanceUrl, async () => {
+  return contractSchemaCache.getOrCompute(client.cacheScope, async () => {
     const describe = await describeObjectCached(client, "Contract");
 
     const accountField = findReferenceFieldByTargetObject(describe, "Account", { requireCreateable: true })
@@ -114,7 +114,7 @@ export async function resolveContractFieldSchema(client: SalesforceClient): Prom
  * parent traversal (never guessed by stripping "Id").
  */
 export async function resolveContractListFieldSchema(client: SalesforceClient): Promise<ContractListFieldSchema> {
-  return contractListSchemaCache.getOrCompute(client.instanceUrl, async () => {
+  return contractListSchemaCache.getOrCompute(client.cacheScope, async () => {
     const describe = await describeObjectCached(client, "Contract");
 
     const contractNumberField = findFieldByExactName(describe, "ContractNumber") ?? findFieldByLabel(describe, /^contract number$/i);

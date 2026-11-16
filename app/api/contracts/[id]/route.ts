@@ -5,6 +5,7 @@ import { checkContractMutability } from "@/lib/contracts/metadata/contractStatus
 import { resolveReferenceByName } from "@/lib/quotes/quote/reference";
 import { verifyContactById } from "@/lib/contracts/contract/contact";
 import { buildContractUpdatePayload } from "@/lib/contracts/contract/payload";
+import { resolveRecordDisplay } from "@/lib/salesforce/recordReferences";
 import type { ContractDetail, ContractFormData } from "@/lib/contracts/types";
 
 type Params = { params: Promise<{ id: string }> };
@@ -21,9 +22,13 @@ export async function GET(req: NextRequest, { params }: Params) {
   try {
     const schema = await resolveContractFieldSchema(client);
     const record = await client.getRecord("Contract", id);
-    const mutability = await checkContractMutability(client, id);
+    const [mutability, display] = await Promise.all([
+      checkContractMutability(client, id),
+      resolveRecordDisplay(client, "Contract", id, record),
+    ]);
 
     const detail: ContractDetail = {
+      ...display,
       id,
       contractNumber: schema.contractNumberField ? ((record[schema.contractNumberField.apiName] as string) ?? null) : null,
       record,

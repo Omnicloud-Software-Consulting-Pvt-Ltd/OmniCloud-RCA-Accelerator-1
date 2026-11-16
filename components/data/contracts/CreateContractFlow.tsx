@@ -19,6 +19,7 @@ import { toCreatedSalesforceRecord } from "@/lib/salesforce/recordUrl";
 import { useSalesforceSuccess } from "@/components/notifications/SalesforceSuccessContext";
 import type { BundleHierarchyStep } from "@/lib/quotes/types";
 import type { ContractCreateResult, ContractFieldSchema, ContractFormData } from "@/lib/contracts/types";
+import { WarningsDisclosure } from "@/components/ui/Disclosure";
 
 type Step = "details" | "success";
 
@@ -334,7 +335,7 @@ export default function CreateContractFlow({ isDark, onViewContract }: {
                       </Field>
                     )}
                     {schema?.companySignedDateField && (
-                      <Field label={schema.companySignedDateField.label} isDark={isDark} hint="Not required at creation — populated by the e-signature completion flow.">
+                      <Field label={schema.companySignedDateField.label} isDark={isDark} hint="Not required at creation.">
                         <input type="date" value={formData.companySignedDate} onChange={e => setFormData(f => ({ ...f, companySignedDate: e.target.value }))} style={inputStyle(t)} />
                       </Field>
                     )}
@@ -357,7 +358,7 @@ export default function CreateContractFlow({ isDark, onViewContract }: {
                       </Field>
                     )}
                     {schema?.customerSignedDateField && (
-                      <Field label={schema.customerSignedDateField.label} isDark={isDark} hint="Not required at creation — populated by the e-signature completion flow.">
+                      <Field label={schema.customerSignedDateField.label} isDark={isDark} hint="Not required at creation.">
                         <input type="date" value={formData.customerSignedDate} onChange={e => setFormData(f => ({ ...f, customerSignedDate: e.target.value }))} style={inputStyle(t)} />
                       </Field>
                     )}
@@ -404,20 +405,11 @@ export default function CreateContractFlow({ isDark, onViewContract }: {
               )}
             </div>
 
-            {contractWarnings.length > 0 && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 14px", borderRadius: 10, border: `1px solid ${t.warn}50`, background: `${t.warn}10` }}>
-                {contractWarnings.map((w, i) => (
-                  <div key={i} style={{ display: "flex", gap: 8, fontSize: 12, color: t.body }}>
-                    <span style={{ flexShrink: 0, color: t.warn }}><Ic n="info" s={13} /></span>
-                    <span>{w}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+            <WarningsDisclosure isDark={isDark} warnings={contractWarnings} />
 
             <Section title="What's next" icon="arrow-right" isDark={isDark}>
               <div style={{ fontSize: 12.5, color: t.body }}>
-                Click <strong>Next Step</strong> below to open this Contract's Documents tab — pick a template, generate a branded document, and send it for e-signature via DocuSign.
+                Click <strong>Next Step</strong> below to open this Contract's Documents tab — pick a template and generate a branded document.
               </div>
             </Section>
 

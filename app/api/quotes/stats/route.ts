@@ -92,7 +92,7 @@ export async function GET(req: NextRequest) {
   const { client } = auth;
 
   try {
-    const cacheKey = client.instanceUrl;
+    const cacheKey = client.cacheScope;
     const payload = await quoteStatsCache.getOrCompute(cacheKey, () => computeQuoteStats(client));
     logSfCacheEvent({
       endpoint: "/api/quotes/stats", caller: "computeQuoteStats", cacheKey,

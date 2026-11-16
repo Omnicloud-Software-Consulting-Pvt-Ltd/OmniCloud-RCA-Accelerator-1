@@ -18,10 +18,11 @@ export type LineItemObjectName = "QuoteLineItem" | "OrderItem";
 const CADENCE_MAP: [string, RegExp][] = [
   ["milestone", /milestone/i],
   ["semi-annual", /semi[- ]?annual(ly)?|semiannual(ly)?|half[- ]?year(ly)?/i],
-  ["monthly", /\bmonth(ly)?\b/i],
-  ["quarterly", /\bquarter(ly)?\b/i],
+  // Plural units included: ProductSellingModel.PricingTermUnit's real values are "Months" / "Weekly" / "Quarterly" / "Annual" (p12).
+  ["monthly", /\bmonth(s|ly)?\b/i],
+  ["quarterly", /\bquarter(s|ly)?\b/i],
   ["annual", /\b(annual(ly)?|years?|yearly)\b/i],
-  ["weekly", /\bweek(ly)?\b/i],
+  ["weekly", /\bweek(s|ly)?\b/i],
   ["daily", /\bdaily\b|\bday\b/i],
 ];
 
@@ -102,6 +103,15 @@ function mapToActiveBillingFrequency(rawValue: string, sourceField: DescribeFiel
  * satisfy the "annual" pattern purely by substring containment — §CRITICAL
  * FIX: Selling Model Name -> Billing Frequency Mapping).
  */
+/**
+ * Public, Describe-only form of the cadence matcher above, for modules that already hold the target field's active picklist values
+ * (e.g. RAMP's line builder, which reads Describe through its own API layer). Same single-cadence-key rule — no literal mapping table.
+ */
+export function cadenceToActiveBillingFrequency(text: string | null | undefined, activeOptions: { value: string; label: string }[]): string | null {
+  if (!text) return null;
+  return matchCadenceToActiveOption(text, { activeOptions } as PicklistResolution)?.value ?? null;
+}
+
 function matchCadenceToActiveOption(text: string, qliPicklist: PicklistResolution): { value: string; matchedCadence: string } | null {
   const cadenceKey = classifyCadence(text);
   if (!cadenceKey) return null;

@@ -93,7 +93,7 @@ export default function AttributesDashboard({ isDark, onNavigate }: { isDark: bo
       id: "attributes",
       label: "Attributes",
       icon: "sliders",
-      groupLabel: "Revenue Cloud",
+      groupLabel: "Revenue Cloud Core",
       color: ACCENT,
       stats,
       actions,

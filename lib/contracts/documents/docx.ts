@@ -5,7 +5,7 @@ import {
 import type { BrandingConfig, MergeFieldValues } from "@/lib/contracts/types";
 import { substituteMergeFields } from "@/lib/contracts/documents/mergeFields";
 import { parseHtmlToPdfBlocks, type PdfBlock, type PdfTextRun } from "@/lib/contracts/documents/pdfTagConverter";
-import { renderFooterElements } from "@/lib/contracts/documents/render";
+import { companyDetailLines, renderFooterElements } from "@/lib/contracts/documents/render";
 
 /**
  * DOCX generation via the `docx` package (§Template Actions "Generate DOCX")
@@ -89,7 +89,11 @@ export async function renderContractDocx(bodyHtml: string, branding: BrandingCon
       },
       headers: {
         default: new Header({
-          children: [new Paragraph({ alignment, children: [new TextRun({ text: branding.companyName, bold: true, color: branding.primaryColor.replace("#", "") })] })],
+          children: [
+            new Paragraph({ alignment, children: [new TextRun({ text: branding.companyName, bold: true, color: branding.primaryColor.replace("#", "") })] }),
+            // Company contact lines from the Company Information panel.
+            ...companyDetailLines(branding).map(line => new Paragraph({ alignment, children: [new TextRun({ text: line, size: 16, color: "555555" })] })),
+          ],
         }),
       },
       footers: {

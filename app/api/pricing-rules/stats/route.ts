@@ -101,7 +101,7 @@ export async function GET(req: NextRequest) {
   const { client } = auth;
 
   try {
-    const cacheKey = client.instanceUrl;
+    const cacheKey = client.cacheScope;
     const payload = await pricingRuleStatsCache.getOrCompute(cacheKey, () => computePricingRuleStats(client));
     return NextResponse.json({ success: true, ...payload });
   } catch (err) {

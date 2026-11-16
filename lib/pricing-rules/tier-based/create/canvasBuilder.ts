@@ -35,6 +35,7 @@ import {
 } from "@/lib/pricing-rules/attribute-based/create/versionEnvelopeFields";
 import {
   resolvePriceBookEntriesV2DecisionTable, resolveTieredAdjustmentEntriesDecisionTable,
+  requiredDecisionTableMessage, validatePricingDecisionTable, decisionTableLookupName,
   formatExactDecisionTableFailure, formatDecisionTableMappingDiagnostic,
   PRICE_BOOK_DECISION_TABLE_LABEL, TIERED_ADJUSTMENT_DECISION_TABLE_LABEL,
 } from "@/lib/pricing-rules/attribute-based/create/decisionTableExactResolver";
@@ -576,9 +577,17 @@ export async function buildTierCanvas(
    * ANY kind (not-found, ambiguous, or source-object-mismatch) is fatal — never resolved by guessing. */
   const tierDtResolution = await resolveTieredAdjustmentEntriesDecisionTable(client);
   if (tierDtResolution.status !== "resolved") {
-    fatalErrors.push(`Could not resolve the exact "${TIERED_ADJUSTMENT_DECISION_TABLE_LABEL}" Decision Table on this org — ${formatExactDecisionTableFailure(tierDtResolution)} A tier-based pricing procedure without this Decision Table can never produce a discount.`);
+    fatalErrors.push(`${requiredDecisionTableMessage("tier-based")} ${formatExactDecisionTableFailure(tierDtResolution)}`);
     return { success: false, fatalErrors, warnings };
   }
+  // Validate the resolved table against Salesforce BEFORE anything is generated from it: Active, and the
+  // Tiered Adjustment Entries column signature (it returns the tier bounds; Volume Discount Entries matches on them).
+  const tierDtValidation = await validatePricingDecisionTable(client, "tier-based", tierDtResolution.table);
+  if (!tierDtValidation.ok) {
+    fatalErrors.push(`${requiredDecisionTableMessage("tier-based")} Resolved table ${tierDtResolution.table.id} (${tierDtResolution.table.developerName ?? "?"}) failed validation: ${tierDtValidation.problems.join(" ")}`);
+    return { success: false, fatalErrors, warnings };
+  }
+  warnings.push(`Tier-Based Decision Table validated: ${TIERED_ADJUSTMENT_DECISION_TABLE_LABEL} = ${tierDtResolution.table.id} (${tierDtResolution.table.developerName ?? "?"}), status ${tierDtValidation.status ?? "n/a"}, INPUT [${tierDtValidation.inputs.join(", ")}], OUTPUT [${tierDtValidation.outputs.join(", ")}], ${tierDtValidation.existingEntryCount ?? "?"} existing ${tierDtResolution.table.sourceObject ?? "source"} row(s).`);
   // §Task 5 — the two semantic tables are resolved fully independently (two separate calls, two separate
   // exported functions — see decisionTableExactResolver.ts's own file header for why there is no shared
   // "candidate label" parameter a call site could confuse); this asserts that independence actually held:
@@ -594,19 +603,18 @@ export async function buildTierCanvas(
     `ListPrice:\n  requested = ${PRICE_BOOK_DECISION_TABLE_LABEL}\n  resolvedId = ${pbDtResolution.table.id}\n  resolvedIdentity = MasterLabel="${pbDtResolution.table.masterLabel ?? "(none)"}" DeveloperName="${pbDtResolution.table.developerName ?? "(none)"}" SetupName="${pbDtResolution.table.setupName ?? "(none)"}" (matched via ${pbDtResolution.mechanism})\n` +
     `VolumeTierDiscount:\n  requested = ${TIERED_ADJUSTMENT_DECISION_TABLE_LABEL}\n  resolvedId = ${tierDtResolution.table.id}\n  resolvedIdentity = MasterLabel="${tierDtResolution.table.masterLabel ?? "(none)"}" DeveloperName="${tierDtResolution.table.developerName ?? "(none)"}" SetupName="${tierDtResolution.table.setupName ?? "(none)"}" (matched via ${tierDtResolution.mechanism})`,
   );
-  // §Display-name fallback chain — MasterLabel is preferred (most human-readable) but is not guaranteed
-  // non-null (see decisionTableExactResolver.ts): falls back to DeveloperName, then SetupName, then the
-  // semantic target name itself as an absolute last resort — never null, so the patched LookUpName is
-  // always a real, meaningful value and the final-XML validation below can compare against this SAME
-  // computed value rather than re-deriving it (and risking a spurious null-vs-value mismatch).
-  const tierResolvedName = tierDtResolution.table.masterLabel ?? tierDtResolution.table.developerName ?? tierDtResolution.table.setupName ?? TIERED_ADJUSTMENT_DECISION_TABLE_LABEL;
+  // §Fix — LookUpName is the table's real name (what Salesforce's own standard procedure uses), never the
+  // generic MasterLabel placeholder ("Decision Tables") that every table shares on these orgs.
+  const tierResolvedName = decisionTableLookupName(tierDtResolution, TIERED_ADJUSTMENT_DECISION_TABLE_LABEL);
   const vtdLookup: DecisionTableLookup = { id: tierDtResolution.table.id, name: tierResolvedName, apiName: tierDtResolution.table.developerName ?? "" };
 
   const lpBindingsBefore = collectFieldMap(lpXml);
   // §Live-org fix — never falls back to the donor's OWN LookUpApiName/LookUpName as a display-value
   // substitute: the resolved table's own fields are used verbatim, even when DeveloperName is absent on
   // this org, so the deployed step's LookUp* fields can never silently carry a donor-org literal forward.
-  const pbResolvedName = pbDtResolution.table.masterLabel ?? pbDtResolution.table.developerName ?? pbDtResolution.table.setupName ?? PRICE_BOOK_DECISION_TABLE_LABEL;
+  // §Fix — same rule as the adjustment step: LookUpName is the table's real name ("Price Book Entries V2",
+  // its SetupName), never the generic MasterLabel placeholder ("Decision Tables") every table shares.
+  const pbResolvedName = decisionTableLookupName(pbDtResolution, PRICE_BOOK_DECISION_TABLE_LABEL);
   const lpLookup = { lookUpId: pbDtResolution.table.id, lookUpApiName: pbDtResolution.table.developerName ?? null, lookUpName: pbResolvedName };
   warnings.push(formatDecisionTableMappingDiagnostic({
     pricingTypeLabel: "TIER — LISTPRICE", actionType: "ListPrice", table: pbDtResolution.table, mechanism: pbDtResolution.mechanism,

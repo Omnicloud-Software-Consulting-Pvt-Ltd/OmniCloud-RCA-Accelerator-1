@@ -39,8 +39,9 @@ export async function POST(req: NextRequest) {
   try {
     const results: Record<string, DuplicateCheckResult> = {};
     for (const item of items) {
+      // Name only — the duplicate policy is the complete Product2.Name; `code` is accepted for compatibility but not matched.
       results[item.key ?? item.name] = await checkProductDuplicate(auth.client, {
-        name: item.name, code: item.code, excludeId: item.excludeId,
+        name: item.name, excludeId: item.excludeId,
       });
     }
     return NextResponse.json({ success: true, results });

@@ -11,10 +11,7 @@ import type { BrandingConfig, CompanySettings, ContractTemplate } from "@/lib/co
  * templates are never stored anywhere; they're read straight from the
  * bundled `BUILTIN_TEMPLATES` array on every call. "My Templates" live only
  * in this browser's localStorage — there is no server, no database, and no
- * network request anywhere in this file, so Documents works identically
- * whether or not Postgres/DATABASE_URL is configured for the rest of the
- * app (DocuSign settings/e-signature state still use Postgres — unrelated
- * and untouched).
+ * network request anywhere in this file.
  *
  * Every export here is `async` even though the work is synchronous — this
  * is the seam a future real backend would slot into (swap the body for a
@@ -225,15 +222,17 @@ export async function getCompanySettings(): Promise<CompanySettings> {
   }
 }
 
+/** Saves and confirms by reading it back; throws a plain-language error when the browser won't store it (never fails silently). */
 export async function updateCompanySettings(patch: Partial<CompanySettings>): Promise<CompanySettings> {
   const current = await getCompanySettings();
   const merged = { ...current, ...patch };
-  if (hasLocalStorage()) {
-    try {
-      window.localStorage.setItem(COMPANY_SETTINGS_KEY, JSON.stringify(merged));
-    } catch {
-      // Storage full/disabled — the merged value is still returned for this session's use.
-    }
+  if (!hasLocalStorage()) throw new Error("This browser doesn't allow saving here (storage is unavailable), so the company information couldn't be saved.");
+  const serialized = JSON.stringify(merged);
+  try {
+    window.localStorage.setItem(COMPANY_SETTINGS_KEY, serialized);
+  } catch {
+    throw new Error("The browser refused to save the company information (its storage may be full or blocked). Free up space or allow site storage, then try again.");
   }
+  if (window.localStorage.getItem(COMPANY_SETTINGS_KEY) !== serialized) throw new Error("The company information didn't save correctly. Try again.");
   return merged;
 }
