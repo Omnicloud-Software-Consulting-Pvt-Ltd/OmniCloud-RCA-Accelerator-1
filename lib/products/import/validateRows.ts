@@ -102,9 +102,9 @@ export async function validateImportRows(
   try { categoryMap = await fetchCategoryNames(client); } catch { /* same as above */ }
 
   // Existing-in-Salesforce duplicate check (by ProductCode or Name), one batched query.
-  const existingByKey = new Map<string, { id: string }>();
+  const existingByKey = new Map<string, { id: string; name: string }>();
   const codesToCheck = Array.from(new Set(resolvedCodes.map(c => c.toLowerCase()))).filter(Boolean).slice(0, 200);
-  const namesToCheck = Array.from(new Set(inputs.map(i => i.name.toLowerCase()))).filter(Boolean).slice(0, 200);
+  const namesToCheck = Array.from(new Set(inputs.map(i => i.name.trim().toLowerCase()))).filter(Boolean).slice(0, 200);
   if (codesToCheck.length > 0 || namesToCheck.length > 0) {
     try {
       const clauses: string[] = [];
@@ -113,8 +113,8 @@ export async function validateImportRows(
       const soql = `SELECT Id, Name, ProductCode FROM Product2 WHERE ${clauses.join(" OR ")} LIMIT 400`;
       const result = await client.query<{ Id: string; Name: string; ProductCode: string | null }>(soql);
       for (const r of result.records) {
-        if (r.ProductCode) existingByKey.set(`code:${r.ProductCode.toLowerCase()}`, { id: r.Id });
-        existingByKey.set(`name:${r.Name.toLowerCase()}`, { id: r.Id });
+        if (r.ProductCode) existingByKey.set(`code:${r.ProductCode.toLowerCase()}`, { id: r.Id, name: r.Name });
+        existingByKey.set(`name:${r.Name.trim().toLowerCase()}`, { id: r.Id, name: r.Name });
       }
     } catch {
       // Best-effort — a failed duplicate-check query just means rows aren't flagged as pre-existing, not a blocked import.
@@ -171,18 +171,20 @@ export async function validateImportRows(
       if (!categoryResolved) issues.push({ level: "warning", field: "category", message: `Category "${input.category}" could not be resolved in Salesforce — it will be created automatically when this product is created.` });
     }
 
-    const dupExisting = existingByKey.get(`code:${productCode.toLowerCase()}`)
-      ?? (input.name ? existingByKey.get(`name:${input.name.toLowerCase()}`) : undefined);
-
-    // Duplicate Prevention (§14): an existing match is always excluded from
-    // creation — there is no "create anyway" override (§5). This is a
-    // pre-check only; POST /api/sf/products/save re-runs the same
-    // duplicate check server-side as the final, race-condition-safe
-    // authority (§21).
+    // Duplicate Prevention (§14): only an EXACT full-name match (trim +
+    // case-fold, same policy as checkProductDuplicate) is a duplicate, and
+    // it's excluded from bulk creation. A shared ProductCode is not a
+    // duplicate product — it's reported as a warning only. This is a
+    // pre-check; POST /api/sf/products/save re-runs the name check
+    // server-side as the final, race-condition-safe authority (§21).
+    const dupExisting = input.name.trim() ? existingByKey.get(`name:${input.name.trim().toLowerCase()}`) : undefined;
+    const codeExisting = existingByKey.get(`code:${productCode.toLowerCase()}`);
     let status: RowStatus = "ready";
     if (dupExisting) {
-      issues.push({ level: "warning", field: "duplicate", message: `Duplicate — already exists in Salesforce (Id ${dupExisting.id}). This row will not be created.` });
+      issues.push({ level: "warning", field: "duplicate", message: `Duplicate — a product with the exact name "${dupExisting.name}" already exists in Salesforce (Id ${dupExisting.id}). This row will not be created.` });
       status = "skipped";
+    } else if (codeExisting) {
+      issues.push({ level: "warning", field: "productCode", message: `Product Code "${productCode}" is already used by "${codeExisting.name}" (Id ${codeExisting.id}) — the name is different, so this row will still be created.` });
     }
 
     if (status !== "skipped") {

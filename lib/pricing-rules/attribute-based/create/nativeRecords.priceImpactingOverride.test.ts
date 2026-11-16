@@ -84,7 +84,7 @@ interface Scenario {
 function buildClient(s: Scenario): SalesforceClient {
   const createdIds = new Set<string>();
   return {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeSObjects() {
       if (s.noClassificationSupport) return { sobjects: [] };
       return { sobjects: [
@@ -228,7 +228,7 @@ test("TEST 6 — mixed request: one DIRECT (already true) + one INHERITED needin
   const createdIds = new Set<string>();
   const mutationLog: { op: string; object: string; payload: Record<string, unknown> }[] = [];
   const client = {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeSObjects() {
       return { sobjects: [{ name: "ProductClassification", label: "", labelPlural: "", createable: false, queryable: true }, { name: "ProductClassificationAttr", label: "", labelPlural: "", createable: false, queryable: true }] };
     },

@@ -1,11 +1,20 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Ic, tokens } from "@/components/data/quotes/shared";
-import type { SalesforceSuccessInput } from "./SalesforceSuccessContext";
+import { TOAST_LIFETIME_MS, type NotificationTone } from "@/lib/notifications/history";
+import type { QueuedNotification } from "./SalesforceSuccessContext";
 
 const ACCENT = "#00C875";
+
+/** Success keeps the original green card; other tones reuse the same shape with the app's error/warn/info colors. */
+export const TONE_STYLE: Record<NotificationTone, { color: string; icon: string }> = {
+  success: { color: ACCENT, icon: "check-circle" },
+  error: { color: "#FF4066", icon: "alert" },
+  warning: { color: "#F59E0B", icon: "alert" },
+  info: { color: "#00D4FF", icon: "info" },
+};
 
 function ExternalLinkButton({ label, url, compact }: { label: string; url: string; compact?: boolean }) {
   return (
@@ -28,25 +37,36 @@ function ExternalLinkButton({ label, url, compact }: { label: string; url: strin
 
 export default function SalesforceSuccessCard({ isDark, notification, onClose }: {
   isDark: boolean;
-  notification: SalesforceSuccessInput;
+  notification: QueuedNotification;
   onClose: () => void;
 }) {
   const t = tokens(isDark);
   const [showDetails, setShowDetails] = useState(false);
-  const { title, message, records, failedRecords = [], detailsLabel = "View Details" } = notification;
+  const { tone, title, message, records, failedRecords = [], detailsLabel = "View Details" } = notification;
   const isBulk = records.length + failedRecords.length > 1;
+  const tc = TONE_STYLE[tone].color;
+  const singleUrl = !isBulk ? records[0]?.salesforceUrl : undefined;
+
+  // One fixed lifetime per toast, started on mount; never reset. Cleared on unmount (× or exit) so no timer outlives its toast.
+  const closeRef = useRef(onClose);
+  useEffect(() => { closeRef.current = onClose; });
+  useEffect(() => {
+    const timer = window.setTimeout(() => closeRef.current(), TOAST_LIFETIME_MS);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   return (
     <motion.div
-      initial={{ opacity: 0, x: 24, scale: 0.97 }}
-      animate={{ opacity: 1, x: 0, scale: 1 }}
-      exit={{ opacity: 0, x: 24, scale: 0.97 }}
-      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+      layout
+      role={tone === "error" ? "alert" : "status"}
+      initial={{ opacity: 0, x: 64, scale: 0.97 }}
+      animate={{ opacity: 1, x: 0, scale: 1, transition: { duration: 0.3, ease: [0.16, 1, 0.3, 1] } }}
+      exit={{ opacity: 0, x: "110%", transition: { duration: 0.35, ease: [0.4, 0, 1, 1] } }}
       style={{
         pointerEvents: "auto",
-        background: "rgba(1,9,24,0.94)",
-        border: `1px solid ${ACCENT}40`,
-        boxShadow: `0 12px 40px rgba(0,0,0,0.45), 0 0 0 1px ${ACCENT}14`,
+        background: isDark ? "rgba(1,9,24,0.94)" : "rgba(255,255,255,0.97)",
+        border: `1px solid ${tc}40`,
+        boxShadow: isDark ? `0 12px 40px rgba(0,0,0,0.45), 0 0 0 1px ${tc}14` : `0 10px 32px rgba(15,35,80,0.16), 0 0 0 1px ${tc}14`,
         backdropFilter: "blur(16px)",
         WebkitBackdropFilter: "blur(16px)",
         borderRadius: 14,
@@ -56,22 +76,22 @@ export default function SalesforceSuccessCard({ isDark, notification, onClose }:
       <div className="flex items-start gap-3">
         <div
           className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
-          style={{ background: `${ACCENT}18`, color: ACCENT, border: `1px solid ${ACCENT}30` }}
+          style={{ background: `${tc}18`, color: tc, border: `1px solid ${tc}30` }}
         >
-          <Ic n="check-circle" s={17} />
+          <Ic n={TONE_STYLE[tone].icon} s={17} />
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-[13px] font-bold" style={{ color: isDark ? "white" : "#001F5B" }}>{title}</p>
           <p className="text-[12px] mt-1 leading-relaxed" style={{ color: isDark ? "rgba(180,205,235,0.85)" : "rgba(0,25,80,0.82)" }}>{message}</p>
         </div>
-        <button onClick={onClose} style={{ color: t.dim, background: "transparent", border: "none", cursor: "pointer", flexShrink: 0 }}>
+        <button onClick={onClose} aria-label="Dismiss notification" style={{ color: t.dim, background: "transparent", border: "none", cursor: "pointer", flexShrink: 0 }}>
           <Ic n="x" s={13} />
         </button>
       </div>
 
-      <div className="flex items-center gap-2 flex-wrap mt-3" style={{ marginLeft: 44 }}>
-        {!isBulk && records[0] && (
-          <ExternalLinkButton label="View in Salesforce" url={records[0].salesforceUrl} />
+      {(singleUrl || isBulk) && <div className="flex items-center gap-2 flex-wrap mt-3" style={{ marginLeft: 44 }}>
+        {singleUrl && (
+          <ExternalLinkButton label="View in Salesforce" url={singleUrl} />
         )}
         {isBulk && (
           <button
@@ -85,7 +105,7 @@ export default function SalesforceSuccessCard({ isDark, notification, onClose }:
             <Ic n={showDetails ? "chevron-down" : "chevron-right"} s={11} />
           </button>
         )}
-      </div>
+      </div>}
 
       <AnimatePresence>
         {isBulk && showDetails && (
@@ -102,7 +122,7 @@ export default function SalesforceSuccessCard({ isDark, notification, onClose }:
                 >
                   <span style={{ color: ACCENT, flexShrink: 0 }}><Ic n="check-circle" s={12} /></span>
                   <span className="text-[11.5px] font-medium flex-1 truncate" style={{ color: t.heading }}>{r.recordName}</span>
-                  <ExternalLinkButton label="View" url={r.salesforceUrl} compact />
+                  {r.salesforceUrl && <ExternalLinkButton label="View" url={r.salesforceUrl} compact />}
                 </div>
               ))}
               {failedRecords.map((f, i) => (

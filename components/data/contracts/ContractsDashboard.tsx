@@ -20,9 +20,8 @@ const ACCENT_SOFT = "#60B8FF";
  * recent activity) via the shared `ObjectWorkspace`, but every number comes
  * from the connected Salesforce org (GET /api/contracts/stats) instead of a
  * static config. Action cards navigate into the existing, untouched
- * ContractsModule (history/create/workspace/DocuSign) via `onNavigate` —
- * this component never reimplements Contract creation, document generation,
- * or e-signature.
+ * ContractsModule (history/create/workspace) via `onNavigate` —
+ * this component never reimplements Contract creation or document generation.
  */
 export default function ContractsDashboard({ isDark, onNavigate }: { isDark: boolean; onNavigate: (target: ModuleTarget) => void }) {
   const t = tokens(isDark);
@@ -72,7 +71,7 @@ export default function ContractsDashboard({ isDark, onNavigate }: { isDark: boo
       id: "contracts",
       label: "Contracts",
       icon: "file-contract",
-      groupLabel: "Revenue Cloud",
+      groupLabel: "Revenue Cloud Core",
       color: ACCENT,
       stats,
       actions,

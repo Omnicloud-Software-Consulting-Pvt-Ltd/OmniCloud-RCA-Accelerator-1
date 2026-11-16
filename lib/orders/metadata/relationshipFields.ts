@@ -31,7 +31,7 @@ export async function resolveOrderItemRelationshipSchema(
   client: SalesforceClient,
   bundleDiscovery: BundleObjectDiscovery,
 ): Promise<OrderItemRelationshipFieldSchema> {
-  return oirSchemaCache.getOrCompute(client.instanceUrl, async () => {
+  return oirSchemaCache.getOrCompute(client.cacheScope, async () => {
     let describe: DescribeResult | null = null;
     try {
       describe = await describeObjectCached(client, "OrderItemRelationship");

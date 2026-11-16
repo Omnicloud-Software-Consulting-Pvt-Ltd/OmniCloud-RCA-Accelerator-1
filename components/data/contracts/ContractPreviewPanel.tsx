@@ -18,7 +18,7 @@ const TABS: { id: Tab; label: string; icon: string }[] = [
  * execution-log and response-summary stores Quote/Order use (§3.8: "add
  * Contract-specific entries to the same log/store, don't build parallel
  * ones"). Only the rendering differs, because the summary fields it
- * displays (contract/contractDocument/contractSignature) use Contract
+ * displays (contract/contractDocument) use Contract
  * nomenclature — the underlying data source is identical and shared.
  */
 export default function ContractPreviewPanel({ isDark, requestJson, initialTab = "json", highlightLogId }: {
@@ -51,7 +51,7 @@ export default function ContractPreviewPanel({ isDark, requestJson, initialTab =
       {tab === "logs" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 460, overflowY: "auto" }}>
           {log.length === 0 && (
-            <EmptyState isDark={isDark} icon="activity" title="No calls logged yet" hint="Every API call this module makes — AI parsing, metadata resolution, contact lookups, Contract creation, document generation, and DocuSign calls — is logged here in real time as it happens." />
+            <EmptyState isDark={isDark} icon="activity" title="No calls logged yet" hint="Every API call this module makes — AI parsing, metadata resolution, contact lookups, Contract creation, and document generation — is logged here in real time as it happens." />
           )}
           {[...log].reverse().map(entry => {
             const isHighlighted = entry.id === highlightLogId;
@@ -90,26 +90,18 @@ export default function ContractPreviewPanel({ isDark, requestJson, initialTab =
 
       {tab === "response" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {!summary.contract && !summary.contractDocument && !summary.contractSignature && (
-            <EmptyState isDark={isDark} icon="eye" title="Nothing created yet this session" hint="Once a Contract is created, a document generated, or a signature request sent, the request, response, and status will appear here." />
+          {!summary.contract && !summary.contractDocument && (
+            <EmptyState isDark={isDark} icon="eye" title="Nothing created yet this session" hint="Once a Contract is created or a document generated, the request, response, and status will appear here." />
           )}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             {summary.contract && <SummaryCard t={t} icon="file-contract" label="Contract" value={summary.contract.contractNumber ?? summary.contract.id} sub={summary.contract.status ?? undefined} />}
             {summary.contractDocument && <SummaryCard t={t} icon="file-text" label="Document Generated" value={summary.contractDocument.templateName} sub={summary.contractDocument.contentVersionId} />}
-            {summary.contractSignature != null && (
-              <SummaryCard
-                t={t} icon="send"
-                label="Signature Request"
-                value={(summary.contractSignature as { status?: string }).status ?? "—"}
-                sub={(summary.contractSignature as { envelopeId?: string }).envelopeId ?? undefined}
-              />
-            )}
           </div>
 
-          {!!(summary.contract || summary.contractDocument || summary.contractSignature) && (
+          {!!(summary.contract || summary.contractDocument) && (
             <div>
               <div style={{ fontSize: 11.5, fontWeight: 700, color: t.dim, textTransform: "uppercase", marginBottom: 6 }}>Raw Response</div>
-              <CodeBlock isDark={isDark} data={{ contract: summary.contract, contractDocument: summary.contractDocument, contractSignature: summary.contractSignature }} />
+              <CodeBlock isDark={isDark} data={{ contract: summary.contract, contractDocument: summary.contractDocument }} />
             </div>
           )}
         </div>

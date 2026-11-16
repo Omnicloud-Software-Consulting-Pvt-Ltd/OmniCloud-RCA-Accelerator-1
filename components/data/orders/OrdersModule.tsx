@@ -25,6 +25,7 @@ export default function OrdersModule({
   initialWorkspaceId,
   initialTab,
   onNavigate,
+  onContinueBilling,
 }: {
   isDark: boolean;
   initialView?: "history" | "create" | "workspace";
@@ -34,6 +35,8 @@ export default function OrdersModule({
   initialTab?: string;
   /** Bubbles this module's view (and its workspace's active tab) up so the page can keep the URL in sync — refresh then restores the same order/tab instead of resetting to History. */
   onNavigate?: (patch: NavigatePatch) => void;
+  /** Opens the reusable "Revenue Cloud Billing — Order Setup" workspace for an order (owned by the page). */
+  onContinueBilling?: (orderId: string) => void;
 }) {
   const t = tokens(isDark);
   const [view, setViewState] = useState<View>(() => {
@@ -98,8 +101,8 @@ export default function OrdersModule({
 
       <div className="flex-1 min-h-0 flex overflow-hidden">
         <div className="flex-1 min-h-0 overflow-hidden" style={{ display: "flex", flexDirection: "column" }}>
-          {view.mode === "history" && <OrderHistoryList isDark={isDark} onOpen={id => setView({ mode: "workspace", orderId: id })} />}
-          {view.mode === "create" && <CreateOrderFlow isDark={isDark} />}
+          {view.mode === "history" && <OrderHistoryList isDark={isDark} onOpen={id => setView({ mode: "workspace", orderId: id })} onContinueBilling={onContinueBilling} />}
+          {view.mode === "create" && <CreateOrderFlow isDark={isDark} onContinueBilling={onContinueBilling} onGoToHistory={() => setView({ mode: "history" })} />}
           {view.mode === "workspace" && (
             <OrderWorkspace
               isDark={isDark}
@@ -107,6 +110,7 @@ export default function OrdersModule({
               initialTab={initialWorkspaceId === view.orderId ? initialTab : undefined}
               onTabChange={tab => onNavigate?.({ ov: "workspace", oid: view.orderId, otab: tab })}
               onBack={() => setView({ mode: "history" })}
+              onContinueBilling={onContinueBilling}
             />
           )}
         </div>

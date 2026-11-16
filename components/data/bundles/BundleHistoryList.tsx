@@ -101,6 +101,7 @@ export default function BundleHistoryList({
           title: "Bundle Duplicated Successfully",
           message: `${record.recordName} has been created in Salesforce as a draft copy of ${name}.`,
           records: [record],
+          module: "Bundles",
         });
       }
       setLoading(true);

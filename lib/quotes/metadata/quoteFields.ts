@@ -25,7 +25,7 @@ const quoteListSchemaCache = createTTLCache<QuoteListFieldSchema>();
  * silently include it and let the whole create call fail.
  */
 export async function resolveQuoteFieldSchema(client: SalesforceClient): Promise<QuoteFieldSchema> {
-  return quoteSchemaCache.getOrCompute(client.instanceUrl, async () => {
+  return quoteSchemaCache.getOrCompute(client.cacheScope, async () => {
     const describe = await describeObjectCached(client, "Quote");
 
     const accountField = findReferenceFieldByTargetObject(describe, "Account", { requireCreateable: true })
@@ -71,7 +71,7 @@ export async function resolveQuoteFieldSchema(client: SalesforceClient): Promise
  * not `AccountId.Name`) — never guess it from the field's own API name.
  */
 export async function resolveQuoteListFieldSchema(client: SalesforceClient): Promise<QuoteListFieldSchema> {
-  return quoteListSchemaCache.getOrCompute(client.instanceUrl, async () => {
+  return quoteListSchemaCache.getOrCompute(client.cacheScope, async () => {
     const describe = await describeObjectCached(client, "Quote");
 
     const quoteNumberField = resolveField(describe, "QuoteNumber", /^quote number$/i);

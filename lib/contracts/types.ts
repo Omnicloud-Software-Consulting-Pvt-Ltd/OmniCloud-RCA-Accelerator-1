@@ -1,14 +1,15 @@
 /**
- * Shared domain types for the Contract / document-generation / e-signature
- * module — the Contract-side counterpart of lib/orders/types.ts and
- * lib/quotes/types.ts. Reuses genuinely object-agnostic Quote/Order types
- * (FieldRef, PicklistFieldRef, ReferenceLookupResult, BundleHierarchyStep)
- * directly; only defines new shapes for what's genuinely Contract-specific:
- * the Contract field schema/activation lifecycle, and the document
- * generation / DocuSign e-signature subsystems that Quote/Order don't have.
+ * Shared domain types for the Contract / document-generation module — the
+ * Contract-side counterpart of lib/orders/types.ts and lib/quotes/types.ts.
+ * Reuses genuinely object-agnostic Quote/Order types (FieldRef,
+ * PicklistFieldRef, ReferenceLookupResult, BundleHierarchyStep) directly;
+ * only defines new shapes for what's genuinely Contract-specific: the
+ * Contract field schema/activation lifecycle, and the document generation
+ * subsystem that Quote/Order don't have.
  */
 
 import type { FieldRef } from "@/lib/salesforce/describe";
+import type { RecordDisplayMeta } from "@/lib/salesforce/recordReferences";
 import type { PicklistFieldRef, ReferenceLookupResult, BundleHierarchyStep } from "@/lib/quotes/types";
 
 export type { FieldRef } from "@/lib/salesforce/describe";
@@ -123,7 +124,8 @@ export interface ContractListItem {
   lastModifiedDate: string;
 }
 
-export interface ContractDetail {
+/** `RecordDisplayMeta` adds lookup names / formatted currency for the overview (lib/salesforce/recordReferences.ts). */
+export interface ContractDetail extends RecordDisplayMeta {
   id: string;
   contractNumber: string | null;
   record: Record<string, unknown>;
@@ -209,6 +211,11 @@ export interface SignatureBlockConfig {
  */
 export interface BrandingConfig {
   companyName: string;
+  /**
+   * Company contact details shown under the company name in the document header. Never stored on a template — filled at render time
+   * from the Company Information panel by applyCompanySettings() (lib/contracts/documents/render.ts).
+   */
+  companyDetails?: { address?: string; phone?: string; email?: string; website?: string; taxNumber?: string; registrationNumber?: string };
   logoUrl: string | null;
   primaryColor: string;
   /** PDF-engine font — @react-pdf/renderer only ships these 3 without embedding a custom font file. */
@@ -301,87 +308,6 @@ export interface GeneratedDocument {
   createdDate: string;
   createdByName: string | null;
   isLatest: boolean;
-}
-
-/* ── E-signature (§5) ── */
-
-export interface SignatureRecipient {
-  name: string;
-  email: string;
-  role: string;
-  /** 1-based, used as DocuSign's routingOrder (§5.2). */
-  order: number;
-  /** This recipient's own DocuSign-reported status, once known — null until the envelope is sent. */
-  status: string | null;
-}
-
-export type SignatureStage =
-  | "Draft" | "Ready to Send" | "Sent" | "Viewed" | "Customer Signed" | "Company Signed" | "Completed";
-
-export interface SignatureTimelineEntry {
-  stage: SignatureStage;
-  at: string;
-  detail: string | null;
-  source: "docusign-webhook" | "system";
-  /** Used to deduplicate DocuSign Connect's at-least-once delivery (§5.4) — never write a second entry for the same key. */
-  dedupeKey: string;
-}
-
-export interface SignatureRequest {
-  id: string;
-  contractId: string;
-  sourceContentVersionId: string | null;
-  sourceDocumentName: string | null;
-  status: SignatureStage;
-  recipients: SignatureRecipient[];
-  timeline: SignatureTimelineEntry[];
-  /** Null until the user overrides the default template — see lib/contracts/docusign/emailPreview.ts's DEFAULT_EMAIL_SUBJECT/BODY. */
-  emailSubject: string | null;
-  emailBody: string | null;
-  envelopeId: string | null;
-  envelopeStatus: string | null;
-  /** DocuSign's own "sent at" timestamp from the create-and-send response — null until sent, never our own clock's guess. */
-  sentDateTime: string | null;
-  signedContentVersionId: string | null;
-  /** The connected DocuSign account/user this envelope was actually sent as (from the send route's response, itself sourced from the org's saved OAuth /oauth/userinfo capture) — null until sent, never a recipient's identity. */
-  senderName: string | null;
-  senderEmail: string | null;
-  senderUserId: string | null;
-  /** Whether the sender was also added as a non-signing "receives a copy" recipient on this envelope, so they get their own copy/notification — null until sent. */
-  senderCopyRequested: boolean | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-/** One DocuSign Connect event, already mapped to this app's vocabulary (§5.4) — shared between the webhook mapper and the signature store so neither needs to import the other. */
-export interface WebhookMappedUpdate {
-  recipientEmail: string | null;
-  recipientStatus: string | null;
-  newStage: SignatureStage | null;
-  /** Used to deduplicate DocuSign Connect's at-least-once delivery — same key as the timeline entry it produces. */
-  dedupeKey: string;
-  detail: string;
-}
-
-export type DocuSignConnectionStatus = "disconnected" | "connected" | "reauthorization_required" | "error";
-
-export interface DocuSignConnectionConfig {
-  orgId: string;
-  environment: "demo" | "production";
-  clientId: string;
-  hasClientSecret: boolean;
-  hasWebhookSecret: boolean;
-  /** Org's saved OAuth redirect_uri override, or null to use the DOCUSIGN_REDIRECT_URI env var / request origin fallback — see lib/contracts/docusign/redirectUri.ts. */
-  callbackUrl: string | null;
-  status: DocuSignConnectionStatus;
-  lastError: string | null;
-  docusignAccountId: string | null;
-  docusignAccountName: string | null;
-  baseUri: string | null;
-  /** The DocuSign user whose OAuth grant this connection runs as — from the real /oauth/userinfo call, not guessed. */
-  connectedUserName: string | null;
-  connectedUserEmail: string | null;
-  /** DocuSign's own `sub` (user ID) for the connected user — from the same /oauth/userinfo call. */
-  connectedUserId: string | null;
-  connectedAt: string | null;
+  /** Set when this file is a DocuSign signed copy or certificate of completion stored on the Contract (lib/contracts/docusign/signedDocuments.ts). */
+  signature?: { kind: "signed" | "certificate"; envelopeId: string } | null;
 }

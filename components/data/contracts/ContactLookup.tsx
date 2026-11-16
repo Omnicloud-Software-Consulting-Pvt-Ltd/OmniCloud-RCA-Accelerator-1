@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Ic, tokens, inputStyle, Spinner } from "@/components/data/quotes/shared";
+import AnchoredOverlay from "@/components/ui/AnchoredOverlay";
+import { overlayPanelStyle } from "@/lib/ui/overlay";
 import { quoteApiPost } from "@/lib/quotes/client/apiClient";
 import type { ContractContact } from "@/lib/contracts/types";
 
@@ -26,6 +28,7 @@ export default function ContactLookup({ isDark, accountId, value, onChange }: {
   const [preloadLoaded, setPreloadLoaded] = useState(false);
   const [searching, setSearching] = useState(false);
   const [open, setOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   // Preload mode (§3.3): fetch every Contact under the Account when it changes; auto-select if exactly one.
   useEffect(() => {
@@ -80,6 +83,7 @@ export default function ContactLookup({ isDark, accountId, value, onChange }: {
   return (
     <div style={{ position: "relative" }}>
       <input
+        ref={inputRef}
         value={term}
         onChange={e => { setTerm(e.target.value); onChange(null); setOpen(true); }}
         onFocus={() => setOpen(true)}
@@ -93,11 +97,15 @@ export default function ContactLookup({ isDark, accountId, value, onChange }: {
       {searching && <div style={{ marginTop: 4, fontSize: 11, color: t.dim, display: "flex", alignItems: "center", gap: 4 }}><Spinner isDark={isDark} size={11} /> Searching…</div>}
       {value && <div style={{ marginTop: 4, fontSize: 11, color: t.accent, display: "flex", alignItems: "center", gap: 4 }}><Ic n="check-circle" s={12} /> {value.name}</div>}
 
-      {open && dropdownItems.length > 0 && (
-        <div style={{ position: "absolute", zIndex: 10, top: "100%", left: 0, right: 0, marginTop: 4, borderRadius: 9, border: `1px solid ${t.border}`, background: t.surface, maxHeight: 220, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" }}>
+      {/* Portaled (components/ui/AnchoredOverlay) — never clipped by the card it sits in; outside click / Escape close it. */}
+      <AnchoredOverlay anchorRef={inputRef} open={open && dropdownItems.length > 0} onDismiss={() => setOpen(false)} maxHeight={220}
+        role="listbox" aria-label="Contacts" style={overlayPanelStyle(isDark, t.border)}>
           {dropdownItems.map(c => (
             <button
               key={c.id}
+              type="button"
+              role="option"
+              aria-selected={value?.id === c.id}
               onMouseDown={e => { e.preventDefault(); onChange({ id: c.id, name: c.name }); setTerm(c.name); setOpen(false); }}
               onClick={() => { onChange({ id: c.id, name: c.name }); setTerm(c.name); setOpen(false); }}
               style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", border: "none", background: "transparent", cursor: "pointer", fontSize: 12.5, color: t.body }}
@@ -105,13 +113,11 @@ export default function ContactLookup({ isDark, accountId, value, onChange }: {
               {c.name}
             </button>
           ))}
-        </div>
-      )}
-      {open && showEmptySearch && (
-        <div style={{ position: "absolute", zIndex: 10, top: "100%", left: 0, right: 0, marginTop: 4, padding: "8px 12px", borderRadius: 9, border: `1px solid ${t.border}`, background: t.surface, fontSize: 12, color: t.dim }}>
-          No matching contacts found.
-        </div>
-      )}
+      </AnchoredOverlay>
+      <AnchoredOverlay anchorRef={inputRef} open={open && showEmptySearch} onDismiss={() => setOpen(false)} maxHeight={120} role="status"
+        style={{ ...overlayPanelStyle(isDark, t.border), padding: "8px 12px", fontSize: 12, color: t.dim }}>
+        No matching contacts found.
+      </AnchoredOverlay>
       {open && showEmptyPreload && (
         <div style={{ marginTop: 4, fontSize: 11, color: t.dim }}>No contacts under this account.</div>
       )}

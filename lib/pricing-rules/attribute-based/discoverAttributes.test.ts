@@ -58,7 +58,7 @@ function buildClient(cfg: ClientConfig): SalesforceClient {
   const pcaDescribe = describeResult("ProductClassificationAttr", cfg.pcaFields ?? []);
 
   return {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeSObjects() {
       return { sobjects: cfg.globalObjects.map(name => ({ name, label: name, labelPlural: name, createable: false, queryable: true })) };
     },

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSFClient, sfErrorResponse } from "@/lib/salesforce/serverSession";
 import { activateOrder, type OrderActivationAction } from "@/lib/orders/metadata/orderStatus";
+import { activateOrderWithReadiness } from "@/lib/billing/server/orderBilling";
+import { requireBillingClient } from "@/lib/billing/server/discovery";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -23,7 +25,11 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
 
   try {
-    const result = await activateOrder(client, id, action);
+    // Activation goes through the same billing/tax readiness as Revenue Cloud Billing (no bypass); deactivate/cancel don't.
+    // The readiness runs at the billing API version, exactly as in the Revenue Cloud Billing routes.
+    const billing = action === "activate" ? requireBillingClient(req) : null;
+    if (billing && "unauthorized" in billing) return billing.unauthorized;
+    const result = billing ? await activateOrderWithReadiness(billing.client, id) : await activateOrder(client, id, action);
     return NextResponse.json(result, { status: result.success ? 200 : 422 });
   } catch (err) {
     return sfErrorResponse(err, "Failed to update Order activation status");

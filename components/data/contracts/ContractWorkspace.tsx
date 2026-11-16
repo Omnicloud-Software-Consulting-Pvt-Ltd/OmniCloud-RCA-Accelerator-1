@@ -3,20 +3,23 @@
 import { useEffect, useState } from "react";
 import { Section, Ic, tokens, PrimaryButton, GhostButton, PageShell, Tabs, Spinner, ErrorPanel, Pill } from "@/components/data/quotes/shared";
 import ContractDocuments from "@/components/data/contracts/ContractDocuments";
-import SignaturePanel from "@/components/data/contracts/SignaturePanel";
 import ContractPreviewPanel from "@/components/data/contracts/ContractPreviewPanel";
+import ContractOverview from "@/components/data/contracts/ContractOverview";
+import SendForSignature from "@/components/data/contracts/docusign/SendForSignature";
+import SignatureTracking, { CompletedDocuments } from "@/components/data/contracts/docusign/SignatureTracking";
 import { quoteApiGet, quoteApiPost, toErrorPanelData, type ErrorPanelDataLike } from "@/lib/quotes/client/apiClient";
 import { updateResponseSummary } from "@/lib/quotes/client/responseSummary";
-import * as signatureStore from "@/lib/contracts/docusign/localSignatureStore";
-import type { ContractActivationAction, ContractActivationResult, ContractDetail, GeneratedDocument } from "@/lib/contracts/types";
+import type { ContractActivationAction, ContractActivationResult, ContractDetail } from "@/lib/contracts/types";
 
-type Tab = "overview" | "documents" | "signatures" | "diagnostics";
+type Tab = "overview" | "documents" | "send" | "tracking" | "completed" | "diagnostics";
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: "overview", label: "Overview", icon: "file-text" },
-  { id: "documents", label: "Documents", icon: "file-contract" },
-  { id: "signatures", label: "Signatures", icon: "send" },
-  { id: "diagnostics", label: "Session Diagnostics", icon: "activity" },
+  { id: "documents", label: "Documents & Templates", icon: "file-contract" },
+  { id: "send", label: "Send for Signature", icon: "send" },
+  { id: "tracking", label: "Signature Tracking", icon: "activity" },
+  { id: "completed", label: "Completed Documents", icon: "check-circle" },
+  { id: "diagnostics", label: "Session Diagnostics", icon: "terminal" },
 ];
 
 export default function ContractWorkspace({
@@ -25,6 +28,7 @@ export default function ContractWorkspace({
   onBack,
   initialTab,
   onTabChange,
+  onOpenDocuSignSettings,
 }: {
   isDark: boolean;
   contractId: string;
@@ -32,16 +36,15 @@ export default function ContractWorkspace({
   initialTab?: string;
   /** Bubbles tab changes up to ContractsModule (and from there to the page's URL) so a refresh reopens the same tab. */
   onTabChange?: (tab: Tab) => void;
+  onOpenDocuSignSettings?: () => void;
 }) {
   const t = tokens(isDark);
   const [tab, setTabState] = useState<Tab>(() => (TABS.some(t => t.id === initialTab) ? (initialTab as Tab) : "overview"));
   const [detail, setDetail] = useState<ContractDetail | null>(null);
   const [activating, setActivating] = useState(false);
   const [error, setError] = useState<ErrorPanelDataLike | null>(null);
-  // Set only by "Use for Signature" jumping over from the Documents tab, so
-  // Signatures opens with that specific document pre-selected instead of
-  // whichever one it would otherwise default to.
-  const [pendingSignatureDocId, setPendingSignatureDocId] = useState<string | null>(null);
+  // Set when a send completes, so Signature Tracking opens on the envelope just sent.
+  const [focusEnvelopeId, setFocusEnvelopeId] = useState<string | null>(null);
 
   function setTab(next: Tab) {
     setTabState(next);
@@ -84,17 +87,6 @@ export default function ContractWorkspace({
     }
   }
 
-  /** The document a user picks in Documents → "Use for Signature" becomes the Signatures tab's pre-selected document — each generated document has its own independent signature request, so this never disturbs any other document's Draft/Ready to Send/Sent state on this Contract. */
-  async function handleUseForSignature(doc: GeneratedDocument) {
-    try {
-      await signatureStore.getOrCreateSignatureState(contractId, doc.contentVersionId, doc.title);
-      setPendingSignatureDocId(doc.contentVersionId);
-    } catch {
-      /* SignaturePanel re-fetches its own state on mount and will surface any real problem there */
-    }
-    setTab("signatures");
-  }
-
   const header = (
     <div style={{ padding: "16px 20px 0", flexShrink: 0, display: "flex", flexDirection: "column", gap: 12 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -131,7 +123,7 @@ export default function ContractWorkspace({
       <div className="flex flex-col h-full overflow-hidden">
         {header}
         <div className="flex-1 min-h-0 overflow-hidden">
-          <ContractDocuments isDark={isDark} contractId={contractId} onUseForSignature={handleUseForSignature} />
+          <ContractDocuments isDark={isDark} contractId={contractId} />
         </div>
       </div>
     );
@@ -163,24 +155,27 @@ export default function ContractWorkspace({
               </div>
             </Section>
 
-            <Section title="Contract Fields" icon="file-text" isDark={isDark}>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
-                {Object.entries(detail.record)
-                  .filter(([, v]) => typeof v !== "object")
-                  .map(([k, v]) => (
-                    <div key={k} style={{ fontSize: 12, display: "flex", justifyContent: "space-between", borderBottom: `1px solid ${t.border}`, padding: "4px 0" }}>
-                      <span style={{ color: t.dim }}>{k}</span>
-                      <span style={{ color: t.heading }}>{String(v ?? "—")}</span>
-                    </div>
-                  ))}
-              </div>
-            </Section>
+            <ContractOverview isDark={isDark} detail={detail} />
           </>
         )}
 
-        {tab === "signatures" && (
-          <SignaturePanel isDark={isDark} contractId={contractId} contractLabel={detail.contractNumber ?? contractId} initialContentVersionId={pendingSignatureDocId ?? undefined} />
+        {tab === "send" && (
+          <SendForSignature
+            isDark={isDark}
+            contractId={contractId}
+            contractName={typeof detail.record.Name === "string" && detail.record.Name ? detail.record.Name : `Contract ${detail.contractNumber ?? contractId}`}
+            contractNumber={detail.contractNumber}
+            accountName={detail.references?.AccountId?.name ?? null}
+            onOpenSettings={onOpenDocuSignSettings}
+            onSent={envelopeId => { setFocusEnvelopeId(envelopeId); setTab("tracking"); }}
+          />
         )}
+
+        {tab === "tracking" && (
+          <SignatureTracking isDark={isDark} contractId={contractId} focusEnvelopeId={focusEnvelopeId} onOpenSettings={onOpenDocuSignSettings} onSendNew={() => setTab("send")} />
+        )}
+
+        {tab === "completed" && <CompletedDocuments isDark={isDark} contractId={contractId} onOpenSettings={onOpenDocuSignSettings} />}
 
         {tab === "diagnostics" && (
           <Section title="This Session Only" icon="activity" isDark={isDark} defaultOpen>

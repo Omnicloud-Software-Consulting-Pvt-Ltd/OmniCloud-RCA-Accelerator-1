@@ -10,7 +10,7 @@ import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { BrandLockup } from "@/components/brand/BrandLockup";
 import Fireflies from "@/components/Fireflies";
 import { type Environment } from "@/lib/utils";
-import { saveSession, clearSession } from "@/lib/auth/session";
+import { saveSession, clearSession, loadSession } from "@/lib/auth/session";
 import { loadIdentity, markSetupComplete, clearIdentity, clearSetup } from "@/lib/auth/identity";
 
 /* ── Eye toggle for secret fields ── */
@@ -224,6 +224,27 @@ export function SetupWizard() {
       return;
     }
     setIdentityEmail(id.email);
+
+    // Returning from Salesforce sign-in (see connectWithOAuth / the callback page).
+    const params = new URLSearchParams(window.location.search);
+    const sfResult = params.get("sf");
+    const sfError = params.get("sf_error");
+    if (sfResult || sfError) window.history.replaceState(null, "", window.location.pathname);
+    if (sfResult === "connected") {
+      const s = loadSession();
+      if (s) {
+        setSfUser(s.displayName || s.username);
+        setEnv(s.environment);
+        setStep(3);
+        return;
+      }
+    }
+    if (sfError) {
+      setError(sfError);
+      setStep(2);
+      return;
+    }
+
     // Skip the Connected App step if it's already configured for this browser.
     fetch("/api/config")
       .then((r) => r.json())
@@ -312,90 +333,27 @@ export function SetupWizard() {
     }
   };
 
-  /* Primary path — OAuth SSO via the Connected App. Opens a popup; the callback
-     page posts the token back, which we hand to /api/sf/auth to set the cookie. */
+  /* Primary path — OAuth via the Connected App. The browser goes to Salesforce's own login page for the
+     chosen environment (Production/Dev → login.salesforce.com, Sandbox → test.salesforce.com). Salesforce
+     checks the username/password there, then sends the user back to /api/auth/callback/salesforce, which
+     exchanges the code on the server and returns here with ?sf=connected (or ?sf_error=…). A full-page
+     redirect, not a popup: popup blockers and cross-origin window.opener rules can't break it. */
   const connectWithOAuth = async () => {
     setError("");
     setLoading(true);
-    let authUrl = "";
     try {
-      const res = await fetch(`/api/auth/salesforce/url?environment=${env}`);
+      const res = await fetch(`/api/auth/salesforce/url?environment=${env}`, { cache: "no-store" });
       const data = await res.json();
       if (!res.ok || !data.url) {
         setError(data.error ?? "Salesforce OAuth isn't configured yet. Add a Connected App, or use an access token below.");
         setLoading(false);
         return;
       }
-      authUrl = data.url;
+      window.location.assign(data.url);
     } catch {
       setError("Network error. Could not start Salesforce sign-in.");
       setLoading(false);
-      return;
     }
-
-    const popup = window.open(authUrl, "sf-oauth", "width=600,height=720");
-    let settled = false;
-    let timer: ReturnType<typeof setInterval>;
-
-    const onMessage = async (e: MessageEvent) => {
-      if (e.origin !== window.location.origin) return;
-      const msg = e.data;
-      if (msg?.type === "SF_AUTH_SUCCESS" && msg.session) {
-        settled = true;
-        window.removeEventListener("message", onMessage);
-        clearInterval(timer);
-        try {
-          const r = await fetch("/api/sf/auth", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              instanceUrl: msg.session.instanceUrl,
-              accessToken: msg.session.accessToken,
-              refreshToken: msg.session.refreshToken,
-              environment: msg.session.environment,
-            }),
-          });
-          const d = await r.json();
-          if (!r.ok || !d.success) {
-            setError(d.error ?? "Could not establish the Salesforce session.");
-            setLoading(false);
-            return;
-          }
-          saveSession({
-            accessToken: "[server-secured]",
-            instanceUrl: d.user.instanceUrl,
-            userId: d.user.userId,
-            username: d.user.username,
-            displayName: d.user.displayName,
-            email: d.user.email,
-            environment: d.user.environment,
-            expiresAt: Date.now() + 8 * 60 * 60 * 1000,
-          });
-          setSfUser(d.user.displayName ?? d.user.username);
-          setLoading(false);
-          setStep(3);
-        } catch {
-          setError("Network error completing Salesforce sign-in.");
-          setLoading(false);
-        }
-      } else if (msg?.type === "SF_AUTH_ERROR") {
-        settled = true;
-        window.removeEventListener("message", onMessage);
-        clearInterval(timer);
-        setError(msg.error ?? "Salesforce sign-in failed.");
-        setLoading(false);
-      }
-    };
-
-    window.addEventListener("message", onMessage);
-    timer = setInterval(() => {
-      if (popup?.closed && !settled) {
-        settled = true;
-        clearInterval(timer);
-        window.removeEventListener("message", onMessage);
-        setLoading(false);
-      }
-    }, 600);
   };
 
   const saveKeyAndFinish = async () => {

@@ -10,6 +10,7 @@ import PreviewPanel from "@/components/data/quotes/PreviewPanel";
 import HarImportTool from "@/components/data/quotes/HarImportTool";
 import BundleParityCheck from "@/components/data/quotes/BundleParityCheck";
 import LineItemFailureView from "@/components/data/quotes/LineItemFailureView";
+import QuoteOverview from "@/components/data/quotes/QuoteOverview";
 import { quoteApiGet, quoteApiPost, quoteApiPatch, quoteApiDelete, toErrorPanelData, type ErrorPanelDataLike } from "@/lib/quotes/client/apiClient";
 import { replayServerSteps } from "@/lib/quotes/client/executionLog";
 import { updateResponseSummary } from "@/lib/quotes/client/responseSummary";
@@ -154,7 +155,9 @@ export default function QuoteWorkspace({
         <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 16, fontWeight: 700, color: t.heading }}>
           <Ic n="file-text" s={17} /> {detail?.name ?? "Loading…"}
         </div>
-        <GhostButton label="Back to History" icon="arrow-left" isDark={isDark} onClick={onBack} />
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <GhostButton label="Back to History" icon="arrow-left" isDark={isDark} onClick={onBack} />
+        </div>
       </div>
       <div style={{ borderBottom: `1px solid ${t.border}`, paddingBottom: 10 }}>
         <Tabs isDark={isDark} tabs={TABS} active={tab} onChange={id => setTab(id as Tab)} />
@@ -183,20 +186,7 @@ export default function QuoteWorkspace({
             : <ErrorPanel isDark={isDark} error={error} />
         )}
 
-        {tab === "overview" && (
-          <Section title="Quote Fields" icon="file-text" isDark={isDark}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
-              {Object.entries(detail.record)
-                .filter(([, v]) => typeof v !== "object")
-                .map(([k, v]) => (
-                  <div key={k} style={{ fontSize: 12, display: "flex", justifyContent: "space-between", borderBottom: `1px solid ${t.border}`, padding: "4px 0" }}>
-                    <span style={{ color: t.dim }}>{k}</span>
-                    <span style={{ color: t.heading }}>{String(v ?? "—")}</span>
-                  </div>
-                ))}
-            </div>
-          </Section>
-        )}
+        {tab === "overview" && <QuoteOverview isDark={isDark} detail={detail} />}
 
         {tab === "lines" && (
           <>

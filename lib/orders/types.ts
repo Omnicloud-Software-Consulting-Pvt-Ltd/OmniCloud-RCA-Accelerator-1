@@ -8,6 +8,7 @@
  */
 
 import type { FieldRef } from "@/lib/salesforce/describe";
+import type { RecordDisplayMeta } from "@/lib/salesforce/recordReferences";
 import type {
   CatalogProduct,
   QuoteLineItemDraft,
@@ -44,6 +45,11 @@ export interface OrderFieldSchema {
   descriptionField: FieldRef | null;
   /** Only populated if this org's Order schema actually has a lookup back to Quote (§3.7) — never fabricated. */
   sourceQuoteField: FieldRef | null;
+  /** Order.BillToContactId (a Contact lookup) — null when this org's Order has no createable Bill To Contact. */
+  billToContactField: FieldRef | null;
+  /** Order Billing / Shipping address components (Street, City, State, PostalCode, Country) — null unless all five are createable in this org. */
+  billingAddressFields: OrderAddressFieldRefs | null;
+  shippingAddressFields: OrderAddressFieldRefs | null;
   /** Whether Type's describe metadata marks Contract as conditionally required (heuristic: a validation-rule-shaped dependency cannot be introspected directly, so this reflects whatever is discoverable — see resolveOrderFieldSchema). */
   contractRequiredForContractedType: boolean;
 }
@@ -86,6 +92,20 @@ export interface OrderActivationResult {
 
 /* ── Order CRUD ── */
 
+/** One postal address as entered in Order Details — maps 1:1 to Order.{Billing|Shipping}{Street,City,State,PostalCode,Country}. */
+export interface OrderAddress {
+  street: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  country: string;
+}
+
+export type OrderAddressKey = keyof OrderAddress;
+
+/** The real Order address component fields, with each one's Describe max length (null = unbounded). */
+export type OrderAddressFieldRefs = Record<OrderAddressKey, FieldRef & { maxLength: number | null }>;
+
 export interface OrderFormData {
   accountName: string;
   pricebookName: string;
@@ -97,6 +117,11 @@ export interface OrderFormData {
   poDate: string;
   description: string;
   sourceQuoteName: string;
+  /** Bill To Contact — the Salesforce Contact Id the user picked in the lookup (never typed text); the name is display-only. */
+  billToContactId?: string;
+  billToContactName?: string;
+  billingAddress?: OrderAddress;
+  shippingAddress?: OrderAddress;
 }
 
 export interface ReferenceLookupResult {
@@ -125,9 +150,11 @@ export interface OrderListItem {
   lineItemCount: number | null;
 }
 
-export interface OrderDetail {
+/** `RecordDisplayMeta` adds lookup names / formatted currency for the overview (lib/salesforce/recordReferences.ts). */
+export interface OrderDetail extends RecordDisplayMeta {
   id: string;
   orderNumber: string | null;
+  /** The raw Salesforce record, unchanged — lookups here are still Ids. */
   record: Record<string, unknown>;
   accountId: string | null;
   pricebookId: string | null;

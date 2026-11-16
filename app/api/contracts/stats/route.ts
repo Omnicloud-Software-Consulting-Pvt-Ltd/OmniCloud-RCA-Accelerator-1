@@ -121,7 +121,7 @@ export async function GET(req: NextRequest) {
   const { client } = auth;
 
   try {
-    const cacheKey = client.instanceUrl;
+    const cacheKey = client.cacheScope;
     const payload = await contractStatsCache.getOrCompute(cacheKey, () => computeContractStats(client));
     logSfCacheEvent({
       endpoint: "/api/contracts/stats", caller: "computeContractStats", cacheKey,

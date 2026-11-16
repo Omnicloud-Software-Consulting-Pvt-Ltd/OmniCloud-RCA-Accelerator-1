@@ -2,12 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSFClient, sfErrorResponse } from "@/lib/salesforce/serverSession";
 import { loadProductDetail } from "@/lib/products/server/productDetail";
 import { findOrCreate, isUnsupportedSObject, soqlEscape } from "@/lib/products/server/salesforceWrites";
-import { findMatchingSellingModels } from "@/lib/products/server/sellingModel";
+import { findMatchingSellingModels, linkSellingModelToProduct } from "@/lib/products/server/sellingModel";
 import { checkProductDuplicate } from "@/lib/products/server/duplicateCheck";
 import { persistProductPrice } from "@/lib/products/server/pricebookEntry";
 import { resolveProductFields } from "@/lib/products/server/productFieldResolution";
 import { parseProductPrice } from "@/lib/products/price";
 import type { ProductPayload } from "@/lib/products/types";
+import { configApiFor, executeProductUpdate, relationsOf, resolveRevenueConfig } from "@/lib/products/server/revenueConfig";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -63,16 +64,16 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   // Duplicate Prevention — editing must never flag the record's own
   // unchanged name/code, but changing it to a name/code belonging to a
   // DIFFERENT existing Product is exactly the case §25 requires blocking.
-  // Only runs when the patch actually touches Name/ProductCode.
-  if (patch.productName !== undefined || patch.productCode !== undefined) {
+  // Only runs when the patch actually touches Name — the duplicate policy is
+  // the complete Product2.Name (exact, case-insensitive), never ProductCode.
+  if (patch.productName !== undefined) {
     try {
-      const duplicate = await checkProductDuplicate(client, { name: patch.productName ?? "", code: patch.productCode, excludeId: id });
+      const duplicate = await checkProductDuplicate(client, { name: patch.productName, excludeId: id });
       if (duplicate.isDuplicate) {
         return NextResponse.json({
           success: false,
-          error: duplicate.matchType === "exact-code"
-            ? `Product Code "${duplicate.recordCode}" is already used by ${duplicate.recordName}.`
-            : `A different product named "${duplicate.recordName}" already exists in Salesforce.`,
+          duplicateWarning: true,
+          error: `A different product with the exact name "${duplicate.recordName}" already exists in Salesforce.`,
           duplicate,
         }, { status: 409 });
       }
@@ -85,6 +86,18 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   const errors: Array<{ step: string; error: string }> = [];
   const skipped: Array<{ step: string; reason: string }> = [];
   const warnings: string[] = [];
+
+  // Tax/Billing configuration in the patch: validated BEFORE anything is written, so an unknown/ambiguous/inconsistent
+  // policy never leaves a half-applied edit.
+  const wanted = relationsOf(patch);
+  if (wanted.requested) {
+    try {
+      const pre = await resolveRevenueConfig(await configApiFor(client), wanted, id);
+      if (pre.blockers.length) return NextResponse.json({ success: false, error: `Nothing was changed — ${pre.blockers.join(" · ")}`, resolution: pre }, { status: 422 });
+    } catch (err) {
+      return sfErrorResponse(err, "Failed to resolve the requested tax/billing configuration");
+    }
+  }
 
   const price = patch.basePrice !== undefined ? parseProductPrice(patch.basePrice) : null;
   if (price && !price.ok) return NextResponse.json({ success: false, error: price.error }, { status: 400 });
@@ -143,7 +156,8 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     }
   }
 
-  /* ── Selling Model (ensure option exists, don't duplicate) ── */
+  /* ── Selling Model (activate if Draft, ensure option exists, don't duplicate) ── */
+  let linkedModelId: string | undefined;
   if (patch.sellingModel) {
     try {
       const matchedModels = await findMatchingSellingModels(client, patch.sellingModel);
@@ -152,16 +166,14 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       } else {
         const optionResults: unknown[] = [];
         for (const sm of matchedModels) {
-          const existing = await client.query<{ Id: string }>(
-            `SELECT Id FROM ProductSellingModelOption WHERE Product2Id = '${soqlEscape(id)}' AND ProductSellingModelId = '${soqlEscape(sm.Id)}' LIMIT 1`,
-          );
-          if (existing.records.length > 0) {
-            optionResults.push({ optionId: existing.records[0].Id, modelId: sm.Id, modelName: sm.Name, alreadyLinked: true });
-            continue;
+          try {
+            const link = await linkSellingModelToProduct(client, id, sm);
+            if (link.activated) warnings.push(`Product Selling Model "${sm.Name}" was Draft and has been activated.`);
+            optionResults.push({ optionId: link.optionId, modelId: sm.Id, modelName: sm.Name, ...(link.alreadyLinked ? { alreadyLinked: true } : {}) });
+            linkedModelId = sm.Id;
+          } catch (e) {
+            errors.push({ step: `sellingModelOption:${sm.Name}`, error: (e as Error).message });
           }
-          const opt = await client.createRecord("ProductSellingModelOption", { Product2Id: id, ProductSellingModelId: sm.Id });
-          if (opt.success) optionResults.push({ optionId: opt.id, modelId: sm.Id, modelName: sm.Name });
-          else errors.push({ step: `sellingModelOption:${sm.Name}`, error: JSON.stringify(opt.errors) });
         }
         steps.sellingModel = { matched: matchedModels.map((m) => ({ id: m.Id, name: m.Name })), options: optionResults };
       }
@@ -181,8 +193,20 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 
       if (patch.basePrice !== undefined) {
         if (price?.ok) {
-          // Shared with /save: standard-entry prerequisite, currency handling, read-back.
+          // The price belongs to a selling model: the one just linked, else the product's only linked one. With several
+          // (or none) linked and none named, entries are matched by Product + Price Book as before.
+          let productSellingModelId = linkedModelId;
+          if (!productSellingModelId) {
+            try {
+              const opts = await client.query<{ ProductSellingModelId: string }>(
+                `SELECT ProductSellingModelId FROM ProductSellingModelOption WHERE Product2Id = '${soqlEscape(id)}' LIMIT 2`,
+              );
+              if (opts.records.length === 1) productSellingModelId = opts.records[0].ProductSellingModelId;
+            } catch { /* ProductSellingModelOption not accessible — selling-model-agnostic price write */ }
+          }
+          // Shared with /save: standard-entry prerequisite, currency handling, selling model, read-back.
           const outcome = await persistProductPrice(client, {
+            productSellingModelId,
             productId: id,
             unitPrice: price.value,
             priceBook: patch.priceBook,
@@ -204,5 +228,20 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     }
   }
 
-  return NextResponse.json({ success: true, salesforceId: id, steps, errors, skipped, warnings });
+  /* ── Tax Policy / Billing Policy (Product2) + verification of the related treatments/items — only when requested ── */
+  let configuration = null, verification: unknown[] = [];
+  if (wanted.requested) {
+    try {
+      const out = await executeProductUpdate(client, await configApiFor(client), id, { relations: wanted.relations, ids: wanted.ids });
+      steps.revenueConfig = { changes: out.plan.changes };
+      errors.push(...out.errors.map(e => ({ step: "revenueConfig", error: e })));
+      for (const v of out.verification.filter(x => !x.passed)) errors.push({ step: `verify:${v.label}`, error: `${v.label}: expected ${v.expected ?? "—"}, Salesforce has ${v.actual ?? "nothing"}` });
+      warnings.push(...out.plan.warnings);
+      configuration = out.after; verification = out.verification;
+    } catch (e) {
+      errors.push({ step: "revenueConfig", error: (e as Error).message });
+    }
+  }
+
+  return NextResponse.json({ success: true, salesforceId: id, steps, errors, skipped, warnings, configuration, verification });
 }

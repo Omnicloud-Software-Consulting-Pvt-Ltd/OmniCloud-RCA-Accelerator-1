@@ -2,15 +2,12 @@
  * ============================================================================
  * TEMPORARY DEVELOPMENT STORAGE — NOT PRODUCTION-PERSISTENT.
  * ============================================================================
- * Same accepted limitation as lib/contracts/docusign/connectionStore.ts and
- * lib/contracts/docusign/signatureStatusStore.ts (see those files' doc comments
- * for the full rationale, confirmed again by investigation this turn: no
- * Postgres/KV/secrets manager/Salesforce custom object is provisioned in this
- * app anywhere): in-memory only, lost on server restart/redeploy/cold start,
- * and never shared across multiple server instances. Anchored on `globalThis`
- * for the same empirically-confirmed reason as those two files — separate
- * route files can otherwise get separate module evaluations of this file
- * under this app's Next.js 16 + Turbopack dev server.
+ * No Postgres/KV/secrets manager/Salesforce custom object is provisioned in
+ * this app anywhere, so this store is in-memory only: lost on server
+ * restart/redeploy/cold start, and never shared across multiple server
+ * instances. Anchored on `globalThis` because, empirically, separate route
+ * files can otherwise get separate module evaluations of this file under
+ * this app's Next.js 16 + Turbopack dev server.
  *
  * §Root-cause fix (deterministic run-boundary provenance) — content-only Rule
  * matching (`matchExistingRulesToCombinations` in nativeRecords.ts) correctly

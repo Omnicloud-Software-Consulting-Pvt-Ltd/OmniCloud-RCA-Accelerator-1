@@ -4,6 +4,7 @@ import { SESSION_COOKIE, decodeSession } from "@/lib/salesforce/client";
 import { resolveAnthropicKey } from "@/lib/config";
 import { describeProductAiError, AI_KEY_UNAVAILABLE_MESSAGE } from "@/lib/products/ai/anthropicError";
 import { buildProductIntent, type RawFieldInput } from "@/lib/products/ai/productIntent";
+import { mergePromptConfiguration } from "@/lib/products/revenueConfig";
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Full semantic Revenue Cloud payload-generation system prompt
@@ -43,6 +44,16 @@ JSON structure — every field is either the value the user stated, or JSON null
   "description": null,
   "unitOfMeasure": null,
   "classification": null,
+  "priceBook": null,
+  "taxPolicy": null,
+  "taxTreatment": null,
+  "taxTreatmentItem": null,
+  "taxEngine": null,
+  "taxCode": null,
+  "billingPolicy": null,
+  "billingTreatment": null,
+  "billingTreatmentItem": null,
+  "unsupported": [],
   "attributes": []
 }
 
@@ -104,6 +115,17 @@ productOwner — ONLY if a specific owner name or email is given (e.g. "owned by
 unitOfMeasure — ONLY if explicitly stated ("unit of measure Hour", "UoM GB", "priced per user", "sold per license"). Use the unit's name as stated in Title Case ("Hour", "GB", "User", "License"). If not mentioned, output null — do NOT default to "Each".
 
 classification — ONLY if a product classification is explicitly named ("classification Computer", "product classification Software", "based on the Printer classification"). Use the user's exact wording. If not mentioned, output null — never infer one from the product type.
+
+priceBook — ONLY if a price book is named ("Standard Price Book", "price book Partner Prices"). Otherwise null.
+
+Revenue Cloud TAX and BILLING configuration — extract each ONLY when the user names it. Keep the user's own words, including the
+object type ("assign the India Tax Policy" → taxPolicy "India Tax Policy"). Never invent one.
+  • taxPolicy, taxTreatment, taxTreatmentItem, taxEngine — "Tax Policy X", "assign the X Tax Policy", "Tax Treatment = Y", "tax engine Z".
+  • taxCode — ONLY if a tax code is stated ("tax code OC_GST_18").
+  • billingPolicy, billingTreatment, billingTreatmentItem — "assign the Advance Billing Policy", "Billing Treatment X".
+  • A shared qualifier applies to both: "assign the India Tax Policy and Tax Treatment" → taxPolicy "India Tax Policy", taxTreatment "India Tax Treatment".
+unitOfMeasure — a bare unit name given as one item of a comma/period separated list of settings (e.g. "Software, Each, One Time") counts as stated.
+unsupported — short phrases for anything the user asked to configure on the product that has NO field above (e.g. "warranty period 2 years"). [] if none.
 
 description — ONLY if the prompt contains language that IS a description (a sentence describing the product beyond just naming its fields), not merely restating the product name. If the prompt is just a flat list of field values with no descriptive sentence, output null — do NOT synthesize a description from the field values.
 
@@ -188,6 +210,16 @@ interface RawPayload {
   basePrice?: string | number | null;
   currencyIsoCode?: string | null;
   taxIncluded?: boolean | null;
+  priceBook?: string | null;
+  taxPolicy?: string | null;
+  taxTreatment?: string | null;
+  taxTreatmentItem?: string | null;
+  taxEngine?: string | null;
+  taxCode?: string | null;
+  billingPolicy?: string | null;
+  billingTreatment?: string | null;
+  billingTreatmentItem?: string | null;
+  unsupported?: unknown;
   attributes?: RawAttr[] | Record<string, unknown> | null;
 }
 
@@ -270,6 +302,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "AI returned malformed JSON" }, { status: 502 });
     }
 
+    // AI values first; the deterministic parser fills tax/billing/price-book the AI left empty; anything mentioned but not
+    // applied is reported back (never silently dropped).
+    const merged = mergePromptConfiguration(prompt, {
+      taxPolicy: parsed.taxPolicy, taxTreatment: parsed.taxTreatment, taxTreatmentItem: parsed.taxTreatmentItem, taxEngine: parsed.taxEngine,
+      billingPolicy: parsed.billingPolicy, billingTreatment: parsed.billingTreatment, billingTreatmentItem: parsed.billingTreatmentItem,
+      taxCode: parsed.taxCode, priceBook: parsed.priceBook, unitOfMeasure: parsed.unitOfMeasure, catalog: parsed.catalog, category: parsed.category,
+      sellingModel: parsed.sellingModel, basePrice: parsed.basePrice !== null && parsed.basePrice !== undefined ? String(parsed.basePrice) : null,
+    }, parsed.unsupported);
+    const mv = merged.values;
     const rawFields: RawFieldInput = {
       productName: parsed.productName,
       productCode: parsed.productCode,
@@ -281,12 +322,14 @@ export async function POST(req: NextRequest) {
       sellingModel: parsed.sellingModel,
       productOwner: parsed.productOwner,
       basePrice: parsed.basePrice !== null && parsed.basePrice !== undefined ? String(parsed.basePrice) : null,
-      priceBook: null,
+      priceBook: mv.priceBook ?? null,
       productType: parsed.productType,
       currencyIsoCode: parsed.currencyIsoCode,
       unitOfMeasure: parsed.unitOfMeasure,
       classification: parsed.classification,
       taxIncluded: parsed.taxIncluded,
+      taxPolicy: mv.taxPolicy, taxTreatment: mv.taxTreatment, taxTreatmentItem: mv.taxTreatmentItem, taxEngine: mv.taxEngine, taxCode: mv.taxCode,
+      billingPolicy: mv.billingPolicy, billingTreatment: mv.billingTreatment, billingTreatmentItem: mv.billingTreatmentItem,
     };
 
     const { intent, payload } = buildProductIntent(rawFields);
@@ -296,6 +339,7 @@ export async function POST(req: NextRequest) {
       success: true,
       payload: { ...payload, attributes },
       intent,
+      notes: merged.notes,
     });
   } catch (err) {
     const { status, message } = describeProductAiError(err);

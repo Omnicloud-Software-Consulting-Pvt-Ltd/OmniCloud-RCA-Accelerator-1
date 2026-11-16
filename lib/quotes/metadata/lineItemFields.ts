@@ -69,7 +69,7 @@ const qliSchemaCache = createTTLCache<QuoteLineItemFieldSchema>();
 const qliAttrSchemaCache = createTTLCache<QuoteLineItemAttributeFieldSchema>();
 
 export async function resolveQuoteLineItemFieldSchema(client: SalesforceClient): Promise<QuoteLineItemFieldSchema> {
-  return qliSchemaCache.getOrCompute(client.instanceUrl, async () => {
+  return qliSchemaCache.getOrCompute(client.cacheScope, async () => {
     const describe = await describeObjectCached(client, "QuoteLineItem");
 
     // All of these are write targets (used to build the QLI create payload)
@@ -179,7 +179,7 @@ export async function resolveQuoteLineItemFieldSchema(client: SalesforceClient):
 }
 
 export async function resolveQuoteLineItemAttributeFieldSchema(client: SalesforceClient): Promise<QuoteLineItemAttributeFieldSchema> {
-  return qliAttrSchemaCache.getOrCompute(client.instanceUrl, async () => {
+  return qliAttrSchemaCache.getOrCompute(client.cacheScope, async () => {
     // Object name itself isn't universally standard-named across orgs with
     // customized RCA installs — try the well-known name first via describeGlobal.
     let describe: DescribeResult | null = null;

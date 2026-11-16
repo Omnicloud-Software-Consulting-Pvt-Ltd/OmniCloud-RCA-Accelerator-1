@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Ic, tokens } from "@/components/data/quotes/shared";
+import AnchoredOverlay from "@/components/ui/AnchoredOverlay";
+import { overlayPanelStyle } from "@/lib/ui/overlay";
 
 /** Every merge field the Template Studio's toolbar can insert (§Center Panel "Dynamic merge fields"). */
 export const MERGE_FIELDS = [
@@ -48,6 +50,7 @@ export default function RichTextEditor({ isDark, value, onChange, disabled }: {
   const t = tokens(isDark);
   const editorRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const mergeButtonRef = useRef<HTMLButtonElement>(null);
   const [mergeMenuOpen, setMergeMenuOpen] = useState(false);
 
   // Only reset the DOM when `value` genuinely changed from OUTSIDE this editor
@@ -129,7 +132,10 @@ export default function RichTextEditor({ isDark, value, onChange, disabled }: {
         <div style={{ width: 1, background: t.border, margin: "2px 4px" }} />
         <div style={{ position: "relative" }}>
           <button
+            ref={mergeButtonRef}
             type="button"
+            aria-haspopup="menu"
+            aria-expanded={mergeMenuOpen}
             onMouseDown={e => e.preventDefault()}
             onClick={() => setMergeMenuOpen(v => !v)}
             style={{
@@ -139,12 +145,14 @@ export default function RichTextEditor({ isDark, value, onChange, disabled }: {
           >
             <Ic n="sparkles" s={13} /> Merge Field
           </button>
-          {mergeMenuOpen && (
-            <div style={{ position: "absolute", zIndex: 30, top: "100%", left: 0, marginTop: 4, borderRadius: 9, border: `1px solid ${t.border}`, background: t.surface, boxShadow: "0 8px 24px rgba(0,0,0,0.25)", maxHeight: 260, overflowY: "auto", minWidth: 200 }}>
+          {/* Portaled (components/ui/AnchoredOverlay) — never clipped by the panel; outside click / Escape close it. */}
+          <AnchoredOverlay anchorRef={mergeButtonRef} open={mergeMenuOpen} onDismiss={() => setMergeMenuOpen(false)} maxHeight={260}
+            matchWidth={false} minWidth={200} role="menu" aria-label="Merge fields" style={overlayPanelStyle(isDark, t.border)}>
               {MERGE_FIELDS.map(f => (
                 <button
                   key={f}
                   type="button"
+                  role="menuitem"
                   onMouseDown={e => e.preventDefault()}
                   onClick={() => insertMergeField(f)}
                   style={{ display: "block", width: "100%", textAlign: "left", padding: "7px 12px", border: "none", background: "transparent", cursor: "pointer", fontSize: 12, color: t.body, fontFamily: "ui-monospace, monospace" }}
@@ -152,8 +160,7 @@ export default function RichTextEditor({ isDark, value, onChange, disabled }: {
                   {"{{" + f + "}}"}
                 </button>
               ))}
-            </div>
-          )}
+          </AnchoredOverlay>
         </div>
       </div>
 

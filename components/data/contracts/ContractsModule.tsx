@@ -6,16 +6,15 @@ import ContractHistoryList from "@/components/data/contracts/ContractHistoryList
 import CreateContractFlow from "@/components/data/contracts/CreateContractFlow";
 import ContractWorkspace from "@/components/data/contracts/ContractWorkspace";
 import ContractPreviewPanel from "@/components/data/contracts/ContractPreviewPanel";
-import DocuSignSettings from "@/components/data/contracts/DocuSignSettings";
+import DocuSignSettings from "@/components/data/contracts/docusign/DocuSignSettings";
 import { subscribeExecutionLog, getExecutionLogSnapshot } from "@/lib/quotes/client/executionLog";
 
-type View = { mode: "history" } | { mode: "create" } | { mode: "workspace"; contractId: string; tab?: string } | { mode: "docusign-settings" };
+type View = { mode: "history" } | { mode: "create" } | { mode: "workspace"; contractId: string; tab?: string } | { mode: "docusign-settings"; returnTo?: View };
 
 interface NavigatePatch { cv?: string | null; cid?: string | null; ctab?: string | null }
 
 /**
- * Top-level entry point for the Contract / document-generation / e-signature
- * module, mounted as the "Contracts" tile's content inside DataOmnion
+ * Top-level entry point for the Contract / document-generation module, mounted as the "Contracts" tile's content inside DataOmnion
  * (app/data/page.tsx) — mirrors OrdersModule.tsx/QuotesModule.tsx exactly
  * (same layout shell, same Diagnostics drawer pattern, same execution-log
  * store) so the Contracts tile feels like it has always been part of
@@ -41,8 +40,8 @@ export default function ContractsModule({
   const t = tokens(isDark);
   const [view, setViewState] = useState<View>(() => {
     if (initialView === "workspace" && initialWorkspaceId) return { mode: "workspace", contractId: initialWorkspaceId };
-    if (initialView === "docusign-settings") return { mode: "docusign-settings" };
     if (initialView === "create") return { mode: "create" };
+    if (initialView === "docusign-settings") return { mode: "docusign-settings" };
     return { mode: "history" };
   });
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -65,14 +64,15 @@ export default function ContractsModule({
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <button
-            onClick={() => setView({ mode: "docusign-settings" })}
+            onClick={() => setView(view.mode === "docusign-settings" ? view.returnTo ?? { mode: "history" } : { mode: "docusign-settings", returnTo: view })}
+            title="Connect your DocuSign account for e-signatures"
             style={{
               display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 9,
               border: `1px solid ${view.mode === "docusign-settings" ? t.accent + "60" : t.border}`, cursor: "pointer", fontSize: 12.5, fontWeight: 600,
               background: view.mode === "docusign-settings" ? `${t.accent}18` : "transparent", color: view.mode === "docusign-settings" ? t.accent : t.body,
             }}
           >
-            <Ic n="plug" s={13} /> DocuSign Settings
+            <Ic n="send" s={13} /> DocuSign Settings
           </button>
           <button
             onClick={() => setDrawerOpen(v => !v)}
@@ -123,9 +123,10 @@ export default function ContractsModule({
               initialTab={view.tab ?? (initialWorkspaceId === view.contractId ? initialTab : undefined)}
               onTabChange={tab => onNavigate?.({ cv: "workspace", cid: view.contractId, ctab: tab })}
               onBack={() => setView({ mode: "history" })}
+              onOpenDocuSignSettings={() => setView({ mode: "docusign-settings", returnTo: view })}
             />
           )}
-          {view.mode === "docusign-settings" && <DocuSignSettings isDark={isDark} onBack={() => setView({ mode: "history" })} />}
+          {view.mode === "docusign-settings" && <DocuSignSettings isDark={isDark} onBack={() => setView(view.returnTo ?? { mode: "history" })} />}
         </div>
 
         {drawerOpen && (

@@ -30,6 +30,8 @@ export async function POST(req: NextRequest) {
     procedureName: string;
     description?: string;
     activate?: boolean;
+    /** Optional Decision Table Id/DeveloperName to use instead of automatic resolution. */
+    lookupTableReference?: string | null;
   };
   try {
     body = await req.json();
@@ -56,6 +58,7 @@ export async function POST(req: NextRequest) {
             procedureName: body.procedureName,
             description: body.description,
             activate: body.activate ?? true,
+            lookupTableReference: body.lookupTableReference ?? null,
           },
           event => write({ type: "step", step: event.step, status: event.status, detail: event.detail }),
         );
@@ -79,8 +82,8 @@ export async function POST(req: NextRequest) {
               components: [],
               salesforce: {
                 priceAdjustmentScheduleId: null,
-                bundleBasedAdjRuleIds: [],
-                bundleAdjustmentConditionIds: [],
+                lookupTableId: null,
+                lookupTableApiName: null,
                 bundleBasedAdjustmentIds: [],
                 expressionSetId: null,
                 expressionSetVersionId: null,

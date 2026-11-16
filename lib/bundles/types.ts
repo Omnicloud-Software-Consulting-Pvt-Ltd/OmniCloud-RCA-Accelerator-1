@@ -20,6 +20,8 @@ export interface ParsedProduct {
   isDependency: boolean;
   dependencyOf?: string | null;
   sellingModel?: string;
+  /** Optional Price Book name; inherits the bundle’s, which defaults to the Standard Price Book. */
+  priceBook?: string;
   category?: string;
   attributes?: BundleImportAttribute[];
   isRequired?: boolean;
@@ -33,6 +35,8 @@ export interface ParsedBundle {
   category?: string;
   catalog?: string;
   sellingModel?: string;
+  /** Optional Price Book name for the bundle and (by inheritance) its components; omitted = Standard Price Book. */
+  priceBook?: string;
   bundleType?: string;
   products: ParsedProduct[];
   nestedBundles?: ParsedBundle[];

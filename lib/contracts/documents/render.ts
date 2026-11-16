@@ -1,4 +1,4 @@
-import type { BrandingConfig, MergeFieldValues } from "@/lib/contracts/types";
+import type { BrandingConfig, CompanySettings, MergeFieldValues } from "@/lib/contracts/types";
 import { substituteMergeFields } from "@/lib/contracts/documents/mergeFields";
 
 export const DEFAULT_BRANDING: BrandingConfig = {
@@ -49,9 +49,38 @@ function sanitizeBasic(html: string): string {
   return html.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/ on[a-z]+="[^"]*"/gi, "").replace(/ on[a-z]+='[^']*'/gi, "");
 }
 
+/**
+ * Applies the Company Information panel (company profile) to a template's branding for rendering: the saved company name replaces
+ * the template's own placeholder name ("Your Company"), and the contact details are shown in the header. Used identically by the
+ * HTML preview, the PDF preview and PDF/DOCX generation, so all three always show the same company. The template itself is not
+ * changed — a blank Company Name keeps the template's own name.
+ */
+export function applyCompanySettings(branding: BrandingConfig, settings: Partial<CompanySettings> | null | undefined): BrandingConfig {
+  if (!settings) return branding;
+  const v = (s: string | null | undefined) => (typeof s === "string" ? s.trim() : "");
+  const details = {
+    address: v(settings.address), phone: v(settings.phone), email: v(settings.email),
+    website: v(settings.website), taxNumber: v(settings.taxNumber), registrationNumber: v(settings.registrationNumber),
+  };
+  const hasDetails = Object.values(details).some(Boolean);
+  return { ...branding, companyName: v(settings.companyName) || branding.companyName, ...(hasDetails ? { companyDetails: details } : {}) };
+}
+
+/** The header's contact lines under the company name: address · phone/email/website · tax/registration numbers (empty parts omitted). */
+export function companyDetailLines(branding: BrandingConfig): string[] {
+  const d = branding.companyDetails;
+  if (!d) return [];
+  const join = (parts: (string | undefined)[]) => parts.filter(p => p && p.trim()).join("  ·  ");
+  return [
+    join([d.address]),
+    join([d.phone, d.email, d.website]),
+    join([d.taxNumber ? `Tax No: ${d.taxNumber}` : undefined, d.registrationNumber ? `Reg No: ${d.registrationNumber}` : undefined]),
+  ].filter(Boolean);
+}
+
 const FOOTER_ELEMENT_LABELS: Record<BrandingConfig["footerElements"][number], (b: BrandingConfig) => string> = {
   confidential: () => "Confidential",
-  companyAddress: b => b.companyName,
+  companyAddress: b => b.companyDetails?.address?.trim() || b.companyName,
   pageNumber: () => "Page 1 of 1",
   generatedDate: () => `Generated ${new Date().toLocaleDateString()}`,
   version: () => "v1",
@@ -77,7 +106,10 @@ export function renderBrandedHtml(bodyHtml: string, branding: BrandingConfig, va
   return `<div style="font-family: ${branding.fontFamily}; font-size: ${branding.fontSize}pt; line-height: ${branding.lineHeight}; letter-spacing: ${branding.letterSpacing}px; color: ${branding.textColor}; background: ${branding.pageBackground}; max-width: 720px; margin: 0 auto; padding: ${m.top}px ${m.right}px ${m.bottom}px ${m.left}px;">
     <div style="display:flex; align-items:center; justify-content:${JUSTIFY_FOR_POSITION[branding.logoPosition]}; gap:12px; border-bottom: 3px solid ${branding.primaryColor}; padding-bottom: ${branding.headerMargin}px; margin-bottom: 20px; min-height: ${branding.headerHeight}px;">
       ${branding.logoUrl ? `<img src="${branding.logoUrl}" alt="" style="width:${branding.logoWidth}px; height:${branding.logoMaintainAspectRatio ? "auto" : `${branding.logoHeight}px`}; object-fit: contain;" />` : ""}
-      <div style="font-size: 18px; font-weight: 700; color: ${branding.primaryColor}; font-family: ${branding.headingFont};">${escapeHtml(branding.companyName)}</div>
+      <div>
+        <div style="font-size: 18px; font-weight: 700; color: ${branding.primaryColor}; font-family: ${branding.headingFont};">${escapeHtml(branding.companyName)}</div>
+        ${companyDetailLines(branding).map(line => `<div style="font-size: 11px; color: #555; margin-top: 2px;">${escapeHtml(line)}</div>`).join("")}
+      </div>
     </div>
     <div style="font-family: ${branding.paragraphFont};">${merged}</div>
     <div style="margin-top: 24px; padding-top: 12px; border-top: 1px solid #ddd; font-size: 12px; color: #555;">

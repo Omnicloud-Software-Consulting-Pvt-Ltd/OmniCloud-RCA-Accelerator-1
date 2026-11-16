@@ -17,7 +17,7 @@ const orderItemAttrSchemaCache = createTTLCache<OrderItemAttributeFieldSchema>()
  * field without any Quote-specific coupling.
  */
 export async function resolveOrderItemFieldSchema(client: SalesforceClient): Promise<OrderItemFieldSchema> {
-  return orderItemSchemaCache.getOrCompute(client.instanceUrl, async () => {
+  return orderItemSchemaCache.getOrCompute(client.cacheScope, async () => {
     const describe = await describeObjectCached(client, "OrderItem");
 
     const orderField = findReferenceFieldByTargetObject(describe, "Order", { requireCreateable: true })
@@ -66,7 +66,7 @@ export async function resolveOrderItemFieldSchema(client: SalesforceClient): Pro
 }
 
 export async function resolveOrderItemAttributeFieldSchema(client: SalesforceClient): Promise<OrderItemAttributeFieldSchema> {
-  return orderItemAttrSchemaCache.getOrCompute(client.instanceUrl, async () => {
+  return orderItemAttrSchemaCache.getOrCompute(client.cacheScope, async () => {
     let describe: DescribeResult | null = null;
     let objectName: string | null = null;
     try {

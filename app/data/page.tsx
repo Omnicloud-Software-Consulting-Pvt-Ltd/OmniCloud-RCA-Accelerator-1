@@ -1,16 +1,18 @@
 "use client";
 
-import { useEffect, useState, useMemo, useRef } from "react";
+import { useCallback, useEffect, useState, useMemo, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import Image from "next/image";
 import { useUrlParams } from "@/lib/navigation/useUrlParams";
+import { APP_DEEP_LINK_EVENT } from "@/lib/notifications/destinations";
 import { loadSession, clearSession } from "@/lib/auth/session";
 import { loadIdentity, isSetupComplete, clearIdentity, clearSetup } from "@/lib/auth/identity";
 import type { SessionData } from "@/lib/auth/types";
 import { toCreatedSalesforceRecord } from "@/lib/salesforce/recordUrl";
-import { useSalesforceSuccess } from "@/components/notifications/SalesforceSuccessContext";
+import { useSalesforceSuccess, useNotify } from "@/components/notifications/SalesforceSuccessContext";
+import NotificationBell from "@/components/notifications/NotificationBell";
 import RCAAttributeStudio from "@/components/data/RCAAttributeStudio";
 import AttributesDashboard from "@/components/data/attributes/AttributesDashboard";
 import AttributeHistoryList from "@/components/data/attributes/AttributeHistoryList";
@@ -28,6 +30,7 @@ import BundleComponentsView from "@/components/data/bundles/BundleComponentsView
 import RCProductWorkspace from "@/components/metadata/RCProductWorkspace";
 import ProductsDashboard from "@/components/data/products/ProductsDashboard";
 import ProductCreationChooser from "@/components/data/products/ProductCreationChooser";
+import ProductConfigurationWorkspace from "@/components/data/products/ProductConfigurationWorkspace";
 import ProductHistoryList from "@/components/data/products/ProductHistoryList";
 import ProductImportWizard from "@/components/data/products/import/ProductImportWizard";
 import MultiProductWorkspace from "@/components/metadata/multi/MultiProductWorkspace";
@@ -42,13 +45,28 @@ import ContractsDashboard from "@/components/data/contracts/ContractsDashboard";
 import ContractImportWizard from "@/components/data/contracts/import/ContractImportWizard";
 import PricingRulesModule from "@/components/data/pricing-rules/PricingRulesModule";
 import PricingRulesDashboard from "@/components/data/pricing-rules/PricingRulesDashboard";
+import BillingWorkspace from "@/components/data/billing/BillingWorkspace";
+import TaxesWorkspace, { taxesNavKey, type TaxesUrlPatch } from "@/components/data/taxes/TaxesWorkspace";
+import RampWorkspace, { type RampView } from "@/components/data/ramp/RampWorkspace";
+import AssetLifecycleWorkspace from "@/components/data/assetLifecycle/AssetLifecycleWorkspace";
+import RevenueCoreDashboard from "@/components/data/revenue-core/RevenueCoreDashboard";
+import type { RevenueCoreNavTarget } from "@/lib/revenueCore/modules";
+import ModuleIntro, { ModuleIntroContext } from "@/components/help/ModuleIntro";
+import FieldHelp from "@/components/help/FieldHelp";
+import { moduleGuideKeyFor, taxesIntroKey } from "@/lib/help/moduleGuides";
 import { Ic, hexToRgb, ObjectWorkspace, DashboardModuleFrame, type StatDef, type ActionDef } from "@/components/data/dashboardShell";
 
 type AppMode = "browse" | "workflow" | "preview" | "success";
 type FieldType = "text" | "email" | "phone" | "url" | "number" | "currency" | "date" | "select" | "textarea";
 interface FieldDef { id: string; label: string; type: FieldType; required?: boolean; placeholder?: string; options?: string[]; span?: 1 | 2 }
 interface SectionDef { id: string; label: string; icon: string; fields: FieldDef[] }
-export interface DataObject { id: string; label: string; icon: string; groupId: string; groupLabel: string; badge?: string; color: string; stats: StatDef[]; actions: ActionDef[]; form?: SectionDef[]; sfApiName?: string; fieldMap?: Record<string, string> }
+export interface DataObject { id: string; label: string; icon: string; groupId: string; groupLabel: string; badge?: string; color: string; stats: StatDef[]; actions: ActionDef[]; form?: SectionDef[]; sfApiName?: string; fieldMap?: Record<string, string>; billingModule?: string | null;
+  /** Taxes section item: a Taxes view ("configure" | "calculation" | "readiness") or a tax module key; null = Taxes dashboard. */
+  taxesView?: string | null;
+  /** RAMP section item: the RAMP workspace view it opens (components/data/ramp/RampWorkspace). */
+  rampView?: string | null;
+  /** Asset Lifecycle section item: the section it opens (components/data/assetLifecycle/AssetLifecycleWorkspace). */
+  lifecycleSection?: string | null }
 interface DataGroup { id: string; label: string; icon: string; color: string; items: DataObject[] }
 
 const ACCOUNT_FORM: SectionDef[] = [
@@ -553,41 +571,31 @@ const DATA_GROUPS: DataGroup[] = [
           { id: "analytics", title: "Analytics", desc: "View quote analytics", icon: "bar-chart", accent: "#00D4FF" },
         ],
       },
-      {
-        id: "assets",
-        label: "Assets",
-        icon: "archive",
-        groupId: "crm",
-        groupLabel: "Core CRM",
-        badge: "198",
-        color: "#00D4FF",
-        stats: [
-          { label: "Total", value: "198" },
-          { label: "Active", value: "181" },
-          { label: "Expiring", value: "9" },
-          { label: "Value", value: "$12M" },
-        ],
-        actions: [
-          { id: "create-asset", title: "Create Asset", desc: "Add a new asset record", icon: "plus", accent: "#00D4FF", workflow: "create" },
-          { id: "bulk-update", title: "Bulk Update", desc: "Update multiple assets", icon: "edit", accent: "#3AABFF" },
-          { id: "renewal-forecast", title: "Renewal Forecast", desc: "AI-powered renewal forecast", icon: "refresh", accent: "#00D4FF", badge: "AI" },
-          { id: "analytics", title: "Analytics", desc: "View asset analytics", icon: "bar-chart", accent: "#00D4FF" },
-        ],
-      },
     ],
   },
   {
     id: "revenue",
-    label: "Revenue Cloud",
+    label: "Revenue Cloud Core",
     icon: "zap",
     color: "#00D4FF",
     items: [
+      // Revenue Cloud Core Dashboard (components/data/revenue-core/RevenueCoreDashboard) — counts come live from the org.
+      {
+        id: "revenue-core",
+        label: "Revenue Cloud Core Dashboard",
+        icon: "bar-chart",
+        groupId: "revenue",
+        groupLabel: "Revenue Cloud Core",
+        color: "#00D4FF",
+        stats: [],
+        actions: [],
+      },
       {
         id: "catalogs",
         label: "Catalogs",
         icon: "layers",
         groupId: "revenue",
-        groupLabel: "Revenue Cloud",
+        groupLabel: "Revenue Cloud Core",
         badge: "8",
         color: "#00D4FF",
         stats: [
@@ -609,7 +617,7 @@ const DATA_GROUPS: DataGroup[] = [
         label: "Bundles",
         icon: "package",
         groupId: "revenue",
-        groupLabel: "Revenue Cloud",
+        groupLabel: "Revenue Cloud Core",
         badge: "47",
         color: "#00D4FF",
         stats: [
@@ -633,7 +641,7 @@ const DATA_GROUPS: DataGroup[] = [
         label: "Pricing Rules",
         icon: "zap",
         groupId: "revenue",
-        groupLabel: "Revenue Cloud",
+        groupLabel: "Revenue Cloud Core",
         badge: "34",
         color: "#00D4FF",
         stats: [
@@ -655,7 +663,7 @@ const DATA_GROUPS: DataGroup[] = [
         label: "Attributes",
         icon: "sliders",
         groupId: "revenue",
-        groupLabel: "Revenue Cloud",
+        groupLabel: "Revenue Cloud Core",
         badge: "89",
         color: "#00D4FF",
         stats: [
@@ -671,51 +679,112 @@ const DATA_GROUPS: DataGroup[] = [
           { id: "deploy", title: "Deploy", desc: "Deploy attributes to production", icon: "rocket", accent: "#00D4FF" },
         ],
       },
-      {
-        id: "invoices",
-        label: "Invoices",
-        icon: "file-text",
-        groupId: "revenue",
-        groupLabel: "Revenue Cloud",
-        badge: "234",
-        color: "#00D4FF",
-        stats: [
-          { label: "Open", value: "234" },
-          { label: "Overdue", value: "18" },
-          { label: "Paid 30d", value: "89" },
-          { label: "Outstanding", value: "$234k" },
-        ],
-        actions: [
-          { id: "create-invoice", title: "Create Invoice", desc: "Add a new invoice", icon: "plus", accent: "#00D4FF", workflow: "create" },
-          { id: "send-reminders", title: "Send Reminders", desc: "Send payment reminders", icon: "send", accent: "#60B8FF" },
-          { id: "bulk-collect", title: "Bulk Collect", desc: "Process payments in bulk", icon: "credit-card", accent: "#00D4FF" },
-          { id: "aging-report", title: "Aging Report", desc: "AI invoice aging analysis", icon: "bar-chart", accent: "#3AABFF", badge: "AI" },
-          { id: "export", title: "Export", desc: "Export invoices to file", icon: "download", accent: "#00D4FF" },
-        ],
-      },
-      {
-        id: "renewals",
-        label: "Renewals",
-        icon: "refresh",
-        groupId: "revenue",
-        groupLabel: "Revenue Cloud",
-        badge: "23",
-        color: "#00D4FF",
-        stats: [
-          { label: "Due 30d", value: "23" },
-          { label: "Due 60d", value: "41" },
-          { label: "Auto-Renew", value: "18" },
-          { label: "At Risk", value: "5" },
-        ],
-        actions: [
-          { id: "process-renewal", title: "Process Renewal", desc: "Process subscription renewals", icon: "refresh", accent: "#00D4FF", workflow: "create" },
-          { id: "ai-risk-score", title: "AI Risk Score", desc: "Score renewal risk with AI", icon: "sparkles", accent: "#60B8FF", badge: "AI" },
-          { id: "bulk-renew", title: "Bulk Renew", desc: "Renew multiple subscriptions", icon: "rocket", accent: "#00D4FF" },
-          { id: "renewal-analytics", title: "Renewal Analytics", desc: "AI renewal trend analysis", icon: "bar-chart", accent: "#00D4FF", badge: "AI" },
-          { id: "send-notice", title: "Send Notice", desc: "Send renewal notifications", icon: "send", accent: "#3AABFF" },
-        ],
-      },
     ],
+  },
+  // Revenue Cloud Billing — one grouped workspace (components/data/billing/BillingWorkspace).
+  // Every item opens the same workspace, pre-navigated to its module; stats/actions come live
+  // from the connected org inside the workspace, so these entries carry no static numbers.
+  {
+    id: "billing",
+    label: "Revenue Cloud Billing",
+    icon: "credit-card",
+    color: "#00D4FF",
+    items: ([
+      { id: "billing", label: "Billing Overview", icon: "credit-card", billingModule: null },
+      { id: "billing-policies", label: "Billing Policies", icon: "shield", billingModule: "billing-policies" },
+      { id: "billing-treatments", label: "Billing Treatments", icon: "layers", billingModule: "billing-treatments" },
+      { id: "billing-treatment-items", label: "Treatment Items", icon: "list", billingModule: "billing-treatment-items" },
+      { id: "billing-usage-resources", label: "Usage Resources", icon: "zap", billingModule: "usage-resources" },
+      { id: "billing-units-of-measure", label: "Units of Measure", icon: "sliders", billingModule: "units-of-measure" },
+      { id: "billing-aggregation-policies", label: "Aggregation Policies", icon: "bar-chart", billingModule: "usage-aggregation-policies" },
+      { id: "billing-rates", label: "Rates", icon: "table", billingModule: "rate-cards" },
+      { id: "billing-schedules", label: "Billing Schedules", icon: "calendar", billingModule: "billing-schedules" },
+      { id: "billing-invoices", label: "Invoices", icon: "file-text", billingModule: "invoices" },
+      { id: "billing-payments", label: "Payments", icon: "credit-card", billingModule: "payments" },
+      { id: "billing-credit-memos", label: "Credit Memos", icon: "file-text", billingModule: "credit-memos" },
+      { id: "billing-debit-memos", label: "Debit Memos", icon: "file-text", billingModule: "debit-memos" },
+    ] as const).map(item => ({
+      ...item,
+      groupId: "billing",
+      groupLabel: "Revenue Cloud Billing",
+      color: "#00D4FF",
+      stats: [],
+      actions: [],
+    })),
+  },
+  // Taxes — one workspace (components/data/taxes/TaxesWorkspace) over the org's verified tax objects; every item opens it at
+  // that view. Counts and capabilities come live from the connected org, so these entries carry no static numbers.
+  {
+    id: "taxes",
+    label: "Taxes",
+    icon: "dollar-sign",
+    color: "#00D4FF",
+    items: ([
+      { id: "taxes", label: "Taxes Dashboard", icon: "dollar-sign", taxesView: null },
+      { id: "taxes-geo-countries", label: "Geography · Geo Countries", icon: "globe", taxesView: "geo-countries" },
+      { id: "taxes-geo-states", label: "Geography · Geo States", icon: "map-pin", taxesView: "geo-states" },
+      { id: "taxes-engines", label: "Tax Engines", icon: "cpu", taxesView: "tax-engines" },
+      { id: "taxes-policies", label: "Tax Policies", icon: "shield", taxesView: "tax-policies" },
+      { id: "taxes-treatments", label: "Tax Treatments", icon: "layers", taxesView: "tax-treatments" },
+      { id: "taxes-treatment-items", label: "Tax Treatment Items", icon: "list", taxesView: "tax-treatment-items" },
+      { id: "taxes-rates", label: "Tax Rates", icon: "bar-chart", taxesView: "tax-rates" },
+      { id: "taxes-calculation", label: "Calculation", icon: "check-circle", taxesView: "calculation" },
+      { id: "taxes-readiness", label: "Engine Readiness", icon: "activity", taxesView: "readiness" },
+    ] as const).map(item => ({
+      ...item,
+      groupId: "taxes",
+      groupLabel: "Taxes",
+      color: "#00D4FF",
+      stats: [],
+      actions: [],
+    })),
+  },
+  // RAMP — one workspace (components/data/ramp/RampWorkspace); every item opens it at that view. Capabilities, counts and
+  // records come live from the connected org (/api/ramp/*), so these entries carry no static numbers.
+  {
+    id: "ramp",
+    label: "RAMP",
+    icon: "trending-up",
+    color: "#00D4FF",
+    items: ([
+      { id: "ramp", label: "RAMP Home", icon: "trending-up", rampView: "home" },
+      { id: "ramp-product-setup", label: "Product Ramp Setup", icon: "package", rampView: "product-setup" },
+      { id: "ramp-schedules", label: "Ramp Schedules", icon: "calendar", rampView: "schedules" },
+      { id: "ramp-deals", label: "Ramp Deals", icon: "trending-up", rampView: "deals" },
+      { id: "ramp-group-deals", label: "Group Ramp Deals", icon: "layers", rampView: "group-deals" },
+      { id: "ramp-executions", label: "Ramp Execution Center", icon: "activity", rampView: "executions" },
+      { id: "ramp-history", label: "Ramp History", icon: "clock", rampView: "history" },
+      { id: "ramp-ai-builder", label: "AI Ramp Builder", icon: "sparkles", rampView: "ai-builder" },
+    ] as const).map(item => ({
+      ...item,
+      groupId: "ramp",
+      groupLabel: "RAMP",
+      color: "#00D4FF",
+      stats: [],
+      actions: [],
+    })),
+  },
+  // Asset Lifecycle — Assets, Amendments, Renewals and Cancellations as one workspace
+  // (components/data/assetLifecycle/AssetLifecycleWorkspace); every count and record comes live from the connected org
+  // (/api/assets/*, /api/asset-lifecycle/*), so these entries carry no static numbers.
+  {
+    id: "lifecycle",
+    label: "Asset Lifecycle",
+    icon: "archive",
+    color: "#3AABFF",
+    items: ([
+      { id: "assets", label: "Assets", icon: "archive", lifecycleSection: "assets" },
+      { id: "amendments", label: "Amendments", icon: "edit", lifecycleSection: "amend" },
+      { id: "renewals", label: "Renewals", icon: "refresh", lifecycleSection: "renew" },
+      { id: "cancellations", label: "Cancellations", icon: "x", lifecycleSection: "cancel" },
+    ] as const).map(item => ({
+      ...item,
+      groupId: "lifecycle",
+      groupLabel: "Asset Lifecycle",
+      color: "#3AABFF",
+      stats: [],
+      actions: [],
+    })),
   },
   {
     id: "service",
@@ -853,37 +922,6 @@ const AI_EXAMPLES = [
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TOAST
-// ─────────────────────────────────────────────────────────────────────────────
-function Toast({ msg, type, onClose }: { msg: string; type: "success" | "info" | "error"; onClose: () => void }) {
-  const colors = { success: "#00C875", info: "#00D4FF", error: "#E84444" };
-  const c = colors[type];
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: -20, x: "-50%" }}
-      animate={{ opacity: 1, y: 0, x: "-50%" }}
-      exit={{ opacity: 0, y: -20, x: "-50%" }}
-      className="fixed top-4 left-1/2 z-50 flex items-center gap-2.5 px-4 py-2.5 rounded-xl"
-      style={{
-        background: "rgba(1,9,24,0.92)",
-        border: `1px solid ${c}40`,
-        boxShadow: `0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px ${c}18`,
-        backdropFilter: "blur(16px)",
-        WebkitBackdropFilter: "blur(16px)",
-      }}
-    >
-      <span style={{ color: c }}>
-        <Ic n={type === "success" ? "check-circle" : type === "error" ? "alert" : "info"} s={14} />
-      </span>
-      <span className="text-[12px] font-medium" style={{ color: "rgba(210,230,250,0.9)" }}>{msg}</span>
-      <button onClick={onClose} style={{ color: "rgba(90,122,154,0.5)", marginLeft: 4 }}>
-        <Ic n="x" s={12} />
-      </button>
-    </motion.div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // NAVBAR
 // ─────────────────────────────────────────────────────────────────────────────
 function NavBar({ session, isDark, onSignOut }: { session: SessionData; isDark: boolean; onSignOut: () => void }) {
@@ -949,6 +987,8 @@ function NavBar({ session, isDark, onSignOut }: { session: SessionData; isDark: 
           />
           {isProduction ? "Production" : "Sandbox"}
         </div>
+
+        <NotificationBell isDark={isDark} />
 
         <motion.button
           onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
@@ -1311,10 +1351,13 @@ function FieldInput({ field, value, onChange, isDark }: {
 
   return (
     <div className={field.span === 2 ? "col-span-2" : ""}>
-      <label className="block text-[11px] font-medium mb-1.5" style={{ color: isDark ? "rgba(130,160,200,0.7)" : "rgba(0,15,55,0.78)" }}>
-        {field.label}
-        {field.required && <span style={{ color: "#00D4FF", marginLeft: 3 }}>*</span>}
-      </label>
+      <div className="flex items-center gap-1 mb-1.5">
+        <label className="block text-[11px] font-medium" style={{ color: isDark ? "rgba(130,160,200,0.7)" : "rgba(0,15,55,0.78)" }}>
+          {field.label}
+          {field.required && <span style={{ color: "#00D4FF", marginLeft: 3 }}>*</span>}
+        </label>
+        <FieldHelp isDark={isDark} label={field.label} apiName={field.id} />
+      </div>
 
       {field.type === "textarea" ? (
         <textarea
@@ -1801,7 +1844,22 @@ function SuccessPanel({ obj, isDark, recordId, onCreateAnother, onReturn }: {
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN PAGE
 // ─────────────────────────────────────────────────────────────────────────────
+/**
+ * /data reads its deep link (module / view / record params) once, at mount. A notification-center
+ * link into /data while already here pushes the new URL and fires APP_DEEP_LINK_EVENT; remounting
+ * the page content makes it restore that deep link exactly as a refresh would.
+ */
 export default function DataPage() {
+  const [deepLinkNonce, setDeepLinkNonce] = useState(0);
+  useEffect(() => {
+    const onDeepLink = () => setDeepLinkNonce(n => n + 1);
+    window.addEventListener(APP_DEEP_LINK_EVENT, onDeepLink);
+    return () => window.removeEventListener(APP_DEEP_LINK_EVENT, onDeepLink);
+  }, []);
+  return <DataPageContent key={deepLinkNonce} />;
+}
+
+function DataPageContent() {
   const router = useRouter();
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme !== "light";
@@ -1822,15 +1880,40 @@ export default function DataPage() {
     ov: readUrlParam("ov"), oid: readUrlParam("oid"), otab: readUrlParam("otab"),
     cv: readUrlParam("cv"), cid: readUrlParam("cid"), ctab: readUrlParam("ctab"),
     pv: readUrlParam("pv"),
-    pdv: readUrlParam("pdv"),
-    bdv: readUrlParam("bdv"),
-    adv: readUrlParam("adv"),
+    pdv: readUrlParam("pdv"), pdid: readUrlParam("pdid"),
+    bdv: readUrlParam("bdv"), bdid: readUrlParam("bdid"),
+    adv: readUrlParam("adv"), adid: readUrlParam("adid"),
   });
+
+  // Revenue Cloud Billing workspace: remounted (token bump) on every billing sidebar click so it
+  // opens at that item's module; the first mount restores the deep link this page loaded with.
+  const [billingNav, setBillingNav] = useState<{ token: number; initial: { moduleKey: string | null; view: string | null; recordId: string | null } }>(() => ({
+    token: 0,
+    initial: { moduleKey: readUrlParam("bm"), view: readUrlParam("bv"), recordId: readUrlParam("bid") },
+  }));
+  const [taxesNav, setTaxesNav] = useState<{ token: number; initial: { view: string | null; moduleKey: string | null; recordId: string | null } }>(() => ({
+    token: 0,
+    initial: { view: readUrlParam("tv"), moduleKey: readUrlParam("tm"), recordId: readUrlParam("tid") },
+  }));
+  // Which billing module / Taxes view the workspace is showing right now — drives the "About this module" intro, which
+  // follows the workspace's own navigation (including modules that have no sidebar item).
+  const [billingActive, setBillingActive] = useState<{ moduleKey: string | null; view: string | null }>(() => ({ moduleKey: readUrlParam("bm"), view: readUrlParam("bv") }));
+  const [taxesActiveKey, setTaxesActiveKey] = useState<string>(() => taxesIntroKey({ tv: readUrlParam("tv"), tm: readUrlParam("tm"), tid: null }));
+  // A specific Order/Contract/Quote opened from a billing record (e.g. Billing Schedule → Order) —
+  // takes precedence over the URL-captured deep link until that module's dashboard is left.
+  const [appDeepLink, setAppDeepLink] = useState<{ module: "orders" | "contracts" | "quotes"; id: string } | null>(null);
 
   // Navigation + workspace state
   const [selectedId, setSelectedIdState] = useState(() => readUrlParam("module") ?? "accounts");
+  // RAMP workspace remount token (bumped when a RAMP sidebar item is clicked, so it opens at that item's view).
+  const [rampNav, setRampNav] = useState(0);
+  // Asset Lifecycle workspace remount token (bumped on a sidebar click so it opens at that item's section).
+  const [lifecycleNav, setLifecycleNav] = useState(0);
   const [mode, setMode] = useState<AppMode>("browse");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // How many module headers currently show "Learn about this module" under their title (see ModuleIntroInline).
+  const [inlineIntroHosts, setInlineIntroHosts] = useState(0);
+  const registerInline = useCallback(() => { setInlineIntroHosts(n => n + 1); return () => setInlineIntroHosts(n => n - 1); }, []);
 
   // Quotes/Orders/Contracts tiles: null = show that tile's dashboard (landing
   // page); otherwise which view of the existing module to enter. Kept separate
@@ -1858,9 +1941,10 @@ export default function DataPage() {
   // otherwise which module view to enter. "catalog"/"attributes" never land
   // here — those workflows jump straight to the existing Catalogs/Attributes
   // tiles instead (see handleLaunch in ProductsDashboard + onNavigate below).
-  const [productsModuleView, setProductsModuleViewState] = useState<{ mode: "history" | "create" | "create-multi" | "choose-type" | "import" | "edit"; productId?: string } | null>(() => {
-    const { pdv } = initialUrlRef.current;
-    return pdv === "history" || pdv === "create" || pdv === "create-multi" || pdv === "choose-type" || pdv === "import" ? { mode: pdv } : null;
+  const [productsModuleView, setProductsModuleViewState] = useState<{ mode: "history" | "create" | "create-multi" | "choose-type" | "import" | "edit" | "configuration"; productId?: string } | null>(() => {
+    const { pdv, pdid } = initialUrlRef.current;
+    if (pdv === "configuration" && pdid) return { mode: "configuration", productId: pdid };
+    return pdv === "history" || pdv === "create" || pdv === "create-multi" || pdv === "choose-type" || pdv === "import" || pdv === "configuration" ? { mode: pdv } : null;
   });
   // Only meaningful the next time productsModuleView becomes {mode:"import"} —
   // set by Product History's "Import History" link so the importer opens
@@ -1875,7 +1959,8 @@ export default function DataPage() {
     mode: "create" | "history" | "detail" | "edit" | "import" | "catalog" | "dependencies" | "components";
     bundleId?: string;
   } | null>(() => {
-    const { bdv } = initialUrlRef.current;
+    const { bdv, bdid } = initialUrlRef.current;
+    if (bdv === "detail" && bdid) return { mode: "detail", bundleId: bdid };
     return bdv === "create" || bdv === "history" || bdv === "import" || bdv === "catalog" || bdv === "dependencies" || bdv === "components" ? { mode: bdv } : null;
   });
   // Bumped after a successful bundle edit save (or a duplicate) so Bundle History re-fetches instead of showing stale values.
@@ -1883,8 +1968,8 @@ export default function DataPage() {
 
   function setBundlesModuleView(next: { mode: "create" | "history" | "detail" | "edit" | "import" | "catalog" | "dependencies" | "components"; bundleId?: string } | null) {
     setBundlesModuleViewState(next);
-    // "detail"/"edit" carry a bundleId that isn't restorable from a URL alone, so they aren't persisted there.
-    updateUrl({ bdv: next && next.mode !== "detail" && next.mode !== "edit" ? next.mode : null });
+    // "detail" is restorable from its bundleId (bdid); "edit" isn't persisted, so a refresh never reopens an unsaved edit.
+    updateUrl({ bdv: next && next.mode !== "edit" ? next.mode : null, bdid: next?.mode === "detail" ? next.bundleId ?? null : null });
   }
 
   // Attributes tile: null = Attribute Workspace dashboard (landing page); otherwise which module view
@@ -1893,7 +1978,8 @@ export default function DataPage() {
     mode: "create" | "history" | "detail" | "edit" | "import" | "catalog";
     attributeId?: string;
   } | null>(() => {
-    const { adv } = initialUrlRef.current;
+    const { adv, adid } = initialUrlRef.current;
+    if (adv === "detail" && adid) return { mode: "detail", attributeId: adid };
     return adv === "create" || adv === "history" || adv === "import" || adv === "catalog" ? { mode: adv } : null;
   });
   // Bumped after a successful attribute edit save so Attribute History re-fetches instead of showing stale values.
@@ -1901,8 +1987,8 @@ export default function DataPage() {
 
   function setAttributesModuleView(next: { mode: "create" | "history" | "detail" | "edit" | "import" | "catalog"; attributeId?: string } | null) {
     setAttributesModuleViewState(next);
-    // "detail"/"edit" carry an attributeId that isn't restorable from a URL alone, so they aren't persisted there.
-    updateUrl({ adv: next && next.mode !== "detail" && next.mode !== "edit" ? next.mode : null });
+    // "detail" is restorable from its attributeId (adid); "edit" isn't persisted, so a refresh never reopens an unsaved edit.
+    updateUrl({ adv: next && next.mode !== "edit" ? next.mode : null, adid: next?.mode === "detail" ? next.attributeId ?? null : null });
   }
 
   function setSelectedId(id: string) {
@@ -1912,24 +1998,27 @@ export default function DataPage() {
 
   function setQuotesModuleView(next: { mode: "history" | "create" | "import" } | null) {
     setQuotesModuleViewState(next);
+    if (!next) setAppDeepLink(null);
     updateUrl({ qv: next?.mode ?? null, qid: null, qtab: null });
   }
   function setOrdersModuleView(next: { mode: "history" | "create" | "import" } | null) {
     setOrdersModuleViewState(next);
+    if (!next) setAppDeepLink(null);
     updateUrl({ ov: next?.mode ?? null, oid: null, otab: null });
   }
   function setContractsModuleView(next: { mode: "history" | "create" | "import" } | null) {
     setContractsModuleViewState(next);
+    if (!next) setAppDeepLink(null);
     updateUrl({ cv: next?.mode ?? null, cid: null, ctab: null });
   }
   function setPricingRulesModuleView(next: { mode: "history" | "create" } | null) {
     setPricingRulesModuleViewState(next);
     updateUrl({ pv: next?.mode ?? null });
   }
-  function setProductsModuleView(next: { mode: "history" | "create" | "create-multi" | "choose-type" | "import" | "edit"; productId?: string } | null) {
+  function setProductsModuleView(next: { mode: "history" | "create" | "create-multi" | "choose-type" | "import" | "edit" | "configuration"; productId?: string } | null) {
     setProductsModuleViewState(next);
-    // "edit" carries a productId that isn't restorable from a URL alone, so it isn't persisted there — same treatment "choose-type" already gets.
-    updateUrl({ pdv: next && next.mode !== "edit" ? next.mode : null });
+    // "edit" isn't persisted (a refresh never reopens an unsaved edit); a product's configuration view is restorable from its productId (pdid).
+    updateUrl({ pdv: next && next.mode !== "edit" ? next.mode : null, pdid: next?.mode === "configuration" ? next.productId ?? null : null });
   }
 
   // Form state
@@ -1940,12 +2029,10 @@ export default function DataPage() {
   // Command bar
   const [commandValue, setCommandValue] = useState("");
 
-  // Toast
-  const [toast, setToast] = useState<{ msg: string; type: "success" | "info" | "error" } | null>(null);
-
+  // Toasts go through the app-wide notifier (SalesforceSuccessProvider) — one stack, one 10s lifetime, one history.
+  const notifier = useNotify();
   const showToast = (msg: string, type: "success" | "info" | "error" = "info") => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 3200);
+    notifier[type](type === "error" ? `Couldn't create ${selectedObj.label.replace(/s$/, "")}` : msg, type === "error" ? msg : "", { module: selectedObj.label });
   };
 
   useEffect(() => {
@@ -1973,12 +2060,89 @@ export default function DataPage() {
     if (id === "contracts") { setContractsModuleViewState(null); patch.cv = null; patch.cid = null; patch.ctab = null; }
     if (id === "pricing-rules") { setPricingRulesModuleViewState(null); patch.pv = null; }
     if (id === "products") { setProductsModuleViewState(null); patch.pdv = null; }
+    setAppDeepLink(null);
+    const billingItem = ALL_OBJECTS.find(o => o.id === id && o.groupId === "billing");
+    if (billingItem) {
+      setBillingNav(n => ({ token: n.token + 1, initial: { moduleKey: billingItem.billingModule ?? null, view: null, recordId: null } }));
+      setBillingActive({ moduleKey: billingItem.billingModule ?? null, view: null });
+    }
+    patch.bm = billingItem?.billingModule ?? null; patch.bv = null; patch.bid = null;
+    const taxesItem = ALL_OBJECTS.find(o => o.id === id && o.groupId === "taxes");
+    const taxesViews = ["configure", "calculation", "readiness"];
+    const tv = taxesItem?.taxesView && taxesViews.includes(taxesItem.taxesView) ? taxesItem.taxesView : null;
+    const tm = taxesItem?.taxesView && !taxesViews.includes(taxesItem.taxesView) ? taxesItem.taxesView : null;
+    if (taxesItem) { setTaxesNav(n => ({ token: n.token + 1, initial: { view: tv, moduleKey: tm, recordId: null } })); setTaxesActiveKey(taxesNavKey({ tv, tm, tid: null })); }
+    patch.tv = tv; patch.tm = tm; patch.tid = null;
+    if (ALL_OBJECTS.some(o => o.id === id && o.groupId === "ramp")) setRampNav(n => n + 1);
+    if (ALL_OBJECTS.some(o => o.id === id && o.groupId === "lifecycle")) setLifecycleNav(n => n + 1);
     if (mode !== "browse") {
       setMode("browse");
       setSidebarCollapsed(false);
       setFormData({});
     }
     updateUrl(patch);
+  };
+
+  // Keep the sidebar highlight on the billing item for whichever module the workspace navigated to
+  // (without remounting it — the workspace is keyed by billingNav.token, not by selectedId).
+  const handleBillingModuleChange = (moduleKey: string | null) => {
+    setBillingActive(a => ({ moduleKey, view: a.view }));
+    const item = ALL_OBJECTS.find(o => o.groupId === "billing" && (o.billingModule ?? null) === moduleKey) ?? ALL_OBJECTS.find(o => o.id === "billing");
+    if (item && item.id !== selectedId) {
+      setSelectedIdState(item.id);
+      updateUrl({ module: item.id });
+    }
+  };
+
+  // Keep the sidebar highlight + URL on the RAMP item for the workspace's current view (without remounting it).
+  const handleRampViewChange = (view: RampView) => {
+    const item = ALL_OBJECTS.find(o => o.groupId === "ramp" && o.rampView === view);
+    if (item && item.id !== selectedId) { setSelectedIdState(item.id); updateUrl({ module: item.id }); }
+  };
+
+  // Asset Lifecycle: the workspace moved to another section itself (e.g. "Amend" on an asset) → highlight that sidebar item WITHOUT
+  // remounting (its key is lifecycleNav, bumped only by sidebar clicks), so the open form / prefill is kept.
+  const handleLifecycleSectionChange = (section: string) => {
+    const item = ALL_OBJECTS.find(o => o.groupId === "lifecycle" && o.lifecycleSection === section);
+    if (item && item.id !== selectedId) { setSelectedIdState(item.id); updateUrl({ module: item.id }); }
+  };
+
+  // Keep the sidebar highlight on the Taxes item that matches the workspace's current view (without remounting it).
+  const handleTaxesUrlChange = (patch: TaxesUrlPatch) => {
+    const key = taxesNavKey(patch);
+    setTaxesActiveKey(taxesIntroKey(patch));
+    const item = ALL_OBJECTS.find(o => o.groupId === "taxes" && (o.taxesView ?? "dashboard") === key) ?? ALL_OBJECTS.find(o => o.id === "taxes");
+    updateUrl({ ...patch, ...(item && item.id !== selectedId ? { module: item.id } : {}) });
+    if (item && item.id !== selectedId) setSelectedIdState(item.id);
+  };
+
+  // Billing records link out to the EXISTING Products/Orders/Contracts/Quotes modules
+  // (never a billing-side copy of them), optionally straight into one record's workspace.
+  const openAppModule = (target: "products" | "orders" | "contracts" | "quotes", recordId?: string) => {
+    handleSelectObject(target);
+    if (!recordId) return;
+    if (target === "orders") { setAppDeepLink({ module: "orders", id: recordId }); setOrdersModuleViewState({ mode: "history" }); updateUrl({ ov: "workspace", oid: recordId }); }
+    if (target === "contracts") { setAppDeepLink({ module: "contracts", id: recordId }); setContractsModuleViewState({ mode: "history" }); updateUrl({ cv: "workspace", cid: recordId }); }
+    if (target === "quotes") { setAppDeepLink({ module: "quotes", id: recordId }); setQuotesModuleViewState({ mode: "history" }); updateUrl({ qv: "workspace", qid: recordId }); }
+  };
+
+  const openBillingView = (view: "assign" | "product" | "order", moduleKey: string | null, recordId: string | null) => {
+    handleSelectObject("billing");
+    setBillingNav(n => ({ token: n.token + 1, initial: { moduleKey, view, recordId } }));
+    setBillingActive({ moduleKey, view });
+    updateUrl({ bm: moduleKey, bv: view, bid: recordId });
+  };
+
+  // Revenue Cloud Core dashboard cards/shortcuts → the EXISTING module (and view) that manages that object.
+  const openRevenueCoreTarget = (target: RevenueCoreNavTarget) => {
+    if (target.tile === "billing-policies") { handleSelectObject("billing-policies"); return; }
+    handleSelectObject(target.tile);
+    if (!("view" in target) || !target.view) return;
+    if (target.tile === "products") setProductsModuleView({ mode: target.view });
+    else if (target.tile === "attributes") setAttributesModuleView({ mode: target.view });
+    else if (target.tile === "bundles") setBundlesModuleView({ mode: target.view });
+    else if (target.tile === "pricing-rules") setPricingRulesModuleView({ mode: target.view });
+    else if (target.tile === "quotes") setQuotesModuleView({ mode: target.view });
   };
 
   const handleLaunchWorkflow = (_wf: string) => {
@@ -2028,16 +2192,14 @@ export default function DataPage() {
       setMode("success");
 
       const instanceUrl = loadSession()?.instanceUrl;
-      if (instanceUrl && data.id) {
-        const nameFieldId = selectedObj.form?.[0]?.fields?.[0]?.id;
-        const recordName = (nameFieldId && formData[nameFieldId]) || selectedObj.label;
-        const record = toCreatedSalesforceRecord(instanceUrl, selectedObj.sfApiName, data.id, recordName);
-        notifySalesforceSuccess({
-          title: `${selectedObj.label.replace(/s$/, "")} Created Successfully`,
-          message: `${record.recordName} has been successfully created in Salesforce.`,
-          records: [record],
-        });
-      }
+      const nameFieldId = selectedObj.form?.[0]?.fields?.[0]?.id;
+      const recordName = (nameFieldId && formData[nameFieldId]) || selectedObj.label;
+      notifySalesforceSuccess({
+        title: `${selectedObj.label.replace(/s$/, "")} Created Successfully`,
+        message: `${recordName} has been successfully created in Salesforce.`,
+        records: instanceUrl && data.id ? [toCreatedSalesforceRecord(instanceUrl, selectedObj.sfApiName, data.id, recordName)] : [],
+        module: selectedObj.label,
+      });
     } catch {
       showToast("Network error — could not reach Salesforce", "error");
       setSaving(false);
@@ -2048,8 +2210,20 @@ export default function DataPage() {
     setMode("browse");
     setSidebarCollapsed(false);
     setFormData({});
-    showToast(`${selectedObj.label.replace(/s$/, "")} created successfully`, "success");
   };
+
+  // "About this module" intro — follows the module the user is actually looking at (sub-views and workspace navigation included).
+  const guideKey = moduleGuideKeyFor({
+    itemId: selectedObj.id,
+    groupId: selectedObj.groupId,
+    subView: selectedObj.id === "products" ? productsModuleView?.mode : selectedObj.id === "bundles" ? bundlesModuleView?.mode : selectedObj.id === "attributes" ? attributesModuleView?.mode : null,
+    billingModule: billingActive.moduleKey,
+    billingView: billingActive.view,
+    taxesKey: taxesActiveKey,
+  });
+  // A module header (ObjectWorkspace) shows "Learn about this module" under its title; only screens without one get it at the top.
+  const introContext = useMemo(() => ({ guideKey, registerInline }), [guideKey, registerInline]);
+  const intro = inlineIntroHosts > 0 ? null : <ModuleIntro key={guideKey ?? "none"} isDark={isDark} guideKey={guideKey} />;
 
   if (!mounted || !session) {
     return (
@@ -2066,6 +2240,7 @@ export default function DataPage() {
   }
 
   return (
+    <ModuleIntroContext.Provider value={introContext}>
     <div
       className="flex flex-col overflow-hidden"
       style={{
@@ -2094,11 +2269,6 @@ export default function DataPage() {
           }}
         />
       </div>
-
-      {/* Toast layer */}
-      <AnimatePresence>
-        {toast && <Toast msg={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
-      </AnimatePresence>
 
       <div className="relative z-10 flex flex-col h-full">
         <NavBar
@@ -2133,7 +2303,37 @@ export default function DataPage() {
                   transition={{ duration: 0.2 }}
                   className="flex flex-col h-full overflow-hidden"
                 >
-                  {selectedObj.id === "products" ? (
+                  {intro}
+                  <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  {selectedObj.groupId === "ramp" ? (
+                    <RampWorkspace
+                      key={rampNav}
+                      isDark={isDark}
+                      initialView={selectedObj.rampView ?? "home"}
+                      onViewChange={handleRampViewChange}
+                    />
+                  ) : selectedObj.groupId === "lifecycle" ? (
+                    <AssetLifecycleWorkspace key={lifecycleNav} isDark={isDark} initialSection={selectedObj.lifecycleSection ?? "assets"} onSectionChange={handleLifecycleSectionChange} />
+                  ) : selectedObj.groupId === "taxes" ? (
+                    <TaxesWorkspace
+                      key={taxesNav.token}
+                      isDark={isDark}
+                      initial={taxesNav.initial}
+                      onUrlChange={handleTaxesUrlChange}
+                      onOpenAppModule={openAppModule}
+                    />
+                  ) : selectedObj.groupId === "billing" ? (
+                    <BillingWorkspace
+                      key={billingNav.token}
+                      isDark={isDark}
+                      initial={billingNav.initial}
+                      onUrlChange={patch => { updateUrl({ ...patch }); setBillingActive({ moduleKey: patch.bm, view: patch.bv }); }}
+                      onActiveModuleChange={handleBillingModuleChange}
+                      onOpenAppModule={openAppModule}
+                    />
+                  ) : selectedObj.id === "revenue-core" ? (
+                    <RevenueCoreDashboard isDark={isDark} onNavigate={openRevenueCoreTarget} />
+                  ) : selectedObj.id === "products" ? (
                     productsModuleView ? (
                       <DashboardModuleFrame isDark={isDark} backLabel="Back to Products Dashboard" onBack={() => setProductsModuleView(null)}>
                         {productsModuleView.mode === "choose-type" ? (
@@ -2152,7 +2352,11 @@ export default function DataPage() {
                             refreshToken={productsHistoryRefreshToken}
                             onOpenImportHistory={() => { setProductsImportStartWithHistory(true); setProductsModuleView({ mode: "import" }); }}
                             onEditProduct={productId => setProductsModuleView({ mode: "edit", productId })}
+                            onViewConfiguration={productId => setProductsModuleView({ mode: "configuration", productId })}
+                            onViewBilling={productId => openBillingView("product", null, productId)}
                           />
+                        ) : productsModuleView.mode === "configuration" ? (
+                          <ProductConfigurationWorkspace isDark={isDark} initialProductId={productsModuleView.productId ?? null} />
                         ) : productsModuleView.mode === "edit" ? (
                           <RCProductWorkspace
                             isDark={isDark}
@@ -2173,6 +2377,8 @@ export default function DataPage() {
                         onNavigate={target => {
                           if (target.mode === "catalog") { handleSelectObject("catalogs"); return; }
                           if (target.mode === "attributes") { handleSelectObject("attributes"); return; }
+                          if (target.mode === "billing") { handleSelectObject("billing"); return; }
+                          if (target.mode === "billing-assign") { openBillingView("assign", null, null); return; }
                           if (target.mode === "import") setProductsImportStartWithHistory(false);
                           setProductsModuleView({ mode: target.mode });
                         }}
@@ -2237,8 +2443,8 @@ export default function DataPage() {
                       <DashboardModuleFrame isDark={isDark} backLabel="Back to Quotes Dashboard" onBack={() => setQuotesModuleView(null)}>
                         <QuotesModule
                           isDark={isDark}
-                          initialView={initialUrlRef.current.qv === "workspace" ? "workspace" : quotesModuleView.mode}
-                          initialWorkspaceId={initialUrlRef.current.qid ?? undefined}
+                          initialView={appDeepLink?.module === "quotes" || initialUrlRef.current.qv === "workspace" ? "workspace" : quotesModuleView.mode}
+                          initialWorkspaceId={(appDeepLink?.module === "quotes" ? appDeepLink.id : initialUrlRef.current.qid) ?? undefined}
                           initialTab={initialUrlRef.current.qtab ?? undefined}
                           onNavigate={patch => updateUrl({ ...patch })}
                         />
@@ -2255,14 +2461,15 @@ export default function DataPage() {
                       <DashboardModuleFrame isDark={isDark} backLabel="Back to Orders Dashboard" onBack={() => setOrdersModuleView(null)}>
                         <OrdersModule
                           isDark={isDark}
-                          initialView={initialUrlRef.current.ov === "workspace" ? "workspace" : ordersModuleView.mode}
-                          initialWorkspaceId={initialUrlRef.current.oid ?? undefined}
+                          initialView={appDeepLink?.module === "orders" || initialUrlRef.current.ov === "workspace" ? "workspace" : ordersModuleView.mode}
+                          initialWorkspaceId={(appDeepLink?.module === "orders" ? appDeepLink.id : initialUrlRef.current.oid) ?? undefined}
                           initialTab={initialUrlRef.current.otab ?? undefined}
                           onNavigate={patch => updateUrl({ ...patch })}
+                          onContinueBilling={id => openBillingView("order", null, id)}
                         />
                       </DashboardModuleFrame>
                     ) : (
-                      <OrdersDashboard isDark={isDark} onNavigate={view => setOrdersModuleView(view)} />
+                      <OrdersDashboard isDark={isDark} onNavigate={view => { if (view.mode === "billing") handleSelectObject("billing-schedules"); else setOrdersModuleView({ mode: view.mode }); }} />
                     )
                   ) : selectedObj.id === "contracts" ? (
                     contractsModuleView?.mode === "import" ? (
@@ -2274,11 +2481,11 @@ export default function DataPage() {
                         <ContractsModule
                           isDark={isDark}
                           initialView={
-                            initialUrlRef.current.cv === "workspace" ? "workspace"
+                            appDeepLink?.module === "contracts" || initialUrlRef.current.cv === "workspace" ? "workspace"
                               : initialUrlRef.current.cv === "docusign-settings" ? "docusign-settings"
                               : contractsModuleView.mode
                           }
-                          initialWorkspaceId={initialUrlRef.current.cid ?? undefined}
+                          initialWorkspaceId={(appDeepLink?.module === "contracts" ? appDeepLink.id : initialUrlRef.current.cid) ?? undefined}
                           initialTab={initialUrlRef.current.ctab ?? undefined}
                           onNavigate={patch => updateUrl({ ...patch })}
                         />
@@ -2348,6 +2555,7 @@ export default function DataPage() {
                       <ObjectWorkspace obj={selectedObj} isDark={isDark} onLaunch={handleLaunchWorkflow} />
                     </>
                   )}
+                  </div>
                 </motion.div>
               )}
 
@@ -2358,6 +2566,8 @@ export default function DataPage() {
                   transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
                   className="flex flex-col h-full overflow-hidden"
                 >
+                  {intro}
+                  <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
                   {mode === "workflow" ? (
                     <WorkflowForm
                       obj={selectedObj}
@@ -2378,6 +2588,7 @@ export default function DataPage() {
                       onCancel={handleCancelWorkflow}
                     />
                   )}
+                  </div>
                 </motion.div>
               )}
 
@@ -2402,5 +2613,6 @@ export default function DataPage() {
         </div>
       </div>
     </div>
+    </ModuleIntroContext.Provider>
   );
 }

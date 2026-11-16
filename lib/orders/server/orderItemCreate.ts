@@ -17,11 +17,13 @@ import {
 } from "@/lib/orders/bundles/relationshipCreate";
 import { rollbackRecords } from "@/lib/quotes/bundles/relationshipCreate";
 import { fetchCatalogProductsByIds } from "@/lib/quotes/catalog/search";
+import { choosePricebookEntry, fetchActivePricebookEntries } from "@/lib/quotes/catalog/pricebookEntries";
 import { resolveSellingModelsBatch } from "@/lib/quotes/catalog/sellingModel";
 import { resolveProductAttributesBatch } from "@/lib/quotes/catalog/attributes";
 import { validateBillingTreatment } from "@/lib/quotes/billing/treatment";
 import { resolveBillingFrequency } from "@/lib/quotes/billing/frequency";
 import { repriceOrder } from "@/lib/orders/pricing/reprice";
+import { stampOrderItemTaxTreatments } from "@/lib/tax/server/orderItemTax";
 import type { BillingTreatmentValidation, BundleHierarchyStep, QuoteLineItemDraft } from "@/lib/quotes/types";
 import type {
   OrderLineItemCreationError,
@@ -191,14 +193,18 @@ export async function createOrderItems(
   }
   logStep("Resolve Product", "success", { productIds: distinctProductIds }, productResolution, `${freshCatalog.size} of ${distinctProductIds.length} product(s) resolved.`);
 
-  logStep("Resolve PricebookEntry", "start", { pricebookId }, null, "Verifying each line's cached PricebookEntry Id still matches the fresh lookup.");
+  logStep("Resolve PricebookEntry", "start", { pricebookId }, null, "Verifying each line's cached PricebookEntry Id is still an active entry of its selling model in this price book.");
+  const activeEntries = await fetchActivePricebookEntries(client, pricebookId, distinctProductIds);
   for (const item of flatItems) {
     const fresh = freshCatalog.get(item.draft.productId);
-    if (!fresh || fresh.pricebookEntryId !== item.draft.product.pricebookEntryId) {
+    const entries = activeEntries.get(item.draft.productId) ?? [];
+    const choice = choosePricebookEntry(entries, item.draft.product.pricebookEntryId, item.draft.sellingModelId ?? null);
+    // A product can have one active entry per selling model; the draft's entry is valid when it's one of them.
+    if (!fresh || !choice.ok || choice.entry.pricebookEntryId !== item.draft.product.pricebookEntryId) {
       return fail({
         currentStep: "Resolve PricebookEntry",
         validationRule: "PricebookEntry Id must match the price book currently in use",
-        reason: `"${item.draft.product.name}" no longer has an active PricebookEntry in this price book (expected ${fresh?.pricebookEntryId ?? "none"}, draft had ${item.draft.product.pricebookEntryId}).`,
+        reason: `"${item.draft.product.name}" no longer has an active PricebookEntry for its selling model in this price book (draft had ${item.draft.product.pricebookEntryId}${choice.ok ? `; active entry: ${choice.entry.pricebookEntryId}` : `; ${choice.reason}`}).`,
         missingField: "PricebookEntryId", invalidValue: item.draft.product.pricebookEntryId, salesforceObject: "PricebookEntry",
         productId: item.draft.productId, productName: item.draft.product.name, pricebookEntryId: fresh?.pricebookEntryId ?? null,
         path: item.path, code: "PRICEBOOK_ENTRY_INVALID",
@@ -232,6 +238,34 @@ export async function createOrderItems(
     }])),
     `Resolved selling models for ${sellingModels.size} product(s).`,
   );
+
+  // §Selling model → PricebookEntry: Salesforce derives OrderItem.ProductSellingModelId from the PricebookEntry (it can't be
+  // written, and PricebookEntry.ProductSellingModelId is create-only). When the line's entry has no / another selling model, use
+  // this price book's entry for the chosen one; when none exists, say so — Salesforce would create the line without a model.
+  const lineWarnings: string[] = [];
+  const pbeDescribe = await describeObjectCached(client, "PricebookEntry").catch(() => null);
+  const mismatchedModels = distinctProductIds.filter(id => { const sm = sellingModels.get(id); return !!sm?.chosen && sm.pricebookEntrySellingModelId?.slice(0, 15) !== sm.chosen.sellingModelId.slice(0, 15); });
+  if (pbeDescribe?.fields.some(x => x.name === "ProductSellingModelId") && mismatchedModels.length) {
+    logStep("Align PricebookEntry to Selling Model", "start", { productIds: mismatchedModels }, null, "The resolved selling model differs from the line's PricebookEntry selling model — looking for this price book's entry for the chosen selling model.");
+    const entries = (await client.query<Record<string, unknown>>(`SELECT Id, Product2Id, ProductSellingModelId, UnitPrice FROM PricebookEntry WHERE Pricebook2Id = '${soqlEscape(pricebookId)}' AND IsActive = true AND ProductSellingModelId != null AND Product2Id IN (${mismatchedModels.map(id => `'${soqlEscape(id)}'`).join(",")})`)).records;
+    const swaps: Record<string, unknown>[] = [];
+    for (const productId of mismatchedModels) {
+      const chosen = sellingModels.get(productId)!.chosen!;
+      const entry = entries.find(e => e.Product2Id === productId && String(e.ProductSellingModelId).slice(0, 15) === chosen.sellingModelId.slice(0, 15));
+      const lines = flatItems.filter(i => i.draft.productId === productId);
+      const name = lines[0]?.draft.product.name ?? productId;
+      if (!entry) {
+        lineWarnings.push(`"${name}": PricebookEntry ${lines[0]?.draft.product.pricebookEntryId ?? "—"} has no Product Selling Model and this price book has no active entry for "${chosen.name}", so Salesforce creates the Order Product without one (OrderItem.ProductSellingModelId comes from the PricebookEntry). Required change (admin): create a PricebookEntry for "${name}" with Product Selling Model "${chosen.name}", then add the product again — billing activation is blocked until then.`);
+        continue;
+      }
+      for (const item of lines) {
+        const listPrice = item.draft.unitPrice == null && typeof entry.UnitPrice === "number" ? entry.UnitPrice : item.draft.product.listPrice;
+        swaps.push({ productId, from: item.draft.product.pricebookEntryId, to: entry.Id, sellingModel: chosen.name, listPrice });
+        item.draft.product = { ...item.draft.product, pricebookEntryId: String(entry.Id), listPrice };
+      }
+    }
+    logStep("Align PricebookEntry to Selling Model", lineWarnings.length ? "info" : "success", { productIds: mismatchedModels }, { swaps, warnings: lineWarnings }, swaps.length ? `Using the PricebookEntry linked to the chosen selling model for ${swaps.length} line(s).` : "No PricebookEntry with the chosen selling model exists — see warnings.");
+  }
 
   logStep("Resolve Billing Frequency", "start", null, null, "Validating that Billing Frequency is already configured on the draft for every line whose Selling Model Type requires one (resolved once, at product-configuration time).");
   let billingFrequencyActiveValues: string[] | null = null;
@@ -490,6 +524,19 @@ export async function createOrderItems(
   }
   logStep("Create Parent Lines", "success", null, { createdCount: creation.idByIndex.size }, `Created ${creation.idByIndex.size} order line item(s) across dependency-ordered passes.`);
 
+  // §Tax Treatment: Salesforce copies OrderItem.TaxTreatmentId to the billing schedule and invoice line and does NOT derive it
+  // from Product2.TaxPolicyId (blank → the legal entity's treatment is billed, untaxed). Set it now, while the order is Draft.
+  logStep("Resolve Tax Treatment", "start", { createdCount: creation.idByIndex.size }, null, "Setting each Order Product's Tax Treatment from its product's Tax Policy.");
+  try {
+    const stamped = await stampOrderItemTaxTreatments(client, flatItems.filter(i => creation.idByIndex.has(i.index)).map(i => ({ orderItemId: creation.idByIndex.get(i.index)!, productId: i.draft.productId, productName: i.draft.product.name })));
+    for (const x of stamped.issues) if (x.severity !== "info") lineWarnings.push(`Tax: ${x.message}`);
+    logStep("Resolve Tax Treatment", stamped.issues.some(x => x.severity === "error") ? "error" : "success", null, stamped, stamped.skipped ?? (stamped.applied.length ? `Tax Treatment set on ${stamped.applied.length} Order Product(s): ${stamped.applied.map(a => a.treatmentName).join(", ")}.` : "No Order Product needed a Tax Treatment."));
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    lineWarnings.push(`Tax: the Order Products' Tax Treatment couldn't be set (${reason}) — apply it from Revenue Cloud Billing before activating.`);
+    logStep("Resolve Tax Treatment", "error", null, null, reason);
+  }
+
   // §Investigation Required (repricing failure ticket) — same field set as
   // the Quote side (lib/quotes/server/lineItemCreate.ts): everything needed
   // to diff a created OrderItem against one added through native Salesforce.
@@ -591,7 +638,7 @@ export async function createOrderItems(
   const createdIds = [...creation.idByIndex.values()];
   const refreshedLineItems = await readBackOrderItems(client, oiSchema, creation, flatItems);
   let bundleHierarchyValid = true;
-  const issues: string[] = [];
+  const issues: string[] = [...lineWarnings];
   if (hasBundleStructure && oirSchema.mechanism === "relationship-object" && oirSchema.objectName && oirSchema.mainOrderItemField) {
     try {
       const idList = createdIds.map(id => `'${soqlEscape(id)}'`).join(",");

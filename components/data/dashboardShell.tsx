@@ -4,6 +4,7 @@ import { useState, type ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { tokens, formatCurrency } from "@/components/data/quotes/shared";
 import type { StatusCount } from "@/lib/dashboard/statusStats";
+import { ModuleIntroInline } from "@/components/help/ModuleIntro";
 
 /**
  * Shared enterprise-dashboard primitives (icon set, ActionCard, ObjectWorkspace)
@@ -628,6 +629,39 @@ export function Ic({ n, s = 18 }: { n: string; s?: number }) {
           <polyline points="18 15 12 9 6 15" />
         </svg>
       );
+    case "activity":
+      return (
+        <svg {...props}>
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+        </svg>
+      );
+    case "check":
+      return (
+        <svg {...props}>
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      );
+    case "trash":
+      return (
+        <svg {...props}>
+          <polyline points="3 6 5 6 21 6" />
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+        </svg>
+      );
+    case "terminal":
+      return (
+        <svg {...props}>
+          <polyline points="4 17 10 11 4 5" />
+          <line x1="12" y1="19" x2="20" y2="19" />
+        </svg>
+      );
+    case "link":
+      return (
+        <svg {...props}>
+          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+        </svg>
+      );
     default:
       return (
         <svg {...props}>
@@ -817,6 +851,8 @@ export function ObjectWorkspace({ obj, isDark, onLaunch, recentActivity, recentA
                   {obj.groupLabel.toUpperCase()}
                 </span>
               </div>
+              {/* "Learn about this module" — directly below the module title and its badge. */}
+              <ModuleIntroInline isDark={isDark} />
             </div>
           </div>
 

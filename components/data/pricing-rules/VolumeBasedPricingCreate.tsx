@@ -15,6 +15,8 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { Ic, tokens, Section, Pill, PrimaryButton, GhostButton, EmptyState, Spinner, Field, inputStyle, formatCurrency } from "./shared";
 import { ExecutionLogPanel } from "./CreationAuditPanels";
+import { useNotify } from "@/components/notifications/SalesforceSuccessContext";
+import { announcePricingProcedure } from "@/components/notifications/announce";
 import { loadSession } from "@/lib/auth/session";
 import { buildVolumePricingSalesforceRecords, type SalesforceRecordLink } from "@/lib/pricing-rules/volume-based/create/salesforceRecordLinks";
 import { analyzeSimulation, type RcaFinding } from "@/lib/pricing-rules/volume-based/rca/analyzeSimulation";
@@ -23,6 +25,7 @@ import type {
   VolumeTier, TierType, DiscoveredProduct,
 } from "@/lib/pricing-rules/volume-based/types";
 import type { CreateVolumePricingResult, CreateStreamEvent } from "@/lib/pricing-rules/volume-based/create/types";
+import { WarningsDisclosure } from "@/components/ui/Disclosure";
 
 const PIPELINE_STEPS = ["Prompt", "Identify Product", "Verify Product exists in Salesforce", "Validate Tiers", "Build Pricing Procedure"];
 
@@ -412,11 +415,7 @@ function CreationSummary({ isDark, result }: { isDark: boolean; result: CreateVo
           </div>
         </Section>
       )}
-      {(result.warnings?.length ?? 0) > 0 && (
-        <ul style={{ margin: 0, paddingLeft: 16 }}>
-          {result.warnings.map((w, i) => <li key={i} style={{ fontSize: 11.5, color: t.warn }}>{w}</li>)}
-        </ul>
-      )}
+      <WarningsDisclosure isDark={isDark} warnings={result.warnings ?? []} />
       <ManualVerificationSteps isDark={isDark} result={result} />
       <SalesforceRecordsSection isDark={isDark} records={records} />
     </div>
@@ -571,11 +570,7 @@ function ResultStage({
           <Field label="Base Price ($)" isDark={isDark} required>
             <input type="number" value={basePriceInput} onChange={e => onBasePriceChange(e.target.value)} style={{ ...inputStyle(t), maxWidth: 200 }} />
           </Field>
-          {result.warnings.length > 0 && (
-            <ul style={{ margin: 0, paddingLeft: 16 }}>
-              {result.warnings.map((w, i) => <li key={i} style={{ fontSize: 11.5, color: t.warn }}>{w}</li>)}
-            </ul>
-          )}
+          <WarningsDisclosure isDark={isDark} warnings={result.warnings ?? []} />
           {!reviewed && !confirmed && <PrimaryButton label="Next" icon="arrow-right" isDark={isDark} onClick={() => setReviewed(true)} disabled={tiers.length === 0} />}
           {(reviewed || confirmed) && (
             <div style={{ background: t.surfaceAlt, borderRadius: 10, padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
@@ -636,6 +631,7 @@ export default function VolumeBasedPricingCreate({ isDark }: { isDark: boolean }
   const [creating, setCreating] = useState(false);
   const [createEvents, setCreateEvents] = useState<{ step: string; status: string; detail?: string }[]>([]);
   const [createResult, setCreateResult] = useState<CreateVolumePricingResult | null>(null);
+  const notifier = useNotify();
   const [createRequestError, setCreateRequestError] = useState<string | null>(null);
 
   function resetAnalysis() {
@@ -704,6 +700,7 @@ export default function VolumeBasedPricingCreate({ isDark }: { isDark: boolean }
         event => setCreateEvents(prev => [...prev, event]),
       );
       setCreateResult(finalResult);
+      announcePricingProcedure(notifier, finalResult, procedureName);
     } catch (err) {
       setCreateRequestError(err instanceof Error ? err.message : "Network error while creating this pricing procedure.");
     }
@@ -731,6 +728,7 @@ export default function VolumeBasedPricingCreate({ isDark }: { isDark: boolean }
           placeholder={PROMPT_PLACEHOLDER}
           style={textareaStyle(t)}
         />
+
 
         <Section title="Prompt Guide" icon="info" isDark={isDark} defaultOpen={false}>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>

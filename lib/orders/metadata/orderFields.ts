@@ -1,5 +1,6 @@
 import type { SalesforceClient } from "@/lib/salesforce/client";
-import { describeObjectCached } from "@/lib/salesforce/describe";
+import { describeObjectCached, findFieldByExactName } from "@/lib/salesforce/describe";
+import type { DescribeResult } from "@/lib/salesforce/client";
 import {
   resolveField,
   findReferenceFieldByTargetObject,
@@ -8,7 +9,22 @@ import {
   toFieldRef,
 } from "@/lib/salesforce/describe";
 import { createTTLCache } from "@/lib/salesforce/cache";
-import type { OrderFieldSchema, OrderListFieldSchema, PicklistFieldRef } from "@/lib/orders/types";
+import type { OrderAddressFieldRefs, OrderFieldSchema, OrderListFieldSchema, PicklistFieldRef } from "@/lib/orders/types";
+
+/**
+ * Order's compound address (Billing / Shipping) as its five createable component fields. All-or-nothing:
+ * a partially createable address would save a half-written address, so it resolves to null instead.
+ */
+function resolveAddressFields(describe: DescribeResult, prefix: "Billing" | "Shipping"): OrderAddressFieldRefs | null {
+  const parts = { street: "Street", city: "City", state: "State", postalCode: "PostalCode", country: "Country" } as const;
+  const out = {} as OrderAddressFieldRefs;
+  for (const [key, suffix] of Object.entries(parts) as [keyof OrderAddressFieldRefs, string][]) {
+    const f = findFieldByExactName(describe, `${prefix}${suffix}`, { requireCreateable: true });
+    if (!f) return null;
+    out[key] = { apiName: f.name, label: f.label, relationshipName: null, maxLength: f.length ? f.length : null };
+  }
+  return out;
+}
 
 const orderSchemaCache = createTTLCache<OrderFieldSchema>();
 const orderListSchemaCache = createTTLCache<OrderListFieldSchema>();
@@ -25,7 +41,7 @@ const orderListSchemaCache = createTTLCache<OrderListFieldSchema>();
  * null so the caller omits it, never sends it and lets the whole call fail.
  */
 export async function resolveOrderFieldSchema(client: SalesforceClient): Promise<OrderFieldSchema> {
-  return orderSchemaCache.getOrCompute(client.instanceUrl, async () => {
+  return orderSchemaCache.getOrCompute(client.cacheScope, async () => {
     const describe = await describeObjectCached(client, "Order");
 
     const accountField = findReferenceFieldByTargetObject(describe, "Account", { requireCreateable: true })
@@ -41,6 +57,8 @@ export async function resolveOrderFieldSchema(client: SalesforceClient): Promise
     const poNumberField = resolveField(describe, "PoNumber", /^(po|purchase order) number$/i, { requireCreateable: true });
     const poDateField = resolveField(describe, "PoDate", /^(po|purchase order) date$/i, { requireCreateable: true });
     const descriptionField = resolveField(describe, "Description", /^description$/i, { requireCreateable: true });
+    // Exact name only — ShipToContactId is also a Contact lookup, so "first Contact reference" would be ambiguous.
+    const billToContactField = findFieldByExactName(describe, "BillToContactId", { requireCreateable: true });
 
     const statusPicklist = findPicklistFieldByLabel(describe, "Status", /^status$/i, { requireCreateable: true });
     const statusField: PicklistFieldRef | null = statusPicklist
@@ -69,6 +87,9 @@ export async function resolveOrderFieldSchema(client: SalesforceClient): Promise
       poDateField: toFieldRef(poDateField),
       descriptionField: toFieldRef(descriptionField),
       sourceQuoteField: toFieldRef(sourceQuoteField),
+      billToContactField: billToContactField?.referenceTo?.includes("Contact") ? toFieldRef(billToContactField) : null,
+      billingAddressFields: resolveAddressFields(describe, "Billing"),
+      shippingAddressFields: resolveAddressFields(describe, "Shipping"),
       contractRequiredForContractedType,
     };
   });
@@ -80,7 +101,7 @@ export async function resolveOrderFieldSchema(client: SalesforceClient): Promise
  * `relationshipName` for SOQL parent traversal (never guessed by stripping "Id").
  */
 export async function resolveOrderListFieldSchema(client: SalesforceClient): Promise<OrderListFieldSchema> {
-  return orderListSchemaCache.getOrCompute(client.instanceUrl, async () => {
+  return orderListSchemaCache.getOrCompute(client.cacheScope, async () => {
     const describe = await describeObjectCached(client, "Order");
 
     const orderNumberField = resolveField(describe, "OrderNumber", /^order number$/i);

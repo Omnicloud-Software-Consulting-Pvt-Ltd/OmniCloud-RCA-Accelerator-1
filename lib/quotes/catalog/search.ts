@@ -15,7 +15,7 @@ const catalogFieldCache = createTTLCache<CatalogFieldSchema>();
 
 /** Resolve which optional descriptive Product2 fields this org actually has/exposes (§4.1). */
 async function resolveCatalogFieldSchema(client: SalesforceClient): Promise<CatalogFieldSchema> {
-  return catalogFieldCache.getOrCompute(client.instanceUrl, async () => {
+  return catalogFieldCache.getOrCompute(client.cacheScope, async () => {
     const describe = await describeObjectCached(client, "Product2");
     return {
       productCodeField: resolveField(describe, "ProductCode", /^product code$/i)?.name ?? null,

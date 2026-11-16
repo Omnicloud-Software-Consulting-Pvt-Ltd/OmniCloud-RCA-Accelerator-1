@@ -1,6 +1,7 @@
 import type { FieldMapping, FieldProvenance, ProductIntentMap } from "./productIntent";
 import type { MappingRow } from "@/components/metadata/shared/FieldMappingTable";
 import { formatProductPrice } from "@/lib/products/price";
+import { RELATION_KEYS, RELATION_META } from "@/lib/products/revenueConfig";
 
 /**
  * Builds the "Field → Value → Source" rows both RCProductWorkspace (Single
@@ -27,6 +28,9 @@ export interface MappableProductFields {
   description: string;
   unitOfMeasure: string;
   classification: string;
+  /** Revenue Cloud tax/billing configuration by name (optional — screens without it simply don't show these rows' values). */
+  taxPolicy?: string; taxTreatment?: string; taxTreatmentItem?: string; taxEngine?: string; taxCode?: string;
+  billingPolicy?: string; billingTreatment?: string; billingTreatmentItem?: string;
 }
 
 /**
@@ -92,5 +96,14 @@ export function buildProductMappingRows(fields: MappableProductFields, intent: P
     { label: "Active", value: fields.isActive ? "Yes" : "No", provenance: intent && fields.isActive === intent.isActive.value ? intent.isActive.provenance : "explicit" },
     { label: "Product Owner", value: fields.productOwner, provenance: fieldProvenance(fields.productOwner, intent?.productOwner, emptyStr) },
     { label: "Description", value: fields.description, provenance: fieldProvenance(fields.description, intent?.description, emptyStr) },
+    // Tax / Billing: only the two policies are Product2 fields; the rest are related records verified through the policy.
+    ...RELATION_KEYS.map(k => {
+      const value = fields[k] ?? "";
+      return {
+        label: RELATION_META[k].label, value, provenance: fieldProvenance(value, intent?.[k], emptyStr),
+        note: value ? (RELATION_META[k].direct ? `Sets ${RELATION_META[k].storage} — resolved by name to an existing record (never created).` : `Related record (${RELATION_META[k].storage.replace(/^related: /, "")}) — verified, not written to Product2.`) : undefined,
+      } as MappingRow;
+    }),
+    { label: "Tax Code", value: fields.taxCode ?? "", provenance: fieldProvenance(fields.taxCode ?? "", intent?.taxCode, emptyStr), note: fields.taxCode ? "Verified against the Tax Treatment Item / Tax Treatment — never written to Product2." : undefined },
   ];
 }

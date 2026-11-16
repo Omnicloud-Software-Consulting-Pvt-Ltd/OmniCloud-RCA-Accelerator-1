@@ -33,12 +33,12 @@ const bundleDiscoveryCache = createTTLCache<BundleObjectDiscovery>();
  * for 10 minutes during active testing is worse than re-checking each time.
  */
 export async function resolveBundleObjectDiscovery(client: SalesforceClient): Promise<BundleObjectDiscovery> {
-  const cached = bundleDiscoveryCache.get(client.instanceUrl);
+  const cached = bundleDiscoveryCache.get(client.cacheScope);
   if (cached) return cached;
 
   const result = await computeBundleObjectDiscovery(client);
   if (result.relationshipObject || result.groupObject) {
-    bundleDiscoveryCache.set(client.instanceUrl, result);
+    bundleDiscoveryCache.set(client.cacheScope, result);
   }
   console.log(
     `[resolveBundleObjectDiscovery] relationshipObject=${result.relationshipObject ?? "none"} groupObject=${result.groupObject ?? "none"} ` +
@@ -319,7 +319,7 @@ export async function resolveQuoteLineRelationshipSchema(
   client: SalesforceClient,
   bundleDiscovery: BundleObjectDiscovery,
 ): Promise<QuoteLineRelationshipFieldSchema> {
-  const cached = qlrSchemaCache.get(client.instanceUrl);
+  const cached = qlrSchemaCache.get(client.cacheScope);
   if (cached) return cached;
 
   const result = await computeQuoteLineRelationshipSchema(client, bundleDiscovery);
@@ -327,7 +327,7 @@ export async function resolveQuoteLineRelationshipSchema(
     result.mechanism === "unsupported" ||
     (result.mechanism === "relationship-object" && !!bundleDiscovery.relationshipObject && !result.relatedComponentField);
   if (!inconclusive) {
-    qlrSchemaCache.set(client.instanceUrl, result);
+    qlrSchemaCache.set(client.cacheScope, result);
   }
   return result;
 }

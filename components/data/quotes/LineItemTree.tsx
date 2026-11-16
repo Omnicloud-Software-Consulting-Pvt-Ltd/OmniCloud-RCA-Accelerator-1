@@ -49,7 +49,7 @@ function BundleDiagnosticsDisclosure({ isDark, diagnostics }: { isDark: boolean;
               {diagnostics.queryErrors.map((e, i) => <div key={i}>⚠ {e}</div>)}
             </div>
           )}
-          <CodeBlock isDark={isDark} data={diagnostics} />
+          <CodeBlock open isDark={isDark} data={diagnostics} />
         </div>
       )}
     </div>

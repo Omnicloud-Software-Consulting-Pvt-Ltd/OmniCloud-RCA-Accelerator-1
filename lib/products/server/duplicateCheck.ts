@@ -3,7 +3,7 @@ import { soqlEscape } from "@/lib/products/server/salesforceWrites";
 import { rankProductNameMatches } from "@/lib/quotes/catalog/search";
 import type { CatalogProduct } from "@/lib/quotes/types";
 import { buildSalesforceRecordUrl } from "@/lib/salesforce/recordUrl";
-import { normalizeForCompare, type DuplicateSimilarRecord, type DuplicateExistingRecord, type DuplicateCheckResult } from "@/lib/duplicateDetection";
+import { isSameProductName, type DuplicateSimilarRecord, type DuplicateExistingRecord, type DuplicateCheckResult } from "@/lib/duplicateDetection";
 
 interface Product2Row {
   Id: string;
@@ -14,18 +14,15 @@ interface Product2Row {
   LastModifiedDate: string;
 }
 
-async function queryByField(client: SalesforceClient, field: "Name" | "ProductCode", value: string, excludeId?: string): Promise<Product2Row[]> {
+async function queryByName(client: SalesforceClient, value: string, excludeId?: string): Promise<Product2Row[]> {
   if (!value.trim()) return [];
-  const clauses = [`${field} = '${soqlEscape(value)}'`];
+  // SOQL `=` on Name is a whole-value (case-insensitive) match — never LIKE — so it can only narrow the candidate set.
+  const clauses = [`Name = '${soqlEscape(value.trim())}'`];
   if (excludeId) clauses.push(`Id != '${soqlEscape(excludeId)}'`);
-  try {
-    const res = await client.query<Product2Row>(
-      `SELECT Id, Name, ProductCode, Family, IsActive, LastModifiedDate FROM Product2 WHERE ${clauses.join(" AND ")} LIMIT 5`,
-    );
-    return res.records;
-  } catch {
-    return [];
-  }
+  const res = await client.query<Product2Row>(
+    `SELECT Id, Name, ProductCode, Family, IsActive, LastModifiedDate FROM Product2 WHERE ${clauses.join(" AND ")} LIMIT 5`,
+  );
+  return res.records;
 }
 
 async function findSimilarCandidates(client: SalesforceClient, name: string, excludeId?: string) {
@@ -64,9 +61,8 @@ export interface ProductMatches {
  * similarity heuristic.
  */
 export async function findProductMatches(client: SalesforceClient, name: string, opts: { excludeId?: string } = {}): Promise<ProductMatches> {
-  const target = normalizeForCompare(name);
-  const byName = await queryByField(client, "Name", name, opts.excludeId);
-  const exact = byName.find(r => normalizeForCompare(r.Name) === target) ?? null;
+  const byName = await queryByName(client, name, opts.excludeId).catch(() => [] as Product2Row[]);
+  const exact = byName.find(r => isSameProductName(r.Name, name)) ?? null;
 
   const candidates = await findSimilarCandidates(client, name, opts.excludeId);
   const ranked = rankProductNameMatches(name, candidates.map(toCatalogProductShape));
@@ -88,40 +84,37 @@ function toExistingRecord(r: Product2Row): DuplicateExistingRecord {
 }
 
 /**
- * The authoritative "would creating a Product with this Name/Code duplicate
- * an existing one?" check. Called both by the frontend pre-check route
+ * The authoritative "would creating a Product with this Name duplicate an
+ * existing one?" check. Called both by the frontend pre-check route
  * (POST /api/sf/products/check-duplicate) AND server-side as the FINAL gate
  * inside POST /api/sf/products/save itself — a frontend-only check can't
  * stop two concurrent requests that both ran their check before either
  * record existed (§21). Pass `excludeId` (the record's own Id) when
  * checking during an Edit save, so a record never flags its own unchanged
- * name/code as a duplicate of itself (§25).
+ * name as a duplicate of itself (§25).
+ *
+ * Only the COMPLETE Product2.Name counts (isSameProductName: trim +
+ * case-fold) — no prefix/substring/token/fuzzy matching and no ProductCode,
+ * so "OmniCloud RCA" is never a duplicate of "OmniCloud RCA Product".
+ * `similarRecords` is always empty: a partial resemblance is not a duplicate
+ * and must not interrupt creation. A failed query throws (callers fail closed).
  */
 export async function checkProductDuplicate(
   client: SalesforceClient,
-  input: { name: string; code?: string | null; excludeId?: string },
+  input: { name: string; excludeId?: string },
 ): Promise<DuplicateCheckResult> {
-  const codeMatches = input.code ? await queryByField(client, "ProductCode", input.code, input.excludeId) : [];
-  const exactCode = input.code
-    ? codeMatches.find(r => normalizeForCompare(r.ProductCode ?? "") === normalizeForCompare(input.code!)) ?? null
-    : null;
-
-  const { exact: exactName, similar } = await findProductMatches(client, input.name, { excludeId: input.excludeId });
-
-  const match = exactName ?? exactCode;
-  if (match) {
-    return {
-      isDuplicate: true,
-      matchType: exactName ? "exact-name" : "exact-code",
-      objectApiName: "Product2",
-      recordId: match.Id,
-      recordName: match.Name,
-      recordCode: match.ProductCode ?? null,
-      salesforceUrl: buildSalesforceRecordUrl(client.instanceUrl, "Product2", match.Id),
-      existing: toExistingRecord(match),
-      similarRecords: similar,
-    };
-  }
-
-  return { isDuplicate: false, similarRecords: similar };
+  const rows = await queryByName(client, input.name, input.excludeId);
+  const match = rows.find(r => isSameProductName(r.Name, input.name));
+  if (!match) return { isDuplicate: false, similarRecords: [] };
+  return {
+    isDuplicate: true,
+    matchType: "exact-name",
+    objectApiName: "Product2",
+    recordId: match.Id,
+    recordName: match.Name,
+    recordCode: match.ProductCode ?? null,
+    salesforceUrl: buildSalesforceRecordUrl(client.instanceUrl, "Product2", match.Id),
+    existing: toExistingRecord(match),
+    similarRecords: [],
+  };
 }

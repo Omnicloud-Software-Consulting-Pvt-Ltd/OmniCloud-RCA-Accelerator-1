@@ -1,0 +1,153 @@
+{
+  "group": "G6",
+  "retrievedOn": "2026-11-06",
+  "countries": [
+    {
+      "countryCode": "CH",
+      "status": "found",
+      "note": "ESTV page; effective date of current rates not stated on page (page last updated 5 Nov 2026).",
+      "rates": [
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Mehrwertsteuer / Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "standard", "ratePercent": 8.1, "appliesTo": "All taxable supplies not covered by the reduced or special rate", "classification": "goods-and-services", "effectiveFrom": null, "sourceUrl": "https://www.estv.admin.ch/estv/en/home/value-added-tax/vat-rates-switzerland.html", "sourceOrganization": "Swiss Federal Tax Administration (ESTV/FTA)", "sourceQuote": "The normal rate is 8,1 %."},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Mehrwertsteuer / Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "reduced", "ratePercent": 2.6, "appliesTo": "Food (except alcoholic beverages), livestock, seeds, plants, grains, animal feed, fertiliser, medications, certain publications, certain radio/TV services, menstrual hygiene products (from 1 Jan 2025)", "classification": "food", "effectiveFrom": null, "sourceUrl": "https://www.estv.admin.ch/estv/en/home/value-added-tax/vat-rates-switzerland.html", "sourceOrganization": "Swiss Federal Tax Administration (ESTV/FTA)", "sourceQuote": "A reduced rate of 2,6 % applies for certain categories of goods and services, particularly:"},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Mehrwertsteuer / Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "other", "ratePercent": 3.8, "appliesTo": "Special rate: accommodation services (overnight stays with breakfast) in the hotel and accommodation business", "classification": "accommodation", "effectiveFrom": null, "sourceUrl": "https://www.estv.admin.ch/estv/en/home/value-added-tax/vat-rates-switzerland.html", "sourceOrganization": "Swiss Federal Tax Administration (ESTV/FTA)", "sourceQuote": "Accommodation services (overnight stays with breakfast) in the hotel and accommodation business"}
+      ]
+    },
+    {"countryCode": "SY", "status": "not-found", "note": "No official Syrian tax authority page located/fetched within budget.", "rates": []},
+    {
+      "countryCode": "TW",
+      "status": "found",
+      "note": "Business Tax Act Art. 10 sets a 5%-10% band with the levy rate set by the Executive Yuan; the explicit 5% figure was found on the MOF eTax portal in the cross-border e-services Q&A (statement is scoped to offshore e-service suppliers; 5% is the general VAT-type business tax rate). Arts. 11-12 are gross business receipts tax (non-VAT) rates.",
+      "rates": [
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Value-added Business Tax (營業稅)", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "standard", "ratePercent": 5, "appliesTo": "Value-added business tax rate (stated on source for offshore electronic services suppliers)", "classification": "goods-and-services", "effectiveFrom": null, "sourceUrl": "https://www.etax.nat.gov.tw/etwmain/en/cbec-tax-area/business-tax/taxation-system-intro/q-and-a/Gz6MjlP", "sourceOrganization": "eTax Portal, Ministry of Finance, R.O.C. (Taiwan)", "sourceQuote": "The tax rate for an offshore electronic services business entity is 5%."},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Value-added Business Tax (營業稅)", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "zero", "ratePercent": 0, "appliesTo": "Exported goods, export-related services, duty-free shop sales to departing travellers, international transport, etc. (Art. 7)", "classification": "exports", "effectiveFrom": null, "sourceUrl": "https://law-out.mof.gov.tw/LawContent.aspx?id=FL006082", "sourceOrganization": "Ministry of Finance, R.O.C. (Taiwan) - Laws database", "sourceQuote": "下列貨物或勞務之營業稅稅率為零： 一、外銷貨物。 二、與外銷有關之勞務，或在國內提供而在國外使用之勞務。"},
+        {"subdivisionCode": null, "taxType": "Other", "taxName": "Non-value-added (gross business receipts) Business Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "Gross receipts tax", "rateCategory": "other", "ratePercent": 5, "appliesTo": "Core business sales of banking and insurance industries (Art. 11); reinsurance premium income 1%", "classification": "financial-services", "effectiveFrom": null, "sourceUrl": "https://law-out.mof.gov.tw/LawContent.aspx?id=FL006082", "sourceOrganization": "Ministry of Finance, R.O.C. (Taiwan) - Laws database", "sourceQuote": "二、銀行業、保險業經營銀行、保險本業銷售額之稅率為百分之五；其中保險業之本業銷售額應扣除財產保險自留賠款。但保險業之再保費收入之稅率為百分之一。"},
+        {"subdivisionCode": null, "taxType": "Other", "taxName": "Non-value-added (gross business receipts) Business Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "Gross receipts tax", "rateCategory": "other", "ratePercent": 2, "appliesTo": "Other sales of the financial industries listed in Art. 11 (not core banking/insurance, not non-core business)", "classification": "financial-services", "effectiveFrom": null, "sourceUrl": "https://law-out.mof.gov.tw/LawContent.aspx?id=FL006082", "sourceOrganization": "Ministry of Finance, R.O.C. (Taiwan) - Laws database", "sourceQuote": "三、前二款以外之銷售額稅率為百分之二。"},
+        {"subdivisionCode": null, "taxType": "Other", "taxName": "Non-value-added (gross business receipts) Business Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "Gross receipts tax", "rateCategory": "other", "ratePercent": 15, "appliesTo": "Night clubs and restaurants with entertainment shows (Art. 12)", "classification": "services", "effectiveFrom": null, "sourceUrl": "https://law-out.mof.gov.tw/LawContent.aspx?id=FL006082", "sourceOrganization": "Ministry of Finance, R.O.C. (Taiwan) - Laws database", "sourceQuote": "一、夜總會、有娛樂節目之餐飲店之營業稅稅率為百分之十五。"},
+        {"subdivisionCode": null, "taxType": "Other", "taxName": "Non-value-added (gross business receipts) Business Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "Gross receipts tax", "rateCategory": "other", "ratePercent": 25, "appliesTo": "Wine houses and tea rooms, coffee shops, bars etc. with companion services (Art. 12)", "classification": "services", "effectiveFrom": null, "sourceUrl": "https://law-out.mof.gov.tw/LawContent.aspx?id=FL006082", "sourceOrganization": "Ministry of Finance, R.O.C. (Taiwan) - Laws database", "sourceQuote": "二、酒家及有陪侍服務之茶室、咖啡廳、酒吧等之營業稅稅率為百分之二十五。"}
+      ]
+    },
+    {"countryCode": "TJ", "status": "not-found", "note": "No official Tajik tax authority/legislation page fetched within budget.", "rates": []},
+    {
+      "countryCode": "TZ",
+      "status": "found",
+      "note": "Source is the VAT Act Cap 148 R.E. 2019 hosted by the Ministry of Finance (Mainland Tanzania). TRA website pages unreachable (header parse errors / 404). Secondary sources report a Finance Act 2025 amendment adding a 16% rate for certain supplies to unregistered persons paid electronically; NOT verified on an official source. Zanzibar has a separate VAT regime (not covered).",
+      "rates": [
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "standard", "ratePercent": 18, "appliesTo": "Taxable supplies and imports (Mainland Tanzania)", "classification": "goods-and-services", "effectiveFrom": null, "sourceUrl": "https://www.mof.go.tz/uploads/documents/en-1676548670-THE%20VALUE%20ADDED%20TAX%20ACT,%20CAP%20148%20R.E.%202019.pdf", "sourceOrganization": "Ministry of Finance, United Republic of Tanzania (VAT Act Cap 148 R.E. 2019)", "sourceQuote": "5.-(1) The amount of value added tax payable shall be calculated by multiplying the value of the supply or import by the value added tax rate, which shall be eighteen percent."},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "zero", "ratePercent": 0, "appliesTo": "Zero-rated supplies or imports", "classification": "goods-and-services", "effectiveFrom": null, "sourceUrl": "https://www.mof.go.tz/uploads/documents/en-1676548670-THE%20VALUE%20ADDED%20TAX%20ACT,%20CAP%20148%20R.E.%202019.pdf", "sourceOrganization": "Ministry of Finance, United Republic of Tanzania (VAT Act Cap 148 R.E. 2019)", "sourceQuote": "(2) Where the supply or import is zero-rated, the value added tax rate shall be zero percent."}
+      ]
+    },
+    {
+      "countryCode": "TH",
+      "status": "found",
+      "note": "Revenue Department page states 7% currently; it does not break out the statutory 10% / royal-decree reduction or the local (municipal) tax component, so no component split recorded.",
+      "rates": [
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "standard", "ratePercent": 7, "appliesTo": "General VAT rate on taxable supplies", "classification": "goods-and-services", "effectiveFrom": null, "sourceUrl": "https://www.rd.go.th/english/6043.html", "sourceOrganization": "The Revenue Department, Thailand", "sourceQuote": "Currently, the rate is 7 percent."},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "zero", "ratePercent": 0, "appliesTo": "Exports of goods, international transport by aircraft or sea vessel, supplies to UN agencies and diplomatic missions, among others", "classification": "exports", "effectiveFrom": null, "sourceUrl": "https://www.rd.go.th/english/6043.html", "sourceOrganization": "The Revenue Department, Thailand", "sourceQuote": "Certain activities are liable to VAT at the rate of zero percent."},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "exempt", "ratePercent": null, "appliesTo": "Small businesses below turnover threshold, unprocessed agricultural products, newspapers/magazines/textbooks, certain basic services such as healthcare and education", "classification": "other", "effectiveFrom": null, "sourceUrl": "https://www.rd.go.th/english/6043.html", "sourceOrganization": "The Revenue Department, Thailand", "sourceQuote": "Certain activities are exempted from VAT."}
+      ]
+    },
+    {"countryCode": "TL", "status": "not-found", "note": "No official Timor-Leste source fetched within budget.", "rates": []},
+    {"countryCode": "TG", "status": "not-found", "note": "OTR (otr.tg) site fetched but no TVA rate text; Cahier fiscal 2026 PDF is image-only (no extractable text).", "rates": []},
+    {"countryCode": "TK", "status": "not-found", "note": "No official source located stating consumption-tax status.", "rates": []},
+    {"countryCode": "TO", "status": "not-found", "note": "revenue.gov.to failed TLS certificate verification; no other official page fetched.", "rates": []},
+    {
+      "countryCode": "TT",
+      "status": "found",
+      "note": "IRD VAT page states 12.5%; zero-rated food items page linked but not fetched, so zero rate not recorded.",
+      "rates": [
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "standard", "ratePercent": 12.5, "appliesTo": "Standard-rated supplies of goods and services", "classification": "goods-and-services", "effectiveFrom": null, "sourceUrl": "https://www.ird.gov.tt/VAT", "sourceOrganization": "Inland Revenue Division, Ministry of Finance, Trinidad and Tobago", "sourceQuote": "VAT is charged at a rate of 12.5%."}
+      ]
+    },
+    {"countryCode": "TN", "status": "not-found", "note": "No official Tunisian Ministry of Finance page fetched within budget.", "rates": []},
+    {
+      "countryCode": "TR",
+      "status": "found",
+      "note": "GİB rate list page not fetchable (empty render); Resmi Gazete decree 7346 PDF is image-only. Source is the Presidency Investment Office (invest.gov.tr) tax guide, which states rates without item lists. VAT Law 3065 Art. 28 (mevzuat.gov.tr) sets a base 10% that the President may change. Mapping of goods/services to 1%/10% not verified.",
+      "rates": [
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Katma Değer Vergisi (KDV)", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "standard", "ratePercent": 20, "appliesTo": "General rate (goods and services not in reduced-rate lists)", "classification": "goods-and-services", "effectiveFrom": null, "sourceUrl": "https://invest.gov.tr/en/InvestmentGuide/pages/tax-guide.aspx", "sourceOrganization": "Presidency of the Republic of Türkiye Investment Office", "sourceQuote": "The generally applied VAT rates are set at 1%, 10%, and 20%."},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Katma Değer Vergisi (KDV)", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "reduced", "ratePercent": 10, "appliesTo": "Goods/services in the reduced-rate list (not specified on source)", "classification": "goods-and-services", "effectiveFrom": null, "sourceUrl": "https://invest.gov.tr/en/InvestmentGuide/pages/tax-guide.aspx", "sourceOrganization": "Presidency of the Republic of Türkiye Investment Office", "sourceQuote": "The generally applied VAT rates are set at 1%, 10%, and 20%."},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Katma Değer Vergisi (KDV)", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "super-reduced", "ratePercent": 1, "appliesTo": "Goods/services in the 1% list (not specified on source)", "classification": "goods-and-services", "effectiveFrom": null, "sourceUrl": "https://invest.gov.tr/en/InvestmentGuide/pages/tax-guide.aspx", "sourceOrganization": "Presidency of the Republic of Türkiye Investment Office", "sourceQuote": "The generally applied VAT rates are set at 1%, 10%, and 20%."},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Katma Değer Vergisi (KDV)", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "exempt", "ratePercent": null, "appliesTo": "Banking and insurance company transactions", "classification": "financial-services", "effectiveFrom": null, "sourceUrl": "https://invest.gov.tr/en/InvestmentGuide/pages/tax-guide.aspx", "sourceOrganization": "Presidency of the Republic of Türkiye Investment Office", "sourceQuote": "Banking and insurance company transactions remain exempt from VAT"}
+      ]
+    },
+    {"countryCode": "TM", "status": "not-found", "note": "No official Turkmen source fetched within budget.", "rates": []},
+    {"countryCode": "TC", "status": "not-found", "note": "No official TCI government source fetched within budget.", "rates": []},
+    {"countryCode": "TV", "status": "not-found", "note": "No official Tuvalu source fetched within budget.", "rates": []},
+    {
+      "countryCode": "UG",
+      "status": "found",
+      "note": "URA VAT page; effective date not stated.",
+      "rates": [
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "standard", "ratePercent": 18, "appliesTo": "All supplies not zero-rated or exempt", "classification": "goods-and-services", "effectiveFrom": null, "sourceUrl": "https://www.ura.go.ug/en/domestic-taxes/value-added-tax-vat/", "sourceOrganization": "Uganda Revenue Authority", "sourceQuote": "These are supplies where VAT charged is 18%."},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "zero", "ratePercent": 0, "appliesTo": "Exports, locally made drugs and medicines, locally grown and milled cereals, among others", "classification": "exports", "effectiveFrom": null, "sourceUrl": "https://www.ura.go.ug/en/domestic-taxes/value-added-tax-vat/", "sourceOrganization": "Uganda Revenue Authority", "sourceQuote": "These are supplies where VAT is charged at a rate Of 0%"},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "exempt", "ratePercent": null, "appliesTo": "Third Schedule of the VAT Act, e.g. unprocessed agricultural produce, life and health insurance, educational services", "classification": "other", "effectiveFrom": null, "sourceUrl": "https://www.ura.go.ug/en/domestic-taxes/value-added-tax-vat/", "sourceOrganization": "Uganda Revenue Authority", "sourceQuote": "These are supplies of goods and services which are not charged VAT."}
+      ]
+    },
+    {
+      "countryCode": "UA",
+      "status": "found",
+      "note": "Source is an undated State Tax Service rate-table PDF (zir.tax.gov.ua, downloaded directly). PDF table columns are interleaved in extracted text; 14%/7% row assignment inferred from table order. 7% list may also include items whose status changed over time (e.g. hotel accommodation was temporary); only medicines/medical devices recorded. 0% not recorded due to garbled column extraction.",
+      "rates": [
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Податок на додану вартість (ПДВ)", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "standard", "ratePercent": 20, "appliesTo": "Supplies of goods and services with place of supply in the customs territory of Ukraine; imports", "classification": "goods-and-services", "effectiveFrom": null, "sourceUrl": "https://zir.tax.gov.ua/docs/stavki/pdv.pdf", "sourceOrganization": "State Tax Service of Ukraine", "sourceQuote": "Ставка 20 відсотків Об’єкт оподаткування Операції платників податку з: постачання товарів, місце постачання яких розташоване на митній території України, відповідно до статті 186 Податкового кодексу України"},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Податок на додану вартість (ПДВ)", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "reduced", "ratePercent": 14, "appliesTo": "Supply/import of agricultural products under UKTZED codes 1001, 1003, 1005, 1201, 1205, 1206 00 (wheat, barley, maize, soya, rapeseed, sunflower seeds)", "classification": "food", "effectiveFrom": null, "sourceUrl": "https://zir.tax.gov.ua/docs/stavki/pdv.pdf", "sourceOrganization": "State Tax Service of Ukraine", "sourceQuote": "постачання на митній території України та ввезення на митну територію України сільськогосподарської продукції, що класифікується за такими кодами згідно з УКТ ЗЕД: 1001, 1003, 1005, 1201, 1205, 1206 00"},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Податок на додану вартість (ПДВ)", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "reduced", "ratePercent": 7, "appliesTo": "Supply/import of registered medicinal products and medical devices", "classification": "medicine", "effectiveFrom": null, "sourceUrl": "https://zir.tax.gov.ua/docs/stavki/pdv.pdf", "sourceOrganization": "State Tax Service of Ukraine", "sourceQuote": "постачання на митній території України та ввезення на митну територію України лікарських засобів, дозволених для виробництва і застосування в Україні та внесених до Державного реєстру лікарських засобів, а також медичних виробів"}
+      ]
+    },
+    {
+      "countryCode": "AE",
+      "status": "found",
+      "note": "UAE government portal (u.ae); zero-rated/exempt categories only in linked PDF guidance (not fetched).",
+      "rates": [
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "standard", "ratePercent": 5, "appliesTo": "Taxable supplies of goods and services", "classification": "goods-and-services", "effectiveFrom": "2018-01-01", "sourceUrl": "https://u.ae/en/information-and-services/finance-and-investment/taxation/vat/valueaddedtaxvat", "sourceOrganization": "The UAE Government Portal (u.ae)", "sourceQuote": "was introduced in the UAE on 1 January 2018. The rate of VAT is 5 per cent."}
+      ]
+    },
+    {
+      "countryCode": "GB",
+      "status": "found",
+      "note": "GOV.UK VAT rates page.",
+      "rates": [
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "standard", "ratePercent": 20, "appliesTo": "Most goods and services", "classification": "goods-and-services", "effectiveFrom": null, "sourceUrl": "https://www.gov.uk/vat-rates", "sourceOrganization": "HM Revenue & Customs (GOV.UK)", "sourceQuote": "Standard rate 20% Most goods and services"},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "reduced", "ratePercent": 5, "appliesTo": "Some goods and services, e.g. children's car seats and home energy", "classification": "goods-and-services", "effectiveFrom": null, "sourceUrl": "https://www.gov.uk/vat-rates", "sourceOrganization": "HM Revenue & Customs (GOV.UK)", "sourceQuote": "Reduced rate 5% Some goods and services, for example, children’s car seats and home energy"},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "zero", "ratePercent": 0, "appliesTo": "Zero-rated goods and services, e.g. most food and children's clothes", "classification": "food", "effectiveFrom": null, "sourceUrl": "https://www.gov.uk/vat-rates", "sourceOrganization": "HM Revenue & Customs (GOV.UK)", "sourceQuote": "Zero rate 0% Zero-rated goods and services, for example, most food and children’s clothes"}
+      ]
+    },
+    {"countryCode": "UM", "status": "not-found", "note": "Essentially uninhabited US territories; no official source located stating consumption-tax status.", "rates": []},
+    {"countryCode": "UY", "status": "not-found", "note": "IMPO (official gazette) Título 10 IVA returned HTTP 500; DGI (gub.uy) home page has no rate text. Search budget exhausted before locating DGI rate page.", "rates": []},
+    {
+      "countryCode": "UZ",
+      "status": "found",
+      "note": "Tax Code of Uzbekistan Art. 258 on lex.uz (National Database of Legislation), downloaded directly. Zero-rated turnover is governed by Chapter 36 (not extracted). Effective date is that of the amending Law ZRQ-812 wording.",
+      "rates": [
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Қўшилган қиймат солиғи (Value Added Tax)", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "standard", "ratePercent": 12, "appliesTo": "VAT rate unless Chapter 36 (zero-rated turnover) provides otherwise", "classification": "goods-and-services", "effectiveFrom": "2023-01-01", "sourceUrl": "https://lex.uz/docs/4674902", "sourceOrganization": "National Database of Legislation of the Republic of Uzbekistan (lex.uz) - Tax Code", "sourceQuote": "258-модда. Солиқ ставкалари ... Агар ушбу Кодекснинг 36-бобида бошқача қоида белгиланмаган бўлса, солиқ ставкаси 12 фоиз миқдорида белгиланади. ... 2023 йил 1 январдан кучга киради"}
+      ]
+    },
+    {"countryCode": "VU", "status": "not-found", "note": "customsinlandrevenue.gov.vu did not resolve (DNS); no other official page fetched.", "rates": []},
+    {"countryCode": "VE", "status": "not-found", "note": "No official SENIAT page fetched within budget.", "rates": []},
+    {
+      "countryCode": "VN",
+      "status": "found",
+      "note": "Source is an official law-introduction document on the Ministry of Justice legal dissemination portal (pbgdpl.gov.vn), not the law text itself. Law 48/2024/QH15 effective 1 Jul 2025 retains 0/5/10%. IMPORTANT: secondary sources report a temporary reduction of most 10%-rated items to 8% (Resolution 204/2025/QH15) through 31 Dec 2026 - NOT verified on an official source, not recorded.",
+      "rates": [
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Thuế giá trị gia tăng (Value Added Tax)", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "standard", "ratePercent": 10, "appliesTo": "Goods and services not in 0% or 5% groups; includes services supplied by foreign suppliers via e-commerce/digital platforms", "classification": "goods-and-services", "effectiveFrom": "2025-07-01", "sourceUrl": "https://pbgdpl.gov.vn/noidung/tintuc/Lists/TLDCGioiThieu/Attachments/374/TÀI LIỆU GIỚI THIỆU VỀ LUẬT THUẾ GTGT.docx", "sourceOrganization": "Ministry of Justice of Viet Nam - legal dissemination portal (Law on VAT introduction document)", "sourceQuote": "Bổ sung dịch vụ được các nhà cung cấp nước ngoài không có cơ sở thường trú tại Việt Nam cung cấp cho tổ chức, cá nhân tại Việt Nam qua kênh thương mại điện tử và các nền tảng số thuộc đối tượng áp dụng thuế suất 10%."},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Thuế giá trị gia tăng (Value Added Tax)", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "reduced", "ratePercent": 5, "appliesTo": "Listed essential goods/services (e.g. fertiliser, agricultural machinery, medical equipment, traditional performing arts)", "classification": "goods-and-services", "effectiveFrom": "2025-07-01", "sourceUrl": "https://pbgdpl.gov.vn/noidung/tintuc/Lists/TLDCGioiThieu/Attachments/374/TÀI LIỆU GIỚI THIỆU VỀ LUẬT THUẾ GTGT.docx", "sourceOrganization": "Ministry of Justice of Viet Nam - legal dissemination portal (Law on VAT introduction document)", "sourceQuote": "việc áp dụng các mức thuế suất (hiện nay gồm 03 mức: 0%, 5% và 10%) ... sửa đổi quy định phân bón, tàu khai thác thủy sản tại vùng biển; máy móc, thiết bị chuyên dùng phục vụ cho sản xuất nông nghiệp ... sang thuộc đối tượng áp dụng thuế suất 5%."},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Thuế giá trị gia tăng (Value Added Tax)", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "zero", "ratePercent": 0, "appliesTo": "Exported goods/services (incl. construction abroad or in non-tariff zones, duty-free shop sales, digital content consumed abroad)", "classification": "exports", "effectiveFrom": "2025-07-01", "sourceUrl": "https://pbgdpl.gov.vn/noidung/tintuc/Lists/TLDCGioiThieu/Attachments/374/TÀI LIỆU GIỚI THIỆU VỀ LUẬT THUẾ GTGT.docx", "sourceOrganization": "Ministry of Justice of Viet Nam - legal dissemination portal (Law on VAT introduction document)", "sourceQuote": "Bổ sung quy định “hoạt động xây dựng, lắp đặt công trình ở nước ngoài hoặc ở trong khu phi thuế quan” là hàng hóa xuất khẩu được áp dụng thuế suất thuế GTGT 0%"}
+      ]
+    },
+    {"countryCode": "VG", "status": "not-found", "note": "No official BVI government source fetched stating consumption-tax status.", "rates": []},
+    {"countryCode": "VI", "status": "not-found", "note": "bir.vi.gov home page has no rate text; gross-receipts.bir.vi.gov unreachable.", "rates": []},
+    {"countryCode": "WF", "status": "not-found", "note": "No official source fetched within budget.", "rates": []},
+    {"countryCode": "EH", "status": "not-found", "note": "Disputed territory; no official source located.", "rates": []},
+    {"countryCode": "YE", "status": "not-found", "note": "No official Yemeni tax authority page fetched within budget.", "rates": []},
+    {"countryCode": "ZM", "status": "not-found", "note": "zra.org.zm fails TLS certificate verification (incomplete chain) for every fetch; all other results were third-party (16% widely reported but not verified on an official page).", "rates": []},
+    {
+      "countryCode": "ZW",
+      "status": "found",
+      "note": "ZIMRA page states 15.5% without an effective date (secondary sources: from 1 Jan 2026 under Finance Act 2025). Special rate mentioned but percentage not stated. Second Schedule zero-rated items repealed 1 Jan 2024; section 10 zero-rating (mainly exports) remains.",
+      "rates": [
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "standard", "ratePercent": 15.5, "appliesTo": "Goods and services unless exempt, zero-rated or at a special rate", "classification": "goods-and-services", "effectiveFrom": null, "sourceUrl": "https://zimra.co.zw/domestic-taxes/vat/mechanics-of-vat", "sourceOrganization": "Zimbabwe Revenue Authority (ZIMRA)", "sourceQuote": "Standard rate of 15.5%"},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "zero", "ratePercent": 0, "appliesTo": "Section 10 VAT Act zero-rated supplies, mainly exports and related services", "classification": "exports", "effectiveFrom": null, "sourceUrl": "https://zimra.co.zw/domestic-taxes/vat/mechanics-of-vat", "sourceOrganization": "Zimbabwe Revenue Authority (ZIMRA)", "sourceQuote": "Zero-rate (0%)"},
+        {"subdivisionCode": null, "taxType": "VAT", "taxName": "Value Added Tax", "officialTaxCode": null, "taxComponent": null, "taxStructure": "VAT (single)", "rateCategory": "exempt", "ratePercent": null, "appliesTo": "Exempt supplies under section 11 of the VAT Act and First Schedule of VAT Regulations", "classification": "other", "effectiveFrom": null, "sourceUrl": "https://zimra.co.zw/domestic-taxes/vat/mechanics-of-vat", "sourceOrganization": "Zimbabwe Revenue Authority (ZIMRA)", "sourceQuote": "No value added tax is chargeable on exempt supplies."}
+      ]
+    }
+  ]
+}

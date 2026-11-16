@@ -1,6 +1,7 @@
 import type { SalesforceClient } from "@/lib/salesforce/client";
 import { soqlEscape } from "@/lib/salesforce/client";
 import type { GeneratedDocument } from "@/lib/contracts/types";
+import { parseSignedFileDescription } from "@/lib/contracts/docusign/signedDocuments";
 
 /**
  * ContentVersion helpers (§4.4) — Salesforce's own native file versioning IS
@@ -54,16 +55,20 @@ export async function listContractDocuments(client: SalesforceClient, contractId
     `SELECT Id, ContentDocumentId, Title, VersionNumber, CreatedDate, Description, IsLatest, CreatedBy.Name FROM ContentVersion WHERE ContentDocumentId IN (${idList}) ORDER BY ContentDocumentId, VersionNumber DESC`,
   );
 
-  return versions.records.map(v => ({
-    contentVersionId: v.Id,
-    contentDocumentId: v.ContentDocumentId,
-    versionNumber: v.VersionNumber != null ? Number(v.VersionNumber) : null,
-    title: v.Title,
-    templateName: v.Description ? v.Description.replace(/^Generated from template:\s*/, "") : null,
-    createdDate: v.CreatedDate,
-    createdByName: v.CreatedBy?.Name ?? null,
-    isLatest: !!v.IsLatest,
-  }));
+  return versions.records.map(v => {
+    const signed = parseSignedFileDescription(v.Description);
+    return {
+      contentVersionId: v.Id,
+      contentDocumentId: v.ContentDocumentId,
+      versionNumber: v.VersionNumber != null ? Number(v.VersionNumber) : null,
+      title: v.Title,
+      templateName: signed ? null : v.Description ? v.Description.replace(/^Generated from template:\s*/, "") : null,
+      createdDate: v.CreatedDate,
+      createdByName: v.CreatedBy?.Name ?? null,
+      isLatest: !!v.IsLatest,
+      signature: signed ? { kind: signed.kind, envelopeId: signed.envelopeId } : null,
+    };
+  });
 }
 
 /** Deleting the ContentDocument cascades every ContentVersion and ContentDocumentLink for it — the whole logical document, not just one version. */

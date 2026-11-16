@@ -8,6 +8,7 @@ import Image from "next/image";
 import { loadSession, clearSession } from "@/lib/auth/session";
 import { loadIdentity, isSetupComplete, clearIdentity, clearSetup } from "@/lib/auth/identity";
 import type { SessionData } from "@/lib/auth/types";
+import NotificationBell from "@/components/notifications/NotificationBell";
 // ─────────────────────────────────────────────────────────────────────────────
 // ICON SYSTEM
 // ─────────────────────────────────────────────────────────────────────────────
@@ -430,6 +431,8 @@ function NavBar({ session, isDark, onSignOut }: { session: SessionData; isDark: 
           />
           {isProduction ? "Production" : "Sandbox"}
         </div>
+
+        <NotificationBell isDark={isDark} />
 
         <motion.button
           onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}

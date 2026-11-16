@@ -7,6 +7,7 @@ import { flattenDraftTree } from "@/lib/quotes/pricing/calc";
 import { quoteApiPost } from "@/lib/quotes/client/apiClient";
 import type { BundleComponent, QuoteLineItemDraft } from "@/lib/quotes/types";
 import type { OrderProductConfigurationResult } from "@/lib/orders/types";
+import { Z } from "@/lib/ui/overlay";
 
 /** Flatten a BundleComponent tree (all depths) — used to look up each draft node's originating component for its resolved billing-frequency active options. */
 function flattenComponents(components: BundleComponent[]): BundleComponent[] {
@@ -160,7 +161,7 @@ export default function BundleConfiguratorDialog({ isDark, configuration, onConf
   }
 
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,8,24,0.6)", backdropFilter: "blur(4px)" }}>
+    <div style={{ position: "fixed", inset: 0, zIndex: Z.dialog, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,8,24,0.6)", backdropFilter: "blur(4px)" }}>
       <div style={{ width: 560, maxHeight: "85vh", overflowY: "auto", borderRadius: 16, background: t.surface, border: `1px solid ${t.borderBright}`, padding: 20 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 15, fontWeight: 700, color: t.heading }}>

@@ -22,7 +22,7 @@ const contractStatusCache = createTTLCache<ContractStatusResolution>();
  * text freely.
  */
 export async function resolveContractStatusResolution(client: SalesforceClient): Promise<ContractStatusResolution> {
-  return contractStatusCache.getOrCompute(client.instanceUrl, async () => {
+  return contractStatusCache.getOrCompute(client.cacheScope, async () => {
     const describe = await describeObjectCached(client, "Contract");
     const picklist = findPicklistFieldByLabel(describe, "Status", /^status$/i);
     if (!picklist) {

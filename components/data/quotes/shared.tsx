@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, type ReactNode, type CSSProperties } from "react";
+import { useId, useState, type ReactNode, type CSSProperties } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import FieldHelp from "@/components/help/FieldHelp";
+import type { FieldHelpEntry } from "@/lib/help/fieldHelp";
 
 const PRESS_TRANSITION = { duration: 0.12, ease: [0.22, 1, 0.36, 1] as const };
 
@@ -44,6 +46,9 @@ export function Ic({ n, s = 16 }: { n: string; s?: number }) {
     case "zap":          return <svg {...p}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>;
     case "x":            return <svg {...p}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
     case "terminal":     return <svg {...p}><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>;
+    case "shield":       return <svg {...p}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>;
+    case "database":     return <svg {...p}><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>;
+    case "cpu":          return <svg {...p}><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>;
     case "edit":         return <svg {...p}><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>;
     case "layers":       return <svg {...p}><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>;
     case "trash":        return <svg {...p}><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>;
@@ -109,9 +114,13 @@ export function Section({ title, icon, isDark, defaultOpen = true, children, rig
 }) {
   const t = tokens(isDark);
   const [open, setOpen] = useState(defaultOpen);
+  const regionId = useId();
   return (
     <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, overflow: "hidden", boxShadow: t.shadow }}>
       <motion.button
+        type="button"
+        aria-expanded={open}
+        aria-controls={regionId}
         onClick={() => setOpen(v => !v)}
         whileTap={{ scale: 0.99 }}
         transition={PRESS_TRANSITION}
@@ -135,7 +144,7 @@ export function Section({ title, icon, isDark, defaultOpen = true, children, rig
             transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
             style={{ overflow: "hidden" }}
           >
-            <div style={{ padding: "0 16px 14px" }}>{children}</div>
+            <div id={regionId} role="region" aria-label={title} style={{ padding: "0 16px 14px" }}>{children}</div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -209,11 +218,15 @@ export function GhostButton({ label, icon, onClick, isDark, danger, disabled }: 
   );
 }
 
-export function Field({ label, isDark, children, hint }: { label: string; isDark: boolean; children: ReactNode; hint?: string }) {
+/** Form field wrapper. The label gets the app-wide field help icon (lib/help/fieldHelp.ts) when help exists for it; `help={null}` opts out. */
+export function Field({ label, isDark, children, hint, apiName, help }: { label: string; isDark: boolean; children: ReactNode; hint?: string; apiName?: string; help?: FieldHelpEntry | null }) {
   const t = tokens(isDark);
   return (
     <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-      <span style={{ fontSize: 11.5, fontWeight: 600, color: t.dim, letterSpacing: 0.3, textTransform: "uppercase" }}>{label}</span>
+      <span style={{ fontSize: 11.5, fontWeight: 600, color: t.dim, letterSpacing: 0.3, textTransform: "uppercase", display: "inline-flex", alignItems: "center", gap: 4 }}>
+        {label}
+        <FieldHelp isDark={isDark} label={label} apiName={apiName} entry={help} />
+      </span>
       {children}
       {hint && <span style={{ fontSize: 11, color: t.dim }}>{hint}</span>}
     </label>
@@ -359,15 +372,38 @@ export function highlightJson(json: string, t: Tokens): ReactNode[] {
   return parts;
 }
 
-/** JSON viewer with syntax highlighting, pretty/compact toggle, expand/collapse, and copy (§ Generated JSON tab). */
-export function CodeBlock({ isDark, data, defaultExpanded = false, collapsedHeight = 220 }: {
+/**
+ * JSON viewer with syntax highlighting, pretty/compact toggle, expand/collapse, and copy (§ Generated JSON tab).
+ * Technical payloads are HIDDEN by default app-wide: only a "Show payload & technical details" bar (plus Copy) renders until the
+ * user asks. Pass `open` when the caller already sits behind an explicit toggle/tab the user clicked (no second click), or
+ * `defaultExpanded` for a dedicated JSON view.
+ */
+export function CodeBlock({ isDark, data, defaultExpanded = false, collapsedHeight = 220, open = false, label = TECHNICAL_DETAILS_LABEL }: {
   isDark: boolean; data: unknown; defaultExpanded?: boolean; collapsedHeight?: number;
+  /** Show the JSON immediately — the caller is already behind an explicit "show details" control. */
+  open?: boolean;
+  /** The reveal button's text while hidden. */
+  label?: string;
 }) {
   const t = tokens(isDark);
+  const [revealed, setRevealed] = useState(open || defaultExpanded);
   const [pretty, setPretty] = useState(true);
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [copied, setCopied] = useState(false);
   const json = pretty ? JSON.stringify(data, null, 2) : JSON.stringify(data);
+
+  if (!revealed) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "6px 10px", borderRadius: 10, border: `1px solid ${t.border}`, background: t.surfaceAlt }}>
+        <button type="button" aria-expanded={false} onClick={() => setRevealed(true)} style={miniButtonStyle(t)}>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><Ic n="terminal" s={11} /> {label}</span>
+        </button>
+        <button type="button" onClick={() => copyText(json, setCopied)} style={miniButtonStyle(t, copied)}>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><Ic n={copied ? "check" : "copy"} s={11} /> {copied ? "Copied" : "Copy"}</span>
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div style={{ borderRadius: 10, border: `1px solid ${t.border}`, background: t.surfaceAlt, overflow: "hidden", boxShadow: t.shadow }}>
@@ -378,6 +414,9 @@ export function CodeBlock({ isDark, data, defaultExpanded = false, collapsedHeig
           <button onClick={() => setExpanded(v => !v)} style={miniButtonStyle(t)}>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><Ic n={expanded ? "minimize" : "maximize"} s={11} /> {expanded ? "Collapse" : "Expand"}</span>
           </button>
+          {!open && !defaultExpanded && (
+            <button type="button" aria-expanded onClick={() => setRevealed(false)} style={miniButtonStyle(t)}>Hide</button>
+          )}
         </div>
         <button onClick={() => copyText(json, setCopied)} style={miniButtonStyle(t, copied)}>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><Ic n={copied ? "check" : "copy"} s={11} /> {copied ? "Copied" : "Copy"}</span>
@@ -402,6 +441,9 @@ export interface ErrorPanelData {
   status?: number | null;
   raw?: unknown;
 }
+
+/** Default label for a hidden technical payload (CodeBlock) — shared so every screen says the same thing. */
+export const TECHNICAL_DETAILS_LABEL = "Show payload & technical details";
 
 /** Rich error panel (§ Error handling): title, explanation, SF error, suggested fix, copy, expand, jump-to-log. */
 export function ErrorPanel({ isDark, error, onViewLogs }: { isDark: boolean; error: ErrorPanelData; onViewLogs?: () => void }) {

@@ -7,7 +7,9 @@ import type { ComponentFailure, DeployStatusInfo } from "@/lib/pricing-rules/att
 import type { ParentStepValidationEntry } from "@/lib/pricing-rules/attribute-based/create/schemaDiff";
 import type { ActivationAttemptDetail } from "@/lib/pricing-rules/attribute-based/create/activation";
 import type { ExpressionSetDonorInspectionResult } from "./donorInspection";
-import type { BundleDiscountBranchSelection } from "./canvasBuilder";
+import type { BundleDiscountBranchSelection, BundleLookupBindingReport } from "./canvasBuilder";
+import type { ResolvedBundleLookupTable } from "./lookupTableResolver";
+import type { RuntimeBundleAdjustmentTrace } from "./nativeRecords";
 import type { ProcedureStepLite } from "../types";
 import type { SanitizedAuditEntry } from "@/lib/salesforce/auditLog";
 import type { ConnectExpressionSetResponse, ConnectExpressionSetVersion } from "@/lib/pricing-rules/attribute-based/create/verifySalesforceState";
@@ -44,12 +46,19 @@ export interface ComponentVerificationResult {
 export interface BundleSalesforceVerificationSummary {
   bundle: boolean;
   componentsResolved: boolean;
+  /** Every BundleBasedAdjustment row (lookup-table entry) this run wrote/reused reads back from Salesforce. */
   pricingRules: boolean;
+  /** The resolved lookup table is Active AND the DEPLOYED BundleDiscount step's LookUpId/LookUpApiName point at it. */
   lookupTable: boolean;
+  /** The DEPLOYED procedure contains a BundleDiscount step. */
   pricingElement: boolean;
+  /** The DEPLOYED procedure's schedule constant holds this run's Price Adjustment Schedule. */
+  scheduleBinding: boolean;
   expressionSet: ComponentVerificationResult;
   expressionSetVersion: ComponentVerificationResult;
   pricingProcedure: ComponentVerificationResult;
+  /** What was read from the deployed XML, for display. */
+  deployed?: { lookUpId: string | null; lookUpApiName: string | null; scheduleConstantValue: string | null; bundleDiscountSteps: number };
 }
 
 export interface BundleGeneratedProcedureSnapshot {
@@ -59,8 +68,8 @@ export interface BundleGeneratedProcedureSnapshot {
   components: { name: string; adjustmentType: string; adjustmentValue: number }[];
   salesforce: {
     priceAdjustmentScheduleId: string | null;
-    bundleBasedAdjRuleIds: string[];
-    bundleAdjustmentConditionIds: string[];
+    lookupTableId: string | null;
+    lookupTableApiName: string | null;
     bundleBasedAdjustmentIds: string[];
     expressionSetId: string | null;
     expressionSetVersionId: string | null;
@@ -102,19 +111,15 @@ export interface BundlePricingActivationAudit {
 
 export interface BundleAdjustmentDecision {
   step: "bundle-based-adjustment";
-  ruleId: string;
-  requestedConfiguration: {
-    bundleProductId: string;
-    componentProductId: string;
-    scheduleId: string;
-    effectiveFrom: string;
-    effectiveTo: string;
-  };
-  componentSignature: string;
-  candidateAdjustmentId: string | null;
-  candidateCount: number;
-  componentMatch: boolean;
-  decision: "CREATE" | "REUSE";
+  componentName: string;
+  componentProductId: string;
+  /** The lookup-table key this row is matched on at runtime. */
+  key: Record<string, string>;
+  adjustmentType: string;
+  adjustmentValue: number;
+  /** The row's type/value before this run, when it already existed. */
+  previous: { adjustmentType: string; adjustmentValue: number } | null;
+  decision: "CREATE" | "REUSE" | "UPDATE";
   adjustmentId: string;
 }
 
@@ -160,10 +165,17 @@ export interface CreateBundlePricingResult {
 
   bundle?: { id: string; name: string };
   priceAdjustmentScheduleId?: string;
-  ruleIds?: string[];
-  conditionIds?: string[];
+  priceAdjustmentScheduleName?: string;
   adjustmentIds?: string[];
   ignoredComponents?: string[];
+  /** Components with no configured adjustment — no lookup-table entry is written for them. */
+  componentsWithoutAdjustment?: string[];
+  lookupTable?: ResolvedBundleLookupTable;
+  lookupTableRefresh?: { refreshed: boolean; finalStatus: string | null; error?: string };
+  lookupBinding?: BundleLookupBindingReport;
+  runtimeTraces?: RuntimeBundleAdjustmentTrace[];
+  /** Whether an already-deployed active version with identical bindings was reused instead of redeploying. */
+  procedureReuse?: { reused: boolean; reason: string };
   expressionSetId?: string;
   expressionSetApiName?: string;
   expressionSetVersionId?: string;

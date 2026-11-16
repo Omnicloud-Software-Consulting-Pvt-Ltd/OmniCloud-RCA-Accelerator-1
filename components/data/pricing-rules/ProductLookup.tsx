@@ -2,6 +2,8 @@
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { Ic, tokens, inputStyle, Spinner } from "./shared";
+import AnchoredOverlay from "@/components/ui/AnchoredOverlay";
+import { overlayPanelStyle } from "@/lib/ui/overlay";
 
 export interface ProductLookupMatch {
   id: string;
@@ -37,18 +39,22 @@ export default function ProductLookup({
 }) {
   const t = tokens(isDark);
   const listboxId = useId();
+  const fieldRef = useRef<HTMLDivElement>(null);
   const [results, setResults] = useState<ProductLookupMatch[]>([]);
   const [searching, setSearching] = useState(false);
   const [open, setOpen] = useState(false);
   const [highlighted, setHighlighted] = useState(-1);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The name just picked — the parent writes it back into `value`, which must not start a new search that reopens the list.
+  const pickedRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     const term = value.trim();
     // An empty term is handled synchronously in the input's onChange instead
     // of here, so this effect never calls setState for the "cleared" case.
-    if (!term) return;
+    if (!term || term === pickedRef.current) return;
+    pickedRef.current = null;
     debounceRef.current = setTimeout(async () => {
       setSearching(true);
       try {
@@ -71,6 +77,7 @@ export default function ProductLookup({
   }, [value]);
 
   function selectMatch(match: ProductLookupMatch) {
+    pickedRef.current = match.name.trim();
     setResults([]);
     setOpen(false);
     setHighlighted(-1);
@@ -91,7 +98,7 @@ export default function ProductLookup({
 
   return (
     <div style={{ position: "relative" }}>
-      <div style={{ position: "relative" }}>
+      <div ref={fieldRef} style={{ position: "relative" }}>
         <input
           value={value}
           disabled={disabled}
@@ -122,8 +129,9 @@ export default function ProductLookup({
         </span>
       </div>
 
-      {open && results.length > 0 && (
-        <div id={listboxId} role="listbox" style={{ position: "absolute", zIndex: 20, top: "100%", left: 0, right: 0, marginTop: 4, borderRadius: 9, border: `1px solid ${t.border}`, background: t.surface, maxHeight: 240, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" }}>
+      {/* Portaled (components/ui/AnchoredOverlay) — never clipped by the card/section it sits in. */}
+      <AnchoredOverlay anchorRef={fieldRef} open={open && results.length > 0} onDismiss={() => setOpen(false)} maxHeight={240}
+        id={listboxId} role="listbox" style={overlayPanelStyle(isDark, t.border)}>
           {results.map((m, i) => (
             <button
               key={m.id}
@@ -143,14 +151,12 @@ export default function ProductLookup({
               {m.productCode && <span style={{ fontSize: 10.5, color: t.dim }}>{m.productCode}</span>}
             </button>
           ))}
-        </div>
-      )}
-      {open && results.length === 0 && !searching && value.trim() && (
-        <div style={{ position: "absolute", zIndex: 20, top: "100%", left: 0, right: 0, marginTop: 4, padding: "8px 12px", borderRadius: 9, border: `1px solid ${t.warn}50`, background: t.surface, fontSize: 12, color: t.body, display: "flex", alignItems: "flex-start", gap: 6 }}>
-          <span style={{ flexShrink: 0, color: t.warn, marginTop: 1 }}><Ic n="alert" s={12} /></span>
-          <span>No matching product found.</span>
-        </div>
-      )}
+      </AnchoredOverlay>
+      <AnchoredOverlay anchorRef={fieldRef} open={open && results.length === 0 && !searching && !!value.trim()} onDismiss={() => setOpen(false)} maxHeight={160} role="status"
+        style={{ ...overlayPanelStyle(isDark, `${t.warn}50`), padding: "8px 12px", fontSize: 12, color: t.body, display: "flex", alignItems: "flex-start", gap: 6 }}>
+        <span style={{ flexShrink: 0, color: t.warn, marginTop: 1 }}><Ic n="alert" s={12} /></span>
+        <span>No matching product found.</span>
+      </AnchoredOverlay>
     </div>
   );
 }

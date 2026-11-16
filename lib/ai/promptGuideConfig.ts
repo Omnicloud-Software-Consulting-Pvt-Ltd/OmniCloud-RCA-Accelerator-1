@@ -25,6 +25,8 @@ export interface PromptGuideField {
 export interface PromptGuideExample {
   label?: string;
   prompt: string;
+  /** Optional explanation bullets under the example (what gets created, what Salesforce verifies, what's next). */
+  details?: string[];
 }
 
 export interface PromptGuideConfig {
@@ -49,6 +51,13 @@ export interface PromptGuideConfig {
   notes?: string[];
   /** Reinforces the existing Generate -> extract -> review -> create workflow; never bypass review. */
   reviewNote: string;
+  /** Further examples after `example` / `multipleExample`. */
+  moreExamples?: PromptGuideExample[];
+  /** Optional "Prerequisites" tab. */
+  prerequisites?: string[];
+  /** Optional "Errors & next steps" tab. */
+  commonErrors?: string[];
+  nextSteps?: string[];
 }
 
 export type PromptGuideModule =
@@ -58,7 +67,8 @@ export type PromptGuideModule =
   | "bundle"
   | "quote"
   | "order"
-  | "contract";
+  | "contract"
+  | "billing";
 
 export const promptGuideConfig: Record<PromptGuideModule, PromptGuideConfig> = {
   product: {
@@ -258,7 +268,7 @@ export const promptGuideConfig: Record<PromptGuideModule, PromptGuideConfig> = {
       { label: "Contract Type", hint: "Optional — only applies if your org has added this custom field." },
       { label: "Start Date", hint: "Optional." },
       { label: "Contract Term (months)", hint: "Optional — Salesforce calculates the End Date from this; End Date itself can't be set directly." },
-      { label: "Company/Customer Signed By, Title, Date", hint: "Optional — typically filled in later by the e-signature flow, not required at creation." },
+      { label: "Company/Customer Signed By, Title, Date", hint: "Optional — not required at creation." },
       { label: "Description", hint: "Optional free text." },
     ],
     capabilities: [
@@ -274,5 +284,35 @@ export const promptGuideConfig: Record<PromptGuideModule, PromptGuideConfig> = {
       "This app doesn't attach Products/Services to Contracts as structured line items — mentioning one (like \"for the Laptop Pro support service\") only becomes part of the free-text Description.",
     ],
     reviewNote: "After Generate, review the populated Contract Details fields, then check Generated JSON / Execution Log / Salesforce Response before confirming Create Contract.",
+  },
+  billing: {
+    title: "AI Prompt Guide — Revenue Cloud Billing",
+    whatItCreates: "Builds a reviewable billing configuration for the object you are creating (e.g. a Billing Treatment with its Treatment Items, a Usage Resource, a tiered Rate Card), using only the objects, fields and picklist values that exist in the connected org. Nothing is created until you confirm the preview.",
+    requiredFields: [
+      { label: "What to create", hint: "Name the billing concept (policy, treatment, usage resource, rate…) — on the Billing dashboard the AI routes the prompt to the right object." },
+      { label: "The org's required fields", hint: "Marked with * in Manual mode. Anything the prompt doesn't cover is flagged by validation before you can create." },
+    ],
+    optionalFields: [
+      { label: "Related records by name", hint: "Billing policies, products, units of measure, usage resources… are looked up in Salesforce by name — never by Id." },
+      { label: "Child records", hint: "e.g. treatment items (advance/arrears, percentage/flat/remainder), rate card entries, volume tiers." },
+      { label: "Products to link", hint: "e.g. \"assign it to Laptop Basic Bundle\" — offered as an opt-in link in the preview." },
+    ],
+    capabilities: [
+      "Billing policies & treatments: advance vs. arrears, percentage / flat amount / remainder splits, processing order, milestone billing.",
+      "Usage billing: usage resources with a unit of measure and aggregation policy (sum / peak, daily / monthly), rating frequency, rate cards and volume tiers.",
+      "Linking the new configuration to existing products and billing policies by name.",
+    ],
+    interpretationNotes: [
+      "Names you mention are resolved against Salesforce: exactly one match is selected; several matches or none are shown for you to pick.",
+      "Billing frequency (monthly / annual) comes from the product selling model and order product, not from the Billing Treatment — the AI records it as an assumption instead of inventing a field.",
+      "Values the AI chose for you (e.g. Status = Draft) are listed under Assumptions.",
+    ],
+    example: { prompt: "Create a billing treatment for Laptop Basic Bundle using the Standard Billing Policy that bills 100% in advance." },
+    multipleExample: { label: "Parent with child records", prompt: "Create a billing policy for Laptop Basic Bundle with a new treatment called Standard Monthly Treatment that bills in advance." },
+    multipleNote: "One prompt creates one parent record plus its child records (e.g. treatment items) in a single all-or-nothing request.",
+    notes: [
+      "Billing Schedules, Billing Schedule Groups and Invoices are generated by Salesforce from activated Orders — they can't be created from a prompt.",
+    ],
+    reviewNote: "Review the AI Analysis preview (resolved relationships, validation checks, warnings), use Edit Configuration to adjust anything, then Create in Salesforce.",
   },
 };

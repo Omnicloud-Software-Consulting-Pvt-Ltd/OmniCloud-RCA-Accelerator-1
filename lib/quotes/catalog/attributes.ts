@@ -16,7 +16,7 @@ interface AttrFieldSchema {
 const attrFieldCache = createTTLCache<AttrFieldSchema | null>();
 
 async function resolveAttrFieldSchema(client: SalesforceClient): Promise<AttrFieldSchema | null> {
-  return attrFieldCache.getOrCompute(client.instanceUrl, async () => {
+  return attrFieldCache.getOrCompute(client.cacheScope, async () => {
     let junctionDescribe: DescribeResult;
     let defDescribe: DescribeResult;
     try {

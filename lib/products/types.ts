@@ -24,6 +24,28 @@ export interface ProductPayload {
   unitOfMeasure?: string;
   /** Product2.BasedOnId — name or code of an existing Active ProductClassification; never auto-created. */
   classification?: string;
+  /**
+   * "Continue Anyway" — the user saw the exact full-name duplicate warning and chose to create another Product2 with the same
+   * Name. Skips ONLY the app's duplicate-name gate; price/config validation and Salesforce's own rules (duplicate rules,
+   * required fields, uniqueness constraints) still apply.
+   */
+  allowDuplicateName?: boolean;
+  /**
+   * Revenue Cloud tax/billing configuration, by record NAME (resolved server-side; never auto-created). Only the two policies
+   * are Product2 fields (TaxPolicyId / BillingPolicyId); treatments, items and the engine are related records that are
+   * verified against the policy — see lib/products/revenueConfig.ts.
+   */
+  taxPolicy?: string;
+  taxTreatment?: string;
+  taxTreatmentItem?: string;
+  taxEngine?: string;
+  /** Expected tax code (verified against the treatment/item; never written). */
+  taxCode?: string;
+  billingPolicy?: string;
+  billingTreatment?: string;
+  billingTreatmentItem?: string;
+  /** Explicit record choices (e.g. after an ambiguity) — relation key → Salesforce Id. Validated server-side. */
+  relationIds?: Partial<Record<import("@/lib/products/revenueConfig").RelationKey, string>>;
 }
 
 export interface ProductStepResult {

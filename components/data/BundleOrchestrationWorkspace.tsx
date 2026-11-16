@@ -1499,6 +1499,8 @@ export default function BundleOrchestrationWorkspace({ isDark, onViewBundle, onE
                     ? `${rootName} and ${nestedCount} nested bundle(s) were successfully created in Salesforce.`
                     : `${rootName} has been successfully created in Salesforce.`,
                   records,
+                  primaryRecord: records.find(r => r.recordId === ev.bundleId),
+                  module: "Bundles",
                   detailsLabel: "View Created Bundles",
                 });
               }

@@ -8,7 +8,7 @@ import { formatRelativeTime } from "@/lib/dashboard/relativeTime";
 import { activityColorFor } from "@/lib/dashboard/statusStats";
 import type { ProductStatsResponse } from "@/app/api/sf/products/stats/route";
 
-export type ProductModuleTarget = { mode: "history" | "create" | "create-multi" | "choose-type" | "import" | "catalog" | "attributes" };
+export type ProductModuleTarget = { mode: "history" | "create" | "create-multi" | "choose-type" | "import" | "catalog" | "attributes" | "billing" | "billing-assign" | "configuration" };
 
 const ACCENT = "#00D4FF";
 const ACCENT_BLUE = "#3AABFF";
@@ -59,18 +59,21 @@ export default function ProductsDashboard({ isDark, onNavigate }: { isDark: bool
 
     const actions: ActionDef[] = [
       { id: "create-product", title: "Create Product", desc: "Create a new Salesforce Revenue Cloud product using natural language.", icon: "plus", accent: ACCENT, badge: "AI", workflow: "create-product" },
+      { id: "product-configuration", title: "Product Configuration", desc: "Show or update a product's complete Revenue Cloud configuration — selling model, catalog, price book, tax and billing — with readiness.", icon: "layers", accent: ACCENT, badge: "AI", workflow: "product-configuration" },
       { id: "product-history", title: "Product History", desc: "Browse products previously created in Salesforce.", icon: "list", accent: ACCENT_BLUE, workflow: "product-history" },
       { id: "import-products", title: "Import Products", desc: "Bulk import products from CSV or Excel and create them in Salesforce.", icon: "upload", accent: ACCENT_BLUE, badge: "Import", workflow: "import-products" },
       { id: "product-catalog", title: "Product Catalog", desc: "Browse and manage products available in the Revenue Cloud catalog.", icon: "layers", accent: ACCENT, workflow: "product-catalog" },
       { id: "product-attributes", title: "Product Attributes", desc: "View and manage attributes associated with products.", icon: "sliders", accent: ACCENT_SOFT, workflow: "product-attributes" },
       { id: "product-analytics", title: "Product Analytics", desc: "View product activity, status, and catalog metrics.", icon: "bar-chart", accent: ACCENT_BLUE, workflow: "product-analytics" },
+      { id: "product-billing", title: "Billing Configuration", desc: "Set up the Billing Policy, Treatment and usage billing that decide how products are invoiced.", icon: "credit-card", accent: ACCENT_SOFT, workflow: "product-billing" },
+      { id: "product-assign-billing", title: "Assign Billing Policy", desc: "Assign an existing Billing Policy to an existing product — its current policy is checked first.", icon: "link", accent: ACCENT_SOFT, badge: "AI", workflow: "product-assign-billing" },
     ];
 
     return {
       id: "products",
       label: "Products",
       icon: "package",
-      groupLabel: "Revenue Cloud",
+      groupLabel: "Revenue Cloud Core",
       color: ACCENT,
       stats,
       actions,
@@ -98,10 +101,13 @@ export default function ProductsDashboard({ isDark, onNavigate }: { isDark: bool
   const handleLaunch = (workflow: string) => {
     if (workflow === "create-product") onNavigate({ mode: "choose-type" });
     else if (workflow === "product-history") onNavigate({ mode: "history" });
+    else if (workflow === "product-configuration") onNavigate({ mode: "configuration" });
     else if (workflow === "import-products") onNavigate({ mode: "import" });
     else if (workflow === "product-catalog") onNavigate({ mode: "catalog" });
     else if (workflow === "product-attributes") onNavigate({ mode: "attributes" });
     else if (workflow === "product-analytics") setShowAnalytics(v => !v);
+    else if (workflow === "product-billing") onNavigate({ mode: "billing" });
+    else if (workflow === "product-assign-billing") onNavigate({ mode: "billing-assign" });
   };
 
   if (loading) {

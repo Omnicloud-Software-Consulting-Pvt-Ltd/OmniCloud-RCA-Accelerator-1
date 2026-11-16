@@ -9,6 +9,7 @@ import type { CatalogProduct } from "@/lib/quotes/types";
 import type { ProductValidationCandidate } from "@/lib/attributes/types";
 import PromptGuide from "@/components/ai/PromptGuide";
 import { promptGuideConfig } from "@/lib/ai/promptGuideConfig";
+import { Z } from "@/lib/ui/overlay";
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Types
@@ -2122,8 +2123,8 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.18 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-4"
-            style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(10px)" }}
+            className="fixed inset-0 flex items-center justify-center p-4"
+            style={{ zIndex: Z.dialog, background: "rgba(0,0,0,0.75)", backdropFilter: "blur(10px)" }}
             onClick={() => setShowPreview(false)}>
             <motion.div
               initial={{ scale: 0.94, opacity: 0 }}
@@ -2231,8 +2232,8 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
           <motion.div
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             transition={{ duration: 0.18 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-4"
-            style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(10px)" }}>
+            className="fixed inset-0 flex items-center justify-center p-4"
+            style={{ zIndex: Z.dialog, background: "rgba(0,0,0,0.75)", backdropFilter: "blur(10px)" }}>
             <motion.div
               initial={{ scale: 0.94, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.94, opacity: 0 }}
               transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
@@ -2276,8 +2277,8 @@ export default function RCAAttributeStudio({ isDark }: { isDark: boolean }) {
           <motion.div
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             transition={{ duration: 0.18 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-4"
-            style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(10px)" }}
+            className="fixed inset-0 flex items-center justify-center p-4"
+            style={{ zIndex: Z.dialog, background: "rgba(0,0,0,0.75)", backdropFilter: "blur(10px)" }}
             onClick={() => setShowProductSearch(false)}>
             <motion.div
               initial={{ scale: 0.94, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.94, opacity: 0 }}

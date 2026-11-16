@@ -5,6 +5,7 @@ import { motion, AnimatePresence, useMotionValue, useTransform } from "framer-mo
 import { useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import Image from "next/image";
+import NotificationBell from "@/components/notifications/NotificationBell";
 import { loadSession, clearSession } from "@/lib/auth/session";
 import { loadIdentity, isSetupComplete, clearIdentity, clearSetup } from "@/lib/auth/identity";
 import type { SessionData } from "@/lib/auth/types";
@@ -588,6 +589,9 @@ function NavBar({
             {displayName}
           </span>
         </div>
+
+        {/* Notifications */}
+        <NotificationBell isDark={isDark} />
 
         {/* Theme toggle */}
         <ThemeToggle isDark={isDark} />

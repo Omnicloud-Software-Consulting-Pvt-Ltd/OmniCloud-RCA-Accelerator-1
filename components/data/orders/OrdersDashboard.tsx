@@ -8,7 +8,7 @@ import { formatRelativeTime } from "@/lib/dashboard/relativeTime";
 import { pickBestEffortStatus, activityColorFor } from "@/lib/dashboard/statusStats";
 import type { OrderStatsResponse } from "@/app/api/orders/stats/route";
 
-type ModuleTarget = { mode: "history" | "create" | "import" };
+type ModuleTarget = { mode: "history" | "create" | "import" | "billing" };
 
 const ACCENT = "#00D4FF";
 const ACCENT_BLUE = "#3AABFF";
@@ -66,13 +66,14 @@ export default function OrdersDashboard({ isDark, onNavigate }: { isDark: boolea
       { id: "order-analytics", title: "Order Analytics", desc: "View Order trends and metrics", icon: "bar-chart", accent: ACCENT_BLUE, workflow: "order-analytics" },
       { id: "ai-order-assistant", title: "AI Order Assistant", desc: "Generate Order using AI", icon: "sparkles", accent: ACCENT_SOFT, badge: "AI", workflow: "ai-order-assistant" },
       { id: "import-orders", title: "Import Orders", desc: "Import orders from CSV or Excel and create them in Salesforce.", icon: "upload", accent: ACCENT_BLUE, badge: "Import", workflow: "import-orders" },
+      { id: "order-billing-schedules", title: "Billing Schedules", desc: "Billing schedules generated from activated orders, through to invoices.", icon: "calendar", accent: ACCENT_SOFT, workflow: "order-billing-schedules" },
     ];
 
     return {
       id: "orders",
       label: "Orders",
       icon: "shopping-cart",
-      groupLabel: "Revenue Cloud",
+      groupLabel: "Revenue Cloud Core",
       color: ACCENT,
       stats,
       actions,
@@ -105,6 +106,8 @@ export default function OrdersDashboard({ isDark, onNavigate }: { isDark: boolea
       setShowAnalytics(v => !v);
     } else if (workflow === "import-orders") {
       onNavigate({ mode: "import" });
+    } else if (workflow === "order-billing-schedules") {
+      onNavigate({ mode: "billing" });
     }
   };
 

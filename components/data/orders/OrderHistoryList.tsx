@@ -11,7 +11,7 @@ interface OrderHistoryResponse {
   relationshipNames: { account: string | null; pricebook: string | null; contract: string | null };
 }
 
-export default function OrderHistoryList({ isDark, onOpen }: { isDark: boolean; onOpen: (id: string) => void }) {
+export default function OrderHistoryList({ isDark, onOpen, onContinueBilling }: { isDark: boolean; onOpen: (id: string) => void; onContinueBilling?: (id: string) => void }) {
   const t = tokens(isDark);
   const [orders, setOrders] = useState<OrderListItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -77,10 +77,11 @@ export default function OrderHistoryList({ isDark, onOpen }: { isDark: boolean; 
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {filtered.map(o => (
+            <div key={o.id} style={{ display: "flex", alignItems: "stretch", gap: 8 }}>
             <button
-              key={o.id}
               onClick={() => onOpen(o.id)}
               style={{
+                flex: 1, minWidth: 0,
                 display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", gap: 10,
                 borderRadius: 12, border: `1px solid ${t.border}`, background: t.surface, cursor: "pointer", textAlign: "left",
                 transition: "border-color .15s ease, transform .15s ease",
@@ -102,6 +103,16 @@ export default function OrderHistoryList({ isDark, onOpen }: { isDark: boolean; 
                 <div style={{ fontSize: 10.5, color: t.dim }}>{new Date(o.lastModifiedDate).toLocaleDateString()}</div>
               </div>
             </button>
+            {onContinueBilling && (
+              <button
+                onClick={() => onContinueBilling(o.id)}
+                title="Revenue Cloud Billing — Order Setup"
+                style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 6, padding: "0 12px", borderRadius: 12, border: `1px solid ${t.accent}45`, background: `${t.accent}0c`, color: t.accent, fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+              >
+                <Ic n="calendar" s={13} /> Billing
+              </button>
+            )}
+            </div>
           ))}
         </div>
       </div>

@@ -14,7 +14,7 @@ const orderStatusCache = createTTLCache<OrderStatusResolution>();
  * customize this picklist's label text freely.
  */
 export async function resolveOrderStatusResolution(client: SalesforceClient): Promise<OrderStatusResolution> {
-  return orderStatusCache.getOrCompute(client.instanceUrl, async () => {
+  return orderStatusCache.getOrCompute(client.cacheScope, async () => {
     const describe = await describeObjectCached(client, "Order");
     const picklist = findPicklistFieldByLabel(describe, "Status", /^status$/i);
     if (!picklist) {

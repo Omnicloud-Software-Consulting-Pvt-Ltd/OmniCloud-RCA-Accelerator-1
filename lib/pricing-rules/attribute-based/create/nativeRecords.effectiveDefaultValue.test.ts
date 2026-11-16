@@ -47,7 +47,7 @@ function uniqueInstanceUrl(): string {
 test("TEST 1 (Laptop/Monitor-style) — productAttributeDefinitionId present: updates the existing record (unchanged path), never creates anything", async () => {
   const mutationLog: { op: string; object: string }[] = [];
   const client = {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeObject() { return PAD_DESCRIBE_WITH_OVERRIDE_LINK; },
     async updateRecord(objectName: string) { mutationLog.push({ op: "update", object: objectName }); return { success: true }; },
     async createRecord() { throw new Error("must never create when an existing record can be updated"); },
@@ -74,7 +74,7 @@ test("TEST 2 (Desktop repro) — no productAttributeDefinitionId, purely INHERIT
   const mutationLog: { op: string; object: string; payload?: Record<string, unknown> }[] = [];
   const createdIds = new Set<string>();
   const client = {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeObject() { return PAD_DESCRIBE_WITH_OVERRIDE_LINK; },
     async createRecord(objectName: string, payload: Record<string, unknown>) {
       mutationLog.push({ op: "create", object: objectName, payload });
@@ -121,7 +121,7 @@ test("TEST 2 (Desktop repro) — no productAttributeDefinitionId, purely INHERIT
 test("TEST 3 — read-back does not confirm the new override's DefaultValue: reports failure, never a false success", async () => {
   const createdIds = new Set<string>();
   const client = {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeObject() { return PAD_DESCRIBE_WITH_OVERRIDE_LINK; },
     async createRecord() {
       const id = "new-override-mismatch";
@@ -152,7 +152,7 @@ test("TEST 3 — read-back does not confirm the new override's DefaultValue: rep
 test("TEST 4 — neither an existing record nor a resolvable classification source: fails immediately with a precise message, zero mutations (never a silent no-op)", async () => {
   let mutationCount = 0;
   const client = {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeObject() { return PAD_DESCRIBE_WITH_OVERRIDE_LINK; },
     async createRecord() { mutationCount++; throw new Error("must never create"); },
     async updateRecord() { mutationCount++; throw new Error("must never update"); },
@@ -171,7 +171,7 @@ test("TEST 4 — neither an existing record nor a resolvable classification sour
 test("TEST 5 — org's ProductAttributeDefinition schema has no override-link field: fails with a precise message, never creates an ambiguous record", async () => {
   let mutationCount = 0;
   const client = {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeObject() { return PAD_DESCRIBE_NO_OVERRIDE_LINK; },
     async createRecord() { mutationCount++; throw new Error("must never create"); },
     logDebug() { /* no-op */ },
@@ -188,7 +188,7 @@ test("TEST 5 — org's ProductAttributeDefinition schema has no override-link fi
 test("TEST 6 — arbitrary, unusually-shaped Salesforce Ids throughout prove nothing is hardcoded", async () => {
   const createdIds = new Set<string>();
   const client = {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeObject() { return PAD_DESCRIBE_WITH_OVERRIDE_LINK; },
     async createRecord(objectName: string, payload: Record<string, unknown>) {
       assert.equal(payload.Product2Id, "###weird-product###");
@@ -220,7 +220,7 @@ test("TEST 6 — arbitrary, unusually-shaped Salesforce Ids throughout prove not
 test("TEST 7 (idempotency) — a product-scoped record for this exact Product2+AttributeDefinition pair already exists (e.g. a prior click, or created by ensurePriceImpactingAttributes earlier in the same run): updates it, never creates a duplicate", async () => {
   const mutationLog: { op: string; object: string }[] = [];
   const client = {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeObject() { return PAD_DESCRIBE_WITH_OVERRIDE_LINK; },
     async createRecord() { throw new Error("must never create — an existing record was found via the idempotent lookup"); },
     async updateRecord(objectName: string, id: string) { mutationLog.push({ op: "update", object: objectName }); assert.equal(id, "existing-pad-graphics"); return { success: true }; },
@@ -260,7 +260,7 @@ test("TEST 8 — Name is resolved dynamically from AttributeDefinition's own aut
   const createdIds = new Set<string>();
   let capturedPayload: Record<string, unknown> | undefined;
   const client = {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeObject() { return padDescribeWithName; },
     async createRecord(objectName: string, payload: Record<string, unknown>) {
       capturedPayload = payload;
@@ -304,7 +304,7 @@ test("TEST 9 — the new override explicitly preserves IsPriceImpacting=true (ev
   const createdIds = new Set<string>();
   let capturedPayload: Record<string, unknown> | undefined;
   const client = {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     async describeObject() { return padDescribeWithPriceImpacting; },
     async createRecord(objectName: string, payload: Record<string, unknown>) {
       capturedPayload = payload;

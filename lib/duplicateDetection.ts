@@ -61,3 +61,13 @@ export function isContinuableBundleDuplicate(result: DuplicateCheckResult): bool
 export function normalizeForCompare(s: string): string {
   return s.trim().toLowerCase().replace(/\s+/g, " ");
 }
+
+/**
+ * Product-name duplicate policy: the COMPLETE Product2.Name, compared after trimming and case-folding only — never a prefix,
+ * substring, token or fuzzy score. "OmniCloud RCA" and "OmniCloud RCA Product" are different products; "OmniCloud RCA
+ * Product" and " omnicloud rca product " are the same name.
+ */
+export function isSameProductName(a: string | null | undefined, b: string | null | undefined): boolean {
+  const x = (a ?? "").trim().toLowerCase();
+  return x.length > 0 && x === (b ?? "").trim().toLowerCase();
+}

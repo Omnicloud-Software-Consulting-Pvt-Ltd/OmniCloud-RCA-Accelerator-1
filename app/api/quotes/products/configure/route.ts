@@ -51,7 +51,7 @@ async function resolveCachedBaseConfiguration(
   // select it again via its Annual/Evergreen PricebookEntry and get back
   // the stale One-Time result, skipping the configurator dialog entirely
   // and reaching line-item creation with a null Billing Frequency.
-  const key = `${client.instanceUrl}:${product.id}:${pricebookId}:${product.pricebookEntryId ?? "none"}`;
+  const key = `${client.cacheScope}:${product.id}:${pricebookId}:${product.pricebookEntryId ?? "none"}`;
   const cached = configureCache.get(key);
   if (cached) return cached;
   const existing = configureInFlight.get(key);
@@ -109,7 +109,7 @@ export async function POST(req: NextRequest) {
   try {
     const t0 = Date.now();
     const discovery = await resolveBundleObjectDiscovery(client);
-    const cacheKey = `${client.instanceUrl}:${product.id}:${pricebookId}:${product.pricebookEntryId ?? "none"}`;
+    const cacheKey = `${client.cacheScope}:${product.id}:${pricebookId}:${product.pricebookEntryId ?? "none"}`;
     const wasCached = !!configureCache.get(cacheKey);
     const base = await resolveCachedBaseConfiguration(client, discovery, product, pricebookId);
     const { attributes, sellingModel, billingTreatment, subscriptionTerm } = base;

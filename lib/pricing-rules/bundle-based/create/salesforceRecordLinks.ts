@@ -1,13 +1,13 @@
 /**
  * "Salesforce Records" navigation section for Bundle-Based Pricing — mirrors
  * lib/pricing-rules/attribute-based/create/salesforceRecordLinks.ts's generic Expression Set/version-list
- * rows exactly, with the 3 native-object rows renamed to the Bundle-Based object family.
+ * rows exactly, plus the Bundle-Based Adjustment rows and the lookup (Decision) table they feed.
  */
 import { buildSalesforceRecordUrl, buildSalesforceObjectHomeUrl } from "@/lib/salesforce/recordUrl";
 
 export type SalesforceRecordCategory =
   | "pricingProcedure" | "expressionSet" | "expressionSetVersion" | "priceAdjustmentSchedule"
-  | "bundleBasedAdjustments" | "bundleAdjustmentConditions" | "bundleBasedAdjRules";
+  | "bundleBasedAdjustments" | "lookupTable";
 
 export interface SalesforceRecordLink {
   category: SalesforceRecordCategory;
@@ -29,9 +29,8 @@ export interface BundlePricingSalesforceRecordsInput {
   expressionSetVersionId?: string | null;
   versionStatus?: "Draft" | "Active" | null;
   priceAdjustmentScheduleId?: string | null;
-  ruleCount?: number;
-  conditionCount?: number;
   adjustmentCount?: number;
+  lookupTable?: { id: string; developerName: string } | null;
   allVersions?: BundlePricingVersionCandidate[];
   verification?: {
     expressionSet?: { verified: boolean };
@@ -107,16 +106,10 @@ export function buildBundlePricingSalesforceRecords(
       url: homeLink("BundleBasedAdjustment"), actionLabel: "View in Salesforce",
     },
     {
-      category: "bundleAdjustmentConditions", key: "bundleAdjustmentConditions", label: "Bundle Adjustment Conditions",
-      name: null, id: null, count: input.conditionCount ?? 0,
-      status: (input.conditionCount ?? 0) > 0 ? "verified" : "not_verified",
-      url: homeLink("BundleAdjustmentCondition"), actionLabel: "View in Salesforce",
-    },
-    {
-      category: "bundleBasedAdjRules", key: "bundleBasedAdjRules", label: "Bundle-Based Adjustment Rules",
-      name: null, id: null, count: input.ruleCount ?? 0,
-      status: (input.ruleCount ?? 0) > 0 ? "verified" : "not_verified",
-      url: homeLink("BundleBasedAdjRule"), actionLabel: "View in Salesforce",
+      category: "lookupTable", key: "lookupTable", label: "Lookup Table (Decision Table)",
+      name: input.lookupTable?.developerName ?? null, id: input.lookupTable?.id ?? null,
+      status: input.lookupTable ? "verified" : "not_verified",
+      url: recordLink("DecisionTable", input.lookupTable?.id), actionLabel: "Open in Salesforce",
     },
   ];
 }

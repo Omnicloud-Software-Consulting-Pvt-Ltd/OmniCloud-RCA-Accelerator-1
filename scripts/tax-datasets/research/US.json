@@ -1,0 +1,1066 @@
+{
+  "group": "US",
+  "retrievedOn": "2026-11-06",
+  "subdivisions": [
+    {
+      "subdivisionCode": "US-AK",
+      "status": "not-found",
+      "note": "Alaska is generally understood to have no statewide sales tax (local municipal sales taxes exist), but no official State of Alaska page stating this could be fetched (403/DNS errors), so status is not set to no-consumption-tax per the sourcing rule. Official revenue-department / statute pages could not be fetched in this session (HTTP 403, connection refused or DNS failure); no rate recorded rather than relying on memory or third-party sources.",
+      "rates": []
+    },
+    {
+      "subdivisionCode": "US-AL",
+      "status": "found",
+      "note": "State rates only; local city/county sales taxes are listed separately by the Alabama Department of Revenue.",
+      "rates": [
+        {
+          "subdivisionCode": "US-AL",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Alabama state sales and use tax",
+          "ratePercent": 4,
+          "appliesTo": "Statewide general state sales/use rate",
+          "sourceUrl": "https://www.revenue.alabama.gov/sales-use/state-sales-use-tax-rates/",
+          "sourceOrganization": "Alabama Department of Revenue",
+          "sourceQuote": "General:   4%"
+        },
+        {
+          "subdivisionCode": "US-AL",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "reduced",
+          "classification": "food",
+          "effectiveFrom": "2025-09-01",
+          "taxName": "Alabama state sales tax on food/groceries",
+          "ratePercent": 2,
+          "appliesTo": "Food/grocery (state portion)",
+          "sourceUrl": "https://www.revenue.alabama.gov/sales-use/state-sales-use-tax-rates/",
+          "sourceOrganization": "Alabama Department of Revenue",
+          "sourceQuote": "Food/Grocery, Effective 9/1/2025: 2%"
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-AR",
+      "status": "found",
+      "note": "Local city/county sales taxes also apply in Arkansas.",
+      "rates": [
+        {
+          "subdivisionCode": "US-AR",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": "2013-07-01",
+          "taxName": "Arkansas state sales and use tax",
+          "ratePercent": 6.5,
+          "appliesTo": "Statewide general state rate",
+          "sourceUrl": "https://www.dfa.arkansas.gov/office/taxes/excise-tax-administration/sales-use-tax/sales-use-tax-rates/state-sales-use-tax-rates/",
+          "sourceOrganization": "Arkansas Department of Finance and Administration",
+          "sourceQuote": "State Sales and Use Tax | 07/01/2013 | 6.500%"
+        },
+        {
+          "subdivisionCode": "US-AR",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "zero",
+          "classification": "food",
+          "effectiveFrom": "2026-01-01",
+          "taxName": "Arkansas state reduced food tax",
+          "ratePercent": 0,
+          "appliesTo": "Food and food ingredients (state reduced food rate)",
+          "sourceUrl": "https://www.dfa.arkansas.gov/office/taxes/excise-tax-administration/sales-use-tax/sales-use-tax-rates/state-sales-use-tax-rates/",
+          "sourceOrganization": "Arkansas Department of Finance and Administration",
+          "sourceQuote": "State Reduced Food Tax | 01/01/2026 | 0.000%"
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-AZ",
+      "status": "found",
+      "note": "Arizona levies a transaction privilege tax (TPT) on the seller rather than a sales tax. State retail TPT = 5% base (ARS 42-5010) + 0.6% additional increment (ARS 42-5010.01, through 2041-06-30) = 5.6% combined. County and city TPT also apply. ADOR pages returned 403; statute portal used.",
+      "rates": [
+        {
+          "subdivisionCode": "US-AZ",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State TPT base rate",
+          "taxStructure": "State + county + city transaction privilege tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Arizona transaction privilege tax (state, base rate)",
+          "ratePercent": 5,
+          "appliesTo": "Retail classification (and other classifications in ARS 42-5010(A)(1)); add 0.6% increment for combined state rate of 5.6%",
+          "sourceUrl": "https://www.azleg.gov/ars/42/05010.htm",
+          "sourceOrganization": "Arizona State Legislature (Arizona Revised Statutes)",
+          "sourceQuote": "Five percent of the tax base as computed for the business of every person engaging or continuing in this state in the following business classifications described in article 2 of this chapter:"
+        },
+        {
+          "subdivisionCode": "US-AZ",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State TPT additional rate increment",
+          "taxStructure": "State + county + city transaction privilege tax",
+          "rateCategory": "other",
+          "classification": "goods-and-services",
+          "effectiveFrom": "2021-07-01",
+          "taxName": "Arizona transaction privilege tax (state, additional education increment)",
+          "ratePercent": 0.6,
+          "appliesTo": "Additional state increment on classifications in ARS 42-5010(A)(1) incl. retail; in force through June 30, 2041",
+          "sourceUrl": "https://www.azleg.gov/ars/42/05010-01.htm",
+          "sourceOrganization": "Arizona State Legislature (Arizona Revised Statutes)",
+          "sourceQuote": "From and after June 30, 2021 through June 30, 2041 ... The additional tax rate increment is levied at the rate of six-tenths of one percent of the tax base"
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-CA",
+      "status": "found",
+      "note": "Local district taxes (generally 0.10%–2.00%) also apply on top of the statewide rate.",
+      "rates": [
+        {
+          "subdivisionCode": "US-CA",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "California state sales and use tax",
+          "ratePercent": 7.25,
+          "appliesTo": "Statewide base rate (includes state and uniform local portions; district taxes extra)",
+          "sourceUrl": "https://www.cdtfa.ca.gov/taxes-and-fees/sales-use-tax-rates.htm",
+          "sourceOrganization": "California Department of Tax and Fee Administration",
+          "sourceQuote": "The statewide tax rate is 7.25%."
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-CO",
+      "status": "found",
+      "note": "State-administered local sales taxes and self-collected home-rule city sales taxes may also apply.",
+      "rates": [
+        {
+          "subdivisionCode": "US-CO",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Colorado state sales tax",
+          "ratePercent": 2.9,
+          "appliesTo": "Statewide state rate",
+          "sourceUrl": "https://tax.colorado.gov/sales-tax-guide",
+          "sourceOrganization": "Colorado Department of Revenue",
+          "sourceQuote": "Colorado state sales tax is imposed at a rate of 2.9%."
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-CT",
+      "status": "found",
+      "note": "No local sales tax noted. Page also lists special rates (e.g. 1% computer/data processing services, 2.99% vessels; higher rates 4.5%–9.35%) not recorded here.",
+      "rates": [
+        {
+          "subdivisionCode": "US-CT",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Connecticut sales and use tax",
+          "ratePercent": 6.35,
+          "appliesTo": "Retail sale, lease, or rental of most goods (general rate)",
+          "sourceUrl": "https://portal.ct.gov/drs/sales-tax/tax-information",
+          "sourceOrganization": "Connecticut Department of Revenue Services",
+          "sourceQuote": "The sales tax rate of 6.35% applies to the retail sale, lease, or rental of most goods"
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-DC",
+      "status": "found",
+      "note": "DC is a single jurisdiction (no separate local tax). Rate was 6.0% through 2026-09-30. Other DC rates apply to specific categories (e.g. prepared food, lodging, parking) and are not recorded.",
+      "rates": [
+        {
+          "subdivisionCode": "US-DC",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "District sales tax",
+          "taxStructure": "Single-jurisdiction sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": "2026-10-01",
+          "taxName": "District of Columbia sales and use tax (general rate)",
+          "ratePercent": 7,
+          "appliesTo": "Tangible personal property, digital goods and taxable services (general rate)",
+          "sourceUrl": "https://otr.cfo.dc.gov/release/notice-oct-1-2025-tax-changes",
+          "sourceOrganization": "DC Office of Tax and Revenue",
+          "sourceQuote": "The general sales tax rate will increase to 7.0% for periods beginning on and after Oct. 1, 2026."
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-DE",
+      "status": "no-consumption-tax",
+      "note": "Delaware imposes no state or local sales tax; a gross receipts tax is levied on sellers instead (not recorded). Source: Delaware Division of Revenue, https://revenue.delaware.gov/business-tax-forms/doing-business-in-delaware/step-4-gross-receipts-taxes/ — \"Delaware does not impose a state or local sales tax\"",
+      "rates": []
+    },
+    {
+      "subdivisionCode": "US-FL",
+      "status": "found",
+      "note": "Many counties levy a discretionary sales surtax in addition to the state rate; page lists exceptions to the general rate.",
+      "rates": [
+        {
+          "subdivisionCode": "US-FL",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Florida state sales and use tax",
+          "ratePercent": 6,
+          "appliesTo": "General state rate (with listed exceptions)",
+          "sourceUrl": "https://floridarevenue.com/taxes/taxesfees/Pages/sales_tax.aspx",
+          "sourceOrganization": "Florida Department of Revenue",
+          "sourceQuote": "Florida's general state sales tax rate is 6% with the following exceptions:"
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-GA",
+      "status": "found",
+      "note": "Local sales taxes (typically several 1% local taxes) apply in addition to the statewide rate.",
+      "rates": [
+        {
+          "subdivisionCode": "US-GA",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Georgia state sales and use tax",
+          "ratePercent": 4,
+          "appliesTo": "Statewide state rate",
+          "sourceUrl": "https://dor.georgia.gov/taxes/business-taxes/sales-use-tax/tax-rates",
+          "sourceOrganization": "Georgia Department of Revenue",
+          "sourceQuote": "state sales tax at the statewide rate of 4% plus 4 local sales taxes at a rate of 1% each"
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-HI",
+      "status": "not-found",
+      "note": "Hawaii levies a general excise tax (GET) rather than a sales tax. Official revenue-department / statute pages could not be fetched in this session (HTTP 403, connection refused or DNS failure); no rate recorded rather than relying on memory or third-party sources.",
+      "rates": []
+    },
+    {
+      "subdivisionCode": "US-IA",
+      "status": "found",
+      "note": "Many jurisdictions impose an additional 1% local option sales tax.",
+      "rates": [
+        {
+          "subdivisionCode": "US-IA",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Iowa state sales and use tax",
+          "ratePercent": 6,
+          "appliesTo": "Statewide state rate",
+          "sourceUrl": "https://revenue.iowa.gov/taxes/tax-guidance/sales-use-excise-tax/sales-use-tax-guide",
+          "sourceOrganization": "Iowa Department of Revenue",
+          "sourceQuote": "The rate for both is 6%, though an additional 1% applies to most sales subject to sales tax, as many jurisdictions impose a local option sales tax."
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-ID",
+      "status": "found",
+      "note": "Some cities/resort areas levy local sales taxes (page links only).",
+      "rates": [
+        {
+          "subdivisionCode": "US-ID",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Idaho state sales and use tax",
+          "ratePercent": 6,
+          "appliesTo": "Statewide state rate",
+          "sourceUrl": "https://tax.idaho.gov/taxes/sales-use/online-guide/",
+          "sourceOrganization": "Idaho State Tax Commission",
+          "sourceQuote": "Idaho’s sales tax rate is 6%."
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-IL",
+      "status": "found",
+      "note": "Local taxes apply in addition. From 2026-01-01 the state 1% grocery tax is eliminated; municipalities/counties may impose their own local grocery tax.",
+      "rates": [
+        {
+          "subdivisionCode": "US-IL",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Illinois state sales and use tax (general merchandise)",
+          "ratePercent": 6.25,
+          "appliesTo": "General merchandise (state high rate)",
+          "sourceUrl": "https://tax.illinois.gov/research/publications/pio-115.html",
+          "sourceOrganization": "Illinois Department of Revenue",
+          "sourceQuote": "The high rate of tax is the State tax of 6.25%, plus local taxes, if applicable."
+        },
+        {
+          "subdivisionCode": "US-IL",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "zero",
+          "classification": "food",
+          "effectiveFrom": "2026-01-01",
+          "taxName": "Illinois state sales tax on groceries",
+          "ratePercent": 0,
+          "appliesTo": "Groceries (state portion eliminated from January 1, 2026)",
+          "sourceUrl": "https://tax.illinois.gov/research/publications/pio-115.html",
+          "sourceOrganization": "Illinois Department of Revenue",
+          "sourceQuote": "the State of Illinois will eliminate the one-percent (1%) sales and use tax on retail sales of groceries."
+        },
+        {
+          "subdivisionCode": "US-IL",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "reduced",
+          "classification": "medicine",
+          "effectiveFrom": null,
+          "taxName": "Illinois state sales tax on medicines and drugs",
+          "ratePercent": 1,
+          "appliesTo": "Prescription and non-prescription medicines (state low rate)",
+          "sourceUrl": "https://tax.illinois.gov/research/publications/pio-115.html",
+          "sourceOrganization": "Illinois Department of Revenue",
+          "sourceQuote": "will continue to be taxed at the State low rate of one-percent (1%)."
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-IN",
+      "status": "not-found",
+      "note": "Official revenue-department / statute pages could not be fetched in this session (HTTP 403, connection refused or DNS failure); no rate recorded rather than relying on memory or third-party sources.",
+      "rates": []
+    },
+    {
+      "subdivisionCode": "US-KS",
+      "status": "found",
+      "note": "Kansas DOR site unreachable; Kansas statutes (Revisor of Statutes) used. Local sales taxes may also apply.",
+      "rates": [
+        {
+          "subdivisionCode": "US-KS",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Kansas retailers' sales tax",
+          "ratePercent": 6.5,
+          "appliesTo": "Statewide state rate (K.S.A. 79-3603)",
+          "sourceUrl": "https://ksrevisor.gov/statutes/chapters/ch79/079_036_0003.html",
+          "sourceOrganization": "Kansas Office of Revisor of Statutes",
+          "sourceQuote": "there is hereby levied and there shall be collected and paid a tax at the rate of 6.5%"
+        },
+        {
+          "subdivisionCode": "US-KS",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "zero",
+          "classification": "food",
+          "effectiveFrom": "2025-01-01",
+          "taxName": "Kansas state sales tax on food and food ingredients",
+          "ratePercent": 0,
+          "appliesTo": "Food and food ingredients, state rate (K.S.A. 79-3603d)",
+          "sourceUrl": "https://ksrevisor.gov/statutes/chapters/ch79/079_036_0003d.html",
+          "sourceOrganization": "Kansas Office of Revisor of Statutes",
+          "sourceQuote": "(3) commencing on January 1, 2025, and thereafter, at the rate of 0%."
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-KY",
+      "status": "found",
+      "note": null,
+      "rates": [
+        {
+          "subdivisionCode": "US-KY",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Kentucky sales and use tax",
+          "ratePercent": 6,
+          "appliesTo": "Statewide rate on gross receipts or purchase price",
+          "sourceUrl": "https://revenue.ky.gov/Business/Sales-Use-Tax/pages/default.aspx",
+          "sourceOrganization": "Kentucky Department of Revenue",
+          "sourceQuote": "Kentucky Sales and Use Tax is imposed at the rate of 6 percent of gross receipts or purchase price."
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-LA",
+      "status": "not-found",
+      "note": "Official revenue-department / statute pages could not be fetched in this session (HTTP 403, connection refused or DNS failure); no rate recorded rather than relying on memory or third-party sources.",
+      "rates": []
+    },
+    {
+      "subdivisionCode": "US-MA",
+      "status": "not-found",
+      "note": "Official revenue-department / statute pages could not be fetched in this session (HTTP 403, connection refused or DNS failure); no rate recorded rather than relying on memory or third-party sources.",
+      "rates": []
+    },
+    {
+      "subdivisionCode": "US-MD",
+      "status": "found",
+      "note": "Maryland statute (Tax-General §11-104) used; Comptroller pages returned 404. The general rate is expressed as a bracket of 6 cents per dollar (6%). No local sales tax noted.",
+      "rates": [
+        {
+          "subdivisionCode": "US-MD",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Maryland sales and use tax",
+          "ratePercent": 6,
+          "appliesTo": "General rate: 6 cents per exact dollar of taxable price (Tax-General §11-104(a))",
+          "sourceUrl": "https://mgaleg.maryland.gov/mgawebsite/Laws/StatuteText?article=gtg&section=11-104&enactments=false",
+          "sourceOrganization": "Maryland General Assembly",
+          "sourceQuote": "6 cents for each exact dollar; and"
+        },
+        {
+          "subdivisionCode": "US-MD",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State sales tax",
+          "rateCategory": "reduced",
+          "classification": "other",
+          "effectiveFrom": null,
+          "taxName": "Maryland sales and use tax on certain taxable services",
+          "ratePercent": 3,
+          "appliesTo": "Taxable services described under §11-101(m)(14) and (15)",
+          "sourceUrl": "https://mgaleg.maryland.gov/mgawebsite/Laws/StatuteText?article=gtg&section=11-104&enactments=false",
+          "sourceOrganization": "Maryland General Assembly",
+          "sourceQuote": "The sales and use tax for a sale of a taxable service described under § 11–101(m)(14) and (15) ... is 3% of the taxable price."
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-ME",
+      "status": "not-found",
+      "note": "Maine Revenue Services page returned HTTP 403 to WebFetch. (An earlier non-WebFetch retrieval showed a 5.5% general rate, but it was not obtained by the approved method, so it is not recorded.)",
+      "rates": []
+    },
+    {
+      "subdivisionCode": "US-MI",
+      "status": "not-found",
+      "note": "Official revenue-department / statute pages could not be fetched in this session (HTTP 403, connection refused or DNS failure); no rate recorded rather than relying on memory or third-party sources.",
+      "rates": []
+    },
+    {
+      "subdivisionCode": "US-MN",
+      "status": "found",
+      "note": "Combined state general rate = 6.5% (Minn. Stat. 297A.62 subd. 1) + 0.375% constitutional additional tax (subd. 1a, expires July 1, 2034) = 6.875%. Local sales taxes may also apply. MN DOR site blocked (bot check); statute used.",
+      "rates": [
+        {
+          "subdivisionCode": "US-MN",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax (base)",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Minnesota general sales tax (base)",
+          "ratePercent": 6.5,
+          "appliesTo": "Retail sales; apply together with 0.375% additional tax (combined 6.875%)",
+          "sourceUrl": "https://www.revisor.mn.gov/statutes/cite/297a.62",
+          "sourceOrganization": "Minnesota Office of the Revisor of Statutes",
+          "sourceQuote": "Except as otherwise provided in subdivision 3 or in this chapter, a sales tax of 6.5 percent is imposed on the gross receipts from retail sales"
+        },
+        {
+          "subdivisionCode": "US-MN",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax (additional 0.375%)",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "other",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Minnesota additional sales tax (constitutional)",
+          "ratePercent": 0.375,
+          "appliesTo": "Additional statewide tax on retail sales; expires July 1, 2034",
+          "sourceUrl": "https://www.revisor.mn.gov/statutes/cite/297a.62",
+          "sourceOrganization": "Minnesota Office of the Revisor of Statutes",
+          "sourceQuote": "an additional sales tax of 0.375 percent, as required under the Minnesota Constitution, article XI, section 15, is imposed on the gross receipts from retail sales ... This additional tax expires July 1, 2034."
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-MO",
+      "status": "not-found",
+      "note": "Official revenue-department / statute pages could not be fetched in this session (HTTP 403, connection refused or DNS failure); no rate recorded rather than relying on memory or third-party sources.",
+      "rates": []
+    },
+    {
+      "subdivisionCode": "US-MS",
+      "status": "found",
+      "note": "Effective date of the 5% grocery rate not stated on the page.",
+      "rates": [
+        {
+          "subdivisionCode": "US-MS",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Mississippi state sales tax",
+          "ratePercent": 7,
+          "appliesTo": "General retail sales rate",
+          "sourceUrl": "https://www.dor.ms.gov/business/sales-tax-rates",
+          "sourceOrganization": "Mississippi Department of Revenue",
+          "sourceQuote": "The following are subject to sales tax equal to 7% of the gross proceeds of the retail sales of the business"
+        },
+        {
+          "subdivisionCode": "US-MS",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "reduced",
+          "classification": "food",
+          "effectiveFrom": null,
+          "taxName": "Mississippi sales tax on groceries",
+          "ratePercent": 5,
+          "appliesTo": "Groceries (food and drink for human consumption eligible to be purchased with SNAP benefits)",
+          "sourceUrl": "https://www.dor.ms.gov/business/sales-tax-rates",
+          "sourceOrganization": "Mississippi Department of Revenue",
+          "sourceQuote": "Sales of groceries (food and drink for human consumption eligible to be purchased with… 5%"
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-MT",
+      "status": "not-found",
+      "note": "Montana is generally understood to have no general sales tax, but no fetched official page stated it (DOR pages 403 / homepage silent), so status is not set to no-consumption-tax per the sourcing rule.",
+      "rates": []
+    },
+    {
+      "subdivisionCode": "US-NC",
+      "status": "found",
+      "note": "Local and transit rates apply in addition for most items; food is subject to a miscellaneous rate not stated on the page.",
+      "rates": [
+        {
+          "subdivisionCode": "US-NC",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "North Carolina general state sales and use tax",
+          "ratePercent": 4.75,
+          "appliesTo": "General state rate",
+          "sourceUrl": "https://www.ncdor.gov/taxes-forms/sales-and-use-tax/sales-and-use-tax-rates-other-information",
+          "sourceOrganization": "North Carolina Department of Revenue",
+          "sourceQuote": "Items Subject Only to the General 4.75% State Rate (Local and Transit Rates do not Apply)"
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-ND",
+      "status": "found",
+      "note": "Cities and counties may levy sales and use taxes. Page also lists 3% (new farm machinery, new mobile homes) and 7% alcohol gross receipts rates (not recorded).",
+      "rates": [
+        {
+          "subdivisionCode": "US-ND",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "North Dakota state sales and use tax",
+          "ratePercent": 5,
+          "appliesTo": "Most retail sales",
+          "sourceUrl": "https://www.tax.nd.gov/sales-and-use-tax",
+          "sourceOrganization": "North Dakota Office of State Tax Commissioner",
+          "sourceQuote": "The North Dakota sales tax rate is 5% for most retail sales."
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-NE",
+      "status": "found",
+      "note": "Local sales and use taxes may also apply.",
+      "rates": [
+        {
+          "subdivisionCode": "US-NE",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Nebraska state sales and use tax",
+          "ratePercent": 5.5,
+          "appliesTo": "Statewide state rate",
+          "sourceUrl": "https://revenue.nebraska.gov/businesses/sales-and-use-tax",
+          "sourceOrganization": "Nebraska Department of Revenue",
+          "sourceQuote": "The Nebraska state sales and use tax rate is 5.5% (.055)."
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-NH",
+      "status": "not-found",
+      "note": "New Hampshire is generally understood to have no general sales tax (it has a Meals & Rentals tax), but NH DRA pages returned 403, so status is not set to no-consumption-tax per the sourcing rule.",
+      "rates": []
+    },
+    {
+      "subdivisionCode": "US-NJ",
+      "status": "found",
+      "note": "Reduced rates apply in Urban Enterprise Zones / Salem County for certain items (not recorded).",
+      "rates": [
+        {
+          "subdivisionCode": "US-NJ",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "New Jersey sales and use tax",
+          "ratePercent": 6.625,
+          "appliesTo": "Most tangible personal property, specified digital products and certain services",
+          "sourceUrl": "https://www.nj.gov/treasury/taxation/businesses/salestax/index.shtml",
+          "sourceOrganization": "New Jersey Division of Taxation",
+          "sourceQuote": "New Jersey assesses a 6.625% Sales Tax on sales of most tangible personal property"
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-NM",
+      "status": "found",
+      "note": "New Mexico levies a gross receipts tax (GRT) on sellers; total rate combines state, county and municipal rates by location. Source is the July 2023 GRT Filer's Kit, which states the state portion change effective July 1, 2023.",
+      "rates": [
+        {
+          "subdivisionCode": "US-NM",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State gross receipts tax",
+          "taxStructure": "State + county + municipal gross receipts tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": "2023-07-01",
+          "taxName": "New Mexico gross receipts tax (state portion)",
+          "ratePercent": 4.875,
+          "appliesTo": "State portion of the gross receipts tax rate",
+          "sourceUrl": "https://www.tax.newmexico.gov/wp-content/uploads/2023/08/July-2023_GRT-Filers-Kit.pdf",
+          "sourceOrganization": "New Mexico Taxation and Revenue Department",
+          "sourceQuote": "EFFECTIVE July 1, 2023 The state portion of the gross receipts tax rate has been lowered from 5.000% to 4.875%, due to HB-163 from the 2022 legislative session."
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-NV",
+      "status": "found",
+      "note": "Local jurisdictions can add additional taxes (combined rates vary by county).",
+      "rates": [
+        {
+          "subdivisionCode": "US-NV",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Nevada state sales tax",
+          "ratePercent": 6.85,
+          "appliesTo": "Base state rate",
+          "sourceUrl": "https://tax.nv.gov/tax-types/sales-use-tax/",
+          "sourceOrganization": "Nevada Department of Taxation",
+          "sourceQuote": "The base state sales tax rate in Nevada is 6.85%."
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-NY",
+      "status": "found",
+      "note": "Local taxes imposed by cities, counties or school districts apply in addition (plus MCTD surcharge in some areas).",
+      "rates": [
+        {
+          "subdivisionCode": "US-NY",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "New York State sales and use tax",
+          "ratePercent": 4,
+          "appliesTo": "State rate",
+          "sourceUrl": "https://www.tax.ny.gov/bus/st/rates.htm",
+          "sourceOrganization": "New York State Department of Taxation and Finance",
+          "sourceQuote": "The combined sales and use tax rate equals the state rate (currently 4%) plus any local tax rate"
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-OH",
+      "status": "not-found",
+      "note": "Ohio Department of Taxation pages returned 404 and the Ohio Revised Code portal refused connections. Official revenue-department / statute pages could not be fetched in this session (HTTP 403, connection refused or DNS failure); no rate recorded rather than relying on memory or third-party sources.",
+      "rates": []
+    },
+    {
+      "subdivisionCode": "US-OK",
+      "status": "found",
+      "note": "Local sales and use taxes still apply (including on food).",
+      "rates": [
+        {
+          "subdivisionCode": "US-OK",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Oklahoma state sales tax",
+          "ratePercent": 4.5,
+          "appliesTo": "Sale or rental of tangible personal property and specified services",
+          "sourceUrl": "https://oklahoma.gov/tax/businesses/sales-use-tax.html",
+          "sourceOrganization": "Oklahoma Tax Commission",
+          "sourceQuote": "Oklahoma sales tax is levied at 4.5% of the gross receipts from the sale or rental of tangible personal property."
+        },
+        {
+          "subdivisionCode": "US-OK",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "zero",
+          "classification": "food",
+          "effectiveFrom": "2024-08-29",
+          "taxName": "Oklahoma state sales tax on food and food ingredients",
+          "ratePercent": 0,
+          "appliesTo": "Food and food ingredients and certain prepared food (state portion only)",
+          "sourceUrl": "https://oklahoma.gov/tax/businesses/state-sales-tax-on-food-and-food-ingredients.html",
+          "sourceOrganization": "Oklahoma Tax Commission",
+          "sourceQuote": "The bill that reduced the state sales tax rate on food and food ingredients to 0% ... Effective August 29, 2024, the sale of \"food and food ingredients\" and certain \"prepared food\" will be exempt"
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-OR",
+      "status": "no-consumption-tax",
+      "note": "Oregon has no general sales or use/transaction tax (vehicle use/privilege taxes exist, not recorded). Source: Oregon Department of Revenue, https://www.oregon.gov/dor/programs/businesses/pages/sales-tax.aspx — \"Oregon doesn't have a general sales or use/transaction tax.\"",
+      "rates": []
+    },
+    {
+      "subdivisionCode": "US-PA",
+      "status": "found",
+      "note": "Local sales tax also applies: 1% Allegheny County, 2% Philadelphia.",
+      "rates": [
+        {
+          "subdivisionCode": "US-PA",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Pennsylvania sales and use tax",
+          "ratePercent": 6,
+          "appliesTo": "Statewide state rate",
+          "sourceUrl": "https://www.pa.gov/agencies/revenue/resources/tax-rates",
+          "sourceOrganization": "Pennsylvania Department of Revenue",
+          "sourceQuote": "PA Sales, Use and Hotel Occupancy Tax: 6 percent"
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-RI",
+      "status": "not-found",
+      "note": "Official revenue-department / statute pages could not be fetched in this session (HTTP 403, connection refused or DNS failure); no rate recorded rather than relying on memory or third-party sources.",
+      "rates": []
+    },
+    {
+      "subdivisionCode": "US-SC",
+      "status": "found",
+      "note": "Counties may impose an additional 1% local sales tax if voters approve.",
+      "rates": [
+        {
+          "subdivisionCode": "US-SC",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "South Carolina sales and use tax",
+          "ratePercent": 6,
+          "appliesTo": "Statewide rate",
+          "sourceUrl": "https://dor.sc.gov/tax/sales",
+          "sourceOrganization": "South Carolina Department of Revenue",
+          "sourceQuote": "The statewide Sales & Use Tax rate is 6%."
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-SD",
+      "status": "found",
+      "note": "Municipal sales taxes may also apply. Effective date not stated on the page.",
+      "rates": [
+        {
+          "subdivisionCode": "US-SD",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "South Dakota state sales and use tax",
+          "ratePercent": 4.2,
+          "appliesTo": "Statewide state rate",
+          "sourceUrl": "https://dor.sd.gov/businesses/taxes/sales-use-tax/",
+          "sourceOrganization": "South Dakota Department of Revenue",
+          "sourceQuote": "The state sales and use tax rate is 4.2%."
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-TN",
+      "status": "not-found",
+      "note": "Official revenue-department / statute pages could not be fetched in this session (HTTP 403, connection refused or DNS failure); no rate recorded rather than relying on memory or third-party sources.",
+      "rates": []
+    },
+    {
+      "subdivisionCode": "US-TX",
+      "status": "found",
+      "note": "Local taxing jurisdictions can impose up to 2% additional, for a maximum combined rate of 8.25%.",
+      "rates": [
+        {
+          "subdivisionCode": "US-TX",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Texas state sales and use tax",
+          "ratePercent": 6.25,
+          "appliesTo": "All retail sales, leases and rentals of most goods and taxable services",
+          "sourceUrl": "https://comptroller.texas.gov/taxes/sales/",
+          "sourceOrganization": "Texas Comptroller of Public Accounts",
+          "sourceQuote": "Texas imposes a 6.25 percent state sales and use tax on all retail sales"
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-UT",
+      "status": "not-found",
+      "note": "Official revenue-department / statute pages could not be fetched in this session (HTTP 403, connection refused or DNS failure); no rate recorded rather than relying on memory or third-party sources.",
+      "rates": []
+    },
+    {
+      "subdivisionCode": "US-VA",
+      "status": "found",
+      "note": "Virginia Tax lists combined general rates by locality: 5.3% everywhere else; 6% in Central Virginia, Hampton Roads and Northern Virginia; higher in some areas (6.3%/7%). The page does not split the 5.3% into state vs local portions, so 5.3% is the minimum statewide combined general rate.",
+      "rates": [
+        {
+          "subdivisionCode": "US-VA",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "Statewide general rate (state + statewide local, not split on page)",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Virginia retail sales and use tax (general rate)",
+          "ratePercent": 5.3,
+          "appliesTo": "General rate in localities without regional add-on (\"Everywhere else\")",
+          "sourceUrl": "https://www.tax.virginia.gov/retail-sales-and-use-tax",
+          "sourceOrganization": "Virginia Department of Taxation",
+          "sourceQuote": "General Sales Tax Rate ... 5.3% Everywhere else"
+        },
+        {
+          "subdivisionCode": "US-VA",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "Statewide grocery rate",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "reduced",
+          "classification": "food",
+          "effectiveFrom": null,
+          "taxName": "Virginia grocery tax",
+          "ratePercent": 1,
+          "appliesTo": "Food and personal hygiene items, statewide",
+          "sourceUrl": "https://www.tax.virginia.gov/retail-sales-and-use-tax",
+          "sourceOrganization": "Virginia Department of Taxation",
+          "sourceQuote": "Grocery Tax (food and personal hygiene items) - 1% statewide"
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-VT",
+      "status": "found",
+      "note": "Some municipalities impose a local option tax (rate not stated on page).",
+      "rates": [
+        {
+          "subdivisionCode": "US-VT",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Vermont sales and use tax",
+          "ratePercent": 6,
+          "appliesTo": "Statewide rate",
+          "sourceUrl": "https://tax.vermont.gov/business/sales-and-use-tax",
+          "sourceOrganization": "Vermont Department of Taxes",
+          "sourceQuote": "The sales tax rate is 6%."
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-WA",
+      "status": "found",
+      "note": "Local sales taxes apply in addition. WA DOR page did not state the rate; Revised Code of Washington used.",
+      "rates": [
+        {
+          "subdivisionCode": "US-WA",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "Washington retail sales tax (state)",
+          "ratePercent": 6.5,
+          "appliesTo": "Selling price of each retail sale (RCW 82.08.020(1))",
+          "sourceUrl": "https://app.leg.wa.gov/RCW/default.aspx?cite=82.08.020",
+          "sourceOrganization": "Washington State Legislature (Revised Code of Washington)",
+          "sourceQuote": "There is levied and collected a tax equal to six and five-tenths percent of the selling price on each retail sale"
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-WI",
+      "status": "not-found",
+      "note": "Wisconsin DOR and statute hosts failed DNS resolution in this session. Official revenue-department / statute pages could not be fetched in this session (HTTP 403, connection refused or DNS failure); no rate recorded rather than relying on memory or third-party sources.",
+      "rates": []
+    },
+    {
+      "subdivisionCode": "US-WV",
+      "status": "found",
+      "note": "Rate quoted from the WV State Tax Department sales tax page in the context of a special district excise tax that is \"in lieu of\" the 6% sales tax; municipal sales taxes may also apply. Weaker quote context — verify if critical.",
+      "rates": [
+        {
+          "subdivisionCode": "US-WV",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": null,
+          "taxName": "West Virginia consumers sales and service tax",
+          "ratePercent": 6,
+          "appliesTo": "State sales tax rate",
+          "sourceUrl": "https://tax.wv.gov/Business/SalesAndUseTax/Pages/SalesAndUseTax.aspx",
+          "sourceOrganization": "West Virginia State Tax Department",
+          "sourceQuote": "This tax is in lieu of the 6% sales tax that would be imposed on sales and services provided within the district."
+        }
+      ]
+    },
+    {
+      "subdivisionCode": "US-WY",
+      "status": "found",
+      "note": "Wyoming statutes (Title 39) used; W.S. 39-15-104(a) levies 3% and (b) adds 1% effective July 1, 1993, administered as a 4% rate. Local option taxes may also apply.",
+      "rates": [
+        {
+          "subdivisionCode": "US-WY",
+          "taxType": "Sales Tax",
+          "officialTaxCode": null,
+          "taxComponent": "State sales tax",
+          "taxStructure": "State + local sales tax",
+          "rateCategory": "standard",
+          "classification": "goods-and-services",
+          "effectiveFrom": "1993-07-01",
+          "taxName": "Wyoming state sales tax",
+          "ratePercent": 4,
+          "appliesTo": "All sales and purchases subject to W.S. 39-15-103(a)",
+          "sourceUrl": "https://wyoleg.gov/statutes/compress/title39.pdf",
+          "sourceOrganization": "Wyoming State Legislature",
+          "sourceQuote": "(b) Effective July 1, 1993, in addition to the excise tax under subsection (a) of this section there is imposed an additional excise tax of one percent (1%) which shall be administered as if the tax rate under subsection (a) of this section was increased from three percent (3%) to four percent (4%)."
+        }
+      ]
+    }
+  ]
+}

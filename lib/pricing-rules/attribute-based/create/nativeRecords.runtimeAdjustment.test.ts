@@ -90,7 +90,7 @@ function uniqueInstanceUrl(): string {
 
 function buildRuntimeMockClient(opts: { attrs: Record<string, AttrDef>; conditions: ConditionRow[]; adjustments: AdjustmentRow[] }): SalesforceClient {
   return {
-    instanceUrl: uniqueInstanceUrl(),
+    ...((u: string) => ({ instanceUrl: u, cacheScope: u }))(uniqueInstanceUrl()),
     // No ProductClassification/ProductClassificationAttr support on this org — the classification
     // inheritance path short-circuits to UNSUPPORTED, matching the plain Laptop/Monitor-style org shape.
     async describeSObjects() {

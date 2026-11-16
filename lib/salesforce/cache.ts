@@ -1,9 +1,12 @@
 /**
  * Generic TTL cache factory shared by every metadata/describe resolver, and
  * (§REQUEST_LIMIT_EXCEEDED remediation) every dashboard statistics endpoint.
- * Keyed by an arbitrary string (callers key by instance URL, or
- * `${instanceUrl}:${sobject}` for per-object caches) so results never leak
- * across orgs. Failed lookups are never cached — callers must only call
+ * Keyed by an arbitrary string. Anything whose result depends on the running
+ * user (describe/FLS, permissions, record queries) is keyed by
+ * `client.cacheScope` — org instance + a one-way digest of the session — so
+ * results never leak across orgs OR across users of the same org, and a
+ * reconnect starts with a fresh scope. Only org-wide facts (API versions,
+ * org currency) are keyed by instance URL alone. Failed lookups are never cached — callers must only call
  * `set()` after a successful resolution, so a transient describe failure
  * is retried on the next call instead of poisoning the cache.
  *

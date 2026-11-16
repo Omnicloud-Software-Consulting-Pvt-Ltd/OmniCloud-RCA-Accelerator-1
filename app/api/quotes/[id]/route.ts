@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSFClient, sfErrorResponse } from "@/lib/salesforce/serverSession";
 import { resolveQuoteFieldSchema } from "@/lib/quotes/metadata/quoteFields";
+import { resolveRecordDisplay } from "@/lib/salesforce/recordReferences";
 import type { QuoteDetail } from "@/lib/quotes/types";
 
 type Params = { params: Promise<{ id: string }> };
@@ -16,8 +17,10 @@ export async function GET(req: NextRequest, { params }: Params) {
   try {
     const schema = await resolveQuoteFieldSchema(client);
     const record = await client.getRecord("Quote", id);
+    const display = await resolveRecordDisplay(client, "Quote", id, record);
 
     const detail: QuoteDetail = {
+      ...display,
       id,
       name: (record.Name as string) ?? "",
       record,

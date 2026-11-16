@@ -17,6 +17,7 @@ import type { ProductImportValidateResponse } from "@/app/api/sf/products/import
 import ImportCreateStep, { type CreateQueueItem, type ExcludedQueueItem } from "@/components/import/ImportCreateStep";
 import PromptGuide from "@/components/ai/PromptGuide";
 import { promptGuideConfig } from "@/lib/ai/promptGuideConfig";
+import { Disclosure, DISCLOSURE_LABELS } from "@/components/ui/Disclosure";
 
 type Step = "prompt" | "review" | "create";
 
@@ -537,6 +538,7 @@ export default function MultiProductWorkspace({ isDark }: { isDark: boolean }) {
             {current && (
               <motion.div key={page} initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }} transition={{ duration: 0.16 }}>
                 <ProductReviewCard
+                  isDark={isDark}
                   index={page}
                   total={drafts.length}
                   draft={current}
@@ -661,7 +663,8 @@ function NavButton({ icon, label, isDark, onClick, disabled, primary }: {
   );
 }
 
-function ProductReviewCard({ index, total, draft, intent, status, issues, onChange }: {
+function ProductReviewCard({ isDark, index, total, draft, intent, status, issues, onChange }: {
+  isDark: boolean;
   index: number; total: number; draft: MultiProductDraft; intent: ProductIntentMap | undefined; status: ReviewStatus;
   issues: { level: "error" | "warning" | "info"; message: string }[];
   onChange: (patch: Partial<MultiProductDraft>) => void;
@@ -777,10 +780,10 @@ function ProductReviewCard({ index, total, draft, intent, status, issues, onChan
       </div>
 
       <div className="mt-5">
-        <p className="text-[9px] font-bold uppercase tracking-wider mb-2" style={{ color: "var(--rc-text-section)" }}>
-          Field Mapping
-        </p>
-        <FieldMappingTable rows={mappingRows} />
+        {/* Per-field AI extraction detail (Provided / Default / Not specified) — hidden until asked for. */}
+        <Disclosure isDark={isDark} label={`${DISCLOSURE_LABELS.ai} — field mapping`} icon="cpu">
+          <FieldMappingTable rows={mappingRows} />
+        </Disclosure>
       </div>
     </div>
   );

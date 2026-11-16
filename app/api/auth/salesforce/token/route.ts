@@ -1,123 +1,129 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createHmac } from "crypto";
 import { resolveConnectedApp } from "@/lib/config";
+import {
+  SESSION_COOKIE,
+  SalesforceClient,
+  SalesforceError,
+  encodeSession,
+  sessionCookieOptions,
+} from "@/lib/salesforce/client";
+import {
+  OAUTH_TX_COOKIE,
+  callbackUrl,
+  decodeTransaction,
+  loginBaseFor,
+  stateMatches,
+  transactionCookieOptions,
+} from "@/lib/salesforce/oauth";
+import { tokenErrorMessage } from "@/lib/salesforce/oauthMessages";
 
-function appBaseUrl(req: NextRequest): string {
-  if (process.env.NEXTAUTH_URL) return process.env.NEXTAUTH_URL.replace(/\/$/, "");
-  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? "localhost:3000";
-  const proto = req.headers.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
-  return `${proto}://${host}`;
-}
-
-/** Verify the HMAC-signed state parameter to prevent CSRF. */
-function verifyState(state: string): boolean {
-  const secret = process.env.NEXTAUTH_SECRET ?? "omnicloud-dev-secret";
-  const parts = state.split("|");
-  if (parts.length !== 3) return false;
-  const [environment, nonce, receivedHmac] = parts;
-  if (!environment || !nonce || !receivedHmac) return false;
-  const payload = `${environment}|${nonce}`;
-  const expectedHmac = createHmac("sha256", secret).update(payload).digest("hex").slice(0, 16);
-  // Constant-time comparison to prevent timing attacks
-  return receivedHmac.length === expectedHmac.length &&
-    Buffer.from(receivedHmac).equals(Buffer.from(expectedHmac));
-}
-
+/**
+ * POST /api/auth/salesforce/token — { code, state }, called once by the callback page.
+ * Verifies the state against THIS browser's sign-in transaction, exchanges the code (with the PKCE verifier) on the server,
+ * confirms the signed-in Salesforce user, and stores the session in the httpOnly `sf_session` cookie. The response carries only
+ * who signed in — never an access or refresh token.
+ */
 export async function POST(req: NextRequest) {
-  const body = await req.json().catch(() => null);
-  if (!body?.code || !body?.state) {
-    return NextResponse.json({ error: "Missing code or state" }, { status: 400 });
+  const body = (await req.json().catch(() => null)) as { code?: unknown; state?: unknown } | null;
+  const code = typeof body?.code === "string" ? body.code : "";
+  const state = typeof body?.state === "string" ? body.state : "";
+  if (!code || !state) {
+    return fail("Salesforce didn't return a sign-in code. Click the Salesforce button and try again.", 400, "MISSING_CODE");
   }
 
-  const { code, state } = body as { code: string; state: string };
-
-  if (!verifyState(state)) {
-    return NextResponse.json(
-      { error: "Invalid state parameter. The request may have been tampered with." },
-      { status: 400 }
-    );
+  const tx = decodeTransaction(req.cookies.get(OAUTH_TX_COOKIE)?.value);
+  if (!tx) {
+    return fail("This sign-in attempt expired or was started in a different browser. Click the Salesforce button and sign in again.", 400, "NO_TRANSACTION");
   }
-
-  // Environment is encoded in state: "{environment}|{nonce}|{hmac}"
-  const environment = state.startsWith("production|") ? "production" : "sandbox";
+  if (!stateMatches(tx.state, state)) {
+    return fail("This sign-in response doesn't belong to the sign-in started in this browser. Click the Salesforce button and sign in again.", 400, "STATE_MISMATCH");
+  }
 
   const creds = resolveConnectedApp(req);
   if (!creds) {
-    return NextResponse.json(
-      { error: "Salesforce Connected App isn't configured. Add your Client ID & Secret in Setup." },
-      { status: 503 }
-    );
+    return fail("Salesforce Connected App isn't configured. Add your Client ID & Secret in Setup.", 503, "NO_CONNECTED_APP");
   }
-  const { clientId, clientSecret } = creds;
 
-  const loginBase =
-    environment === "sandbox" ? "https://test.salesforce.com" : "https://login.salesforce.com";
-
-  const redirectUri = `${appBaseUrl(req)}/api/auth/callback/salesforce`;
-
-  const tokenParams = new URLSearchParams({
-    grant_type: "authorization_code",
-    client_id: clientId,
-    client_secret: clientSecret,
-    redirect_uri: redirectUri,
-    code,
-  });
-
-  let tokenRes: Response;
+  const redirectUri = callbackUrl(req);
+  let tokenData: Record<string, unknown>;
   try {
-    tokenRes = await fetch(`${loginBase}/services/oauth2/token`, {
+    const tokenRes = await fetch(`${loginBaseFor(tx.environment)}/services/oauth2/token`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: tokenParams.toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        client_id: creds.clientId,
+        client_secret: creds.clientSecret,
+        redirect_uri: redirectUri,
+        code_verifier: tx.verifier,
+      }).toString(),
       cache: "no-store",
     });
+    tokenData = ((await tokenRes.json().catch(() => null)) ?? {}) as Record<string, unknown>;
+    if (!tokenRes.ok || tokenData.error || typeof tokenData.access_token !== "string") {
+      return fail(
+        tokenErrorMessage(str(tokenData.error), str(tokenData.error_description), redirectUri),
+        401,
+        str(tokenData.error) ?? "TOKEN_EXCHANGE_FAILED",
+      );
+    }
   } catch {
-    return NextResponse.json(
-      { error: "Unable to reach Salesforce. Check your network connection." },
-      { status: 503 }
-    );
+    return fail("Couldn't reach Salesforce to finish signing in. Check your connection and try again.", 502, "NETWORK_ERROR");
   }
 
-  const tokenData = await tokenRes.json();
-
-  if (!tokenRes.ok || tokenData.error) {
-    const msg = tokenData.error_description ?? tokenData.error ?? "Token exchange failed";
-    return NextResponse.json({ error: msg }, { status: 401 });
+  const accessToken = tokenData.access_token as string;
+  const refreshToken = str(tokenData.refresh_token);
+  const instanceUrl = str(tokenData.instance_url)?.replace(/\/+$/, "") ?? "";
+  if (!/^https:\/\/[^/]+$/i.test(instanceUrl)) {
+    return fail("Salesforce returned an unexpected org address. Please try again.", 502, "BAD_INSTANCE_URL");
   }
 
-  // Fetch user identity from the Salesforce identity URL
-  let username = "";
-  let displayName = "";
-  let email = "";
-  let userId = "";
-  let orgId = "";
-
-  if (tokenData.id) {
-    try {
-      const idRes = await fetch(tokenData.id, {
-        headers: { Authorization: `Bearer ${tokenData.access_token}` },
-      });
-      if (idRes.ok) {
-        const id = await idRes.json();
-        username    = id.username          ?? "";
-        displayName = id.display_name ?? id.name ?? "";
-        email       = id.email             ?? "";
-        userId      = id.user_id           ?? "";
-        orgId       = id.organization_id   ?? "";
-      }
-    } catch {}
+  // Confirm the token works and read the real signed-in user from Salesforce itself.
+  let user: { userId: string; orgId: string; username: string; displayName: string; email: string };
+  try {
+    const info = await new SalesforceClient(instanceUrl, accessToken).getUserInfo();
+    user = {
+      userId: info.user_id ?? "",
+      orgId: info.organization_id ?? "",
+      username: info.preferred_username ?? "",
+      displayName: info.display_name || info.name || "",
+      email: info.email ?? "",
+    };
+  } catch (err) {
+    const detail = err instanceof SalesforceError ? err.message : "no response";
+    return fail(`Signed in to Salesforce, but the user's identity couldn't be confirmed (${detail}). Make sure the Connected App has the openid and profile scopes.`, 502, "IDENTITY_FAILED");
   }
 
-  return NextResponse.json({
-    accessToken:  tokenData.access_token,
-    refreshToken: tokenData.refresh_token,
-    instanceUrl:  tokenData.instance_url,
-    tokenType:    tokenData.token_type ?? "Bearer",
-    userId,
-    username,
-    displayName,
-    email,
-    orgId,
-    environment,
+  const res = NextResponse.json({
+    success: true,
+    user: { ...user, instanceUrl, environment: tx.environment },
   });
+  res.headers.set("Cache-Control", "no-store");
+  res.cookies.set(
+    SESSION_COOKIE,
+    encodeSession({
+      instanceUrl,
+      accessToken,
+      refreshToken,
+      environment: tx.environment,
+      // Kept with the session (as before) so transparent token refresh is self-contained.
+      clientId: creds.clientId,
+      clientSecret: creds.clientSecret,
+    }),
+    sessionCookieOptions(),
+  );
+  // One transaction, one use.
+  res.cookies.set(OAUTH_TX_COOKIE, "", transactionCookieOptions(0));
+  return res;
+}
+
+function str(v: unknown): string | undefined {
+  return typeof v === "string" && v ? v : undefined;
+}
+
+function fail(error: string, status: number, code: string) {
+  const res = NextResponse.json({ success: false, error, code }, { status });
+  res.headers.set("Cache-Control", "no-store");
+  return res;
 }

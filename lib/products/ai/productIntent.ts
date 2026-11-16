@@ -65,6 +65,15 @@ export interface RawFieldInput {
    * explicit note that it isn't persisted server-side.
    */
   taxIncluded?: boolean | null;
+  /** Revenue Cloud tax/billing configuration named in the prompt (resolved to records server-side). */
+  taxPolicy?: string | null;
+  taxTreatment?: string | null;
+  taxTreatmentItem?: string | null;
+  taxEngine?: string | null;
+  taxCode?: string | null;
+  billingPolicy?: string | null;
+  billingTreatment?: string | null;
+  billingTreatmentItem?: string | null;
 }
 
 export interface ProductIntentMap {
@@ -84,6 +93,14 @@ export interface ProductIntentMap {
   unitOfMeasure: FieldMapping<string>;
   classification: FieldMapping<string>;
   taxIncluded: FieldMapping<boolean | null>;
+  taxPolicy: FieldMapping<string>;
+  taxTreatment: FieldMapping<string>;
+  taxTreatmentItem: FieldMapping<string>;
+  taxEngine: FieldMapping<string>;
+  taxCode: FieldMapping<string>;
+  billingPolicy: FieldMapping<string>;
+  billingTreatment: FieldMapping<string>;
+  billingTreatmentItem: FieldMapping<string>;
 }
 
 export interface ProductIntentResult {
@@ -143,10 +160,16 @@ export function buildProductIntent(raw: RawFieldInput): ProductIntentResult {
       ? { value: null, provenance: "unspecified" }
       : { value: raw.taxIncluded, provenance: "explicit" };
 
+  // Revenue Cloud relationships: never defaulted — only what the user named (resolved/verified server-side).
+  const relation = (v: string | null | undefined) => explicitString(v) ?? { value: "", provenance: "unspecified" as const };
+  const taxPolicy = relation(raw.taxPolicy), taxTreatment = relation(raw.taxTreatment), taxTreatmentItem = relation(raw.taxTreatmentItem), taxEngine = relation(raw.taxEngine);
+  const taxCode = relation(raw.taxCode), billingPolicy = relation(raw.billingPolicy), billingTreatment = relation(raw.billingTreatment), billingTreatmentItem = relation(raw.billingTreatmentItem);
+
   const intent: ProductIntentMap = {
     productName, productCode, family, category, catalog, description, isActive,
     sellingModel, productOwner, priceBook, basePrice, productType, currencyIsoCode,
     unitOfMeasure, classification, taxIncluded,
+    taxPolicy, taxTreatment, taxTreatmentItem, taxEngine, taxCode, billingPolicy, billingTreatment, billingTreatmentItem,
   };
 
   const payload: ProductPayload = {
@@ -170,6 +193,14 @@ export function buildProductIntent(raw: RawFieldInput): ProductIntentResult {
     currencyIsoCode: currencyIsoCode.value || undefined,
     unitOfMeasure: unitOfMeasure.value || undefined,
     classification: classification.value || undefined,
+    taxPolicy: taxPolicy.value || undefined,
+    taxTreatment: taxTreatment.value || undefined,
+    taxTreatmentItem: taxTreatmentItem.value || undefined,
+    taxEngine: taxEngine.value || undefined,
+    taxCode: taxCode.value || undefined,
+    billingPolicy: billingPolicy.value || undefined,
+    billingTreatment: billingTreatment.value || undefined,
+    billingTreatmentItem: billingTreatmentItem.value || undefined,
   };
 
   return { intent, payload };

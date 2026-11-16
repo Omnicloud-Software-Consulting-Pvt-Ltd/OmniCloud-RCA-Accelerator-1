@@ -3,7 +3,7 @@ import { Document, Page, Text, View, Image, StyleSheet, renderToBuffer } from "@
 import type { BrandingConfig, MergeFieldValues } from "@/lib/contracts/types";
 import { substituteMergeFields } from "@/lib/contracts/documents/mergeFields";
 import { parseHtmlToPdfBlocks, type PdfBlock, type PdfTextRun } from "@/lib/contracts/documents/pdfTagConverter";
-import { renderFooterElements } from "@/lib/contracts/documents/render";
+import { companyDetailLines, renderFooterElements } from "@/lib/contracts/documents/render";
 
 /**
  * PDF generation via @react-pdf/renderer (§4.3) — NOT an HTML renderer.
@@ -99,7 +99,11 @@ export async function renderContractPdf(bodyHtml: string, branding: BrandingConf
 
   const headerChildren: React.ReactNode[] = [];
   if (branding.logoUrl) headerChildren.push(React.createElement(Image, { key: "logo", src: branding.logoUrl, style: { width: branding.logoWidth, height: branding.logoMaintainAspectRatio ? undefined : branding.logoHeight, marginRight: 10 } }));
-  headerChildren.push(React.createElement(Text, { key: "name", style: [s.headerText, { color: branding.primaryColor }] }, branding.companyName));
+  // Company name plus its contact lines (Company Information panel), stacked as one column next to the logo.
+  headerChildren.push(React.createElement(View, { key: "company" },
+    React.createElement(Text, { style: [s.headerText, { color: branding.primaryColor }] }, branding.companyName),
+    ...companyDetailLines(branding).map((line, i) => React.createElement(Text, { key: `detail-${i}`, style: { fontSize: 8, color: "#555555", marginTop: 1 } }, line)),
+  ));
 
   const doc = React.createElement(
     Document,
